@@ -2,7 +2,7 @@
 
 <p align="center">SAT and GRE practice that plays like an arcade. Real-format exam questions inside six games, concept lessons with videos, and a dashboard that points you at your weakest topic.</p>
 
-<p align="center"><a href="https://www.satistic.tech">Live site</a> · <a href="docs/handbook/index.html">Engineering handbook</a> · <a href="CONTRIBUTING.md">Contribute</a> · <a href="https://www.satistic.tech/developer">Developer</a></p>
+<p align="center"><a href="https://www.satistic.tech">Live site</a> · <a href="docs/handbook/SATistics-Engineering-Handbook.pdf">Engineering handbook</a> · <a href="CONTRIBUTING.md">Contribute</a> · <a href="https://www.satistic.tech/developer">Developer</a></p>
 
 <p align="center">
   <a href="https://github.com/shivvyas2/SATistics/actions/workflows/ci.yml"><img src="https://github.com/shivvyas2/SATistics/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -127,7 +127,7 @@ Every variable is documented in [`backend/.env.example`](backend/.env.example) a
 
 ## The engineering handbook
 
-[`docs/handbook/`](docs/handbook/) is a book about this codebase: how every part works, why it is shaped that way, and how to change it. Open `index.html` in a browser, or read the PDF or EPUB. Each feature chapter ends with a reading order through the code and questions to check yourself.
+**[Read the SATistics Engineering Handbook (PDF)](docs/handbook/SATistics-Engineering-Handbook.pdf)**: a book about this codebase covering how every part works, why it is shaped that way, and how to change it. It is also available as an [EPUB](docs/handbook/SATistics-Engineering-Handbook.epub), and as `docs/handbook/index.html` to open locally in a browser. Each feature chapter ends with a reading order through the code and questions to check yourself.
 
 | If you want to work on | Start with |
 | --- | --- |

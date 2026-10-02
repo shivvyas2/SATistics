@@ -72,7 +72,7 @@ export function IdentityFields({ value, onChange }: Props) {
           maxLength={60}
           autoComplete="name"
           className="field"
-          placeholder="Maya Chen"
+          placeholder="Shiv Vyas"
         />
       </Field>
 
@@ -86,7 +86,7 @@ export function IdentityFields({ value, onChange }: Props) {
             required
             pattern="[a-z0-9_]{3,24}"
             className="field pl-9"
-            placeholder="maya_chen"
+            placeholder="shivvyas"
           />
         </div>
       </Field>

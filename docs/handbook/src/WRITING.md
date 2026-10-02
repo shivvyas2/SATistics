@@ -14,7 +14,9 @@ and packs the Kindle edition. `make-book.sh` runs all three.
   installs, or set `CHROME=/path/to/chrome`).
 
 Editing chapters only needs `python3 build.py`; open `index.html` to read the
-result. The PDF and EPUB are optional.
+result. `build_markdown.py` writes `markdown/`, the edition GitHub renders,
+and needs beautifulsoup4. Never edit `markdown/` by hand. The PDF and EPUB are
+optional.
 
 ## Rules
 
