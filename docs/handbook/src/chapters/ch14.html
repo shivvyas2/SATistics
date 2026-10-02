@@ -1,0 +1,356 @@
+<section class="chapter" id="ch14" data-hue="api">
+<p class="chapter-kicker">Chapter fourteen</p>
+<h2><span class="num">14</span><span>API reference</span></h2>
+
+<p class="lede">
+  Every HTTP route the FastAPI backend serves: twenty-four of them, counting two explicit <code>OPTIONS</code> handlers, across eight routers and the root.
+  For each, the method and path, whether it needs a token, what it accepts, what it returns, how it
+  fails, and which frontend function calls it. The last sections cover how the frontend client sends
+  tokens and turns errors into exceptions.
+</p>
+
+<p>
+  The routers are mounted in <code>backend/src/main.py</code> with <code>app.include_router</code>, each
+  under a prefix: <code>/api/health</code>, <code>/api/auth</code>, <code>/api/games</code>,
+  <code>/api/stats</code>, <code>/api/questions</code>, <code>/api/profile</code>, <code>/api/learn</code>
+  and <code>/api/materials</code>. The handlers are in <code>backend/src/api/*.py</code>. FastAPI also
+  serves its generated documentation at <code>/docs</code> and the schema at <code>/openapi.json</code>,
+  which are the quickest way to try a route against a local server on port 8000. The TypeScript file
+  <code>backend/src/api/games.ts</code> is a leftover reference implementation and is not served.
+</p>
+
+<h3 id="s14-1"><span class="num">14.1</span><span>Conventions</span></h3>
+
+<ul>
+  <li><b>Auth.</b> "Required" means the route depends on <code>get_current_user</code> from
+  <code>api/auth.py</code>: an <code>Authorization: Bearer &lt;token&gt;</code> header carrying the
+  Supabase access token from login. No header gives 401 <code>Missing authorization token</code>; a
+  token that cannot be decoded, has no <code>sub</code> or has expired gives 401 <code>Invalid or
+  expired token</code>. The signature is not checked (<a href="#s13-7">13.7</a>).</li>
+  <li><b>Errors.</b> Every error body is <code>{"detail": ...}</code>. For an
+  <code>HTTPException</code>, <code>detail</code> is a string. For a request that fails validation, it
+  is FastAPI's 422 list of <code>{loc, msg, type}</code> objects. An unhandled exception becomes 500
+  <code>{"detail": "Internal server error"}</code> from the global handler in <code>main.py</code>,
+  without CORS headers.</li>
+  <li><b>Trailing slashes.</b> Two routes are declared as <code>"/"</code>, so their canonical paths end
+  in a slash: <code>/api/health/</code>, <code>/api/questions/</code>. A request without the slash gets a
+  307 redirect. <code>/api/profile</code> and <code>/api/materials</code> are declared as
+  <code>""</code> and have no slash.</li>
+  <li><b>Naming.</b> Request bodies for games use camelCase (<code>gameId</code>,
+  <code>correctAnswers</code>); rows read from the database come back snake_case
+  (<code>game_id</code>, <code>correct_answer</code>). Both styles are in use; follow the neighbouring
+  route.</li>
+</ul>
+
+<p>Examples use two placeholders: <code>$API</code> for the base URL and <code>$TOKEN</code> for an access token.</p>
+
+<pre><code>export API=http://localhost:8000
+export TOKEN=&lt;access token from /api/auth/login&gt;</code></pre>
+
+<h3 id="s14-2"><span class="num">14.2</span><span>Root and health</span></h3>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Route</th><th>Auth</th><th>Returns</th><th>Caller</th></tr></thead>
+<tbody>
+<tr><td><code>GET /</code></td><td>None</td><td><code>{message, version, status}</code>, with <code>version</code> <code>"1.0.0"</code> and <code>status</code> <code>"running"</code></td><td>None in the frontend</td></tr>
+<tr><td><code>GET /api/health/</code></td><td>None</td><td><code>{"status": "healthy", "service": "NYU Hacks Arcade API"}</code></td><td>None; for uptime checks</td></tr>
+<tr><td><code>GET /api/health/supabase</code></td><td>None</td><td>Selects one <code>id</code> from <code>game_sessions</code>. On success <code>{status: "healthy", supabase: "connected", database: "accessible"}</code>; on any exception, still status 200, with <code>{status: "unhealthy", supabase: "disconnected", error}</code></td><td>None</td></tr>
+</tbody></table></div>
+
+<p>
+  The service name "NYU Hacks Arcade" is from the project's hackathon origin and survives in the
+  FastAPI title. <code>/api/health/supabase</code> always answers 200, so a monitor must read the body.
+  Its <code>error</code> field is the raw exception text, visible to anyone.
+</p>
+
+<pre><code>curl -s $API/api/health/supabase</code></pre>
+
+<h3 id="s14-3"><span class="num">14.3</span><span>Auth</span></h3>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Route</th><th>Auth</th><th>Body</th><th>Returns</th><th>Errors</th><th>Caller</th></tr></thead>
+<tbody>
+<tr><td><code>POST /api/auth/signup</code></td><td>None</td><td><code>UserSignup</code>: <code>email</code> (EmailStr), <code>password</code> (str)</td><td><code>{success: true, user: {id, email}, message}</code>, plus <code>access_token</code> when Supabase returns a session (email confirmation off)</td><td>400 with Supabase's message, rewritten for "already exists" and "Email rate limit exceeded"; 500 <code>Internal server error: ...</code></td><td><code>apiClient.signup</code>, <code>app/signup/page.tsx</code></td></tr>
+<tr><td><code>POST /api/auth/login</code></td><td>None</td><td><code>UserLogin</code>: <code>email</code>, <code>password</code></td><td><code>TokenResponse</code>: <code>{access_token, token_type: "bearer", user: {id, email}}</code></td><td>401 <code>Invalid email or password</code>, or Supabase's message</td><td><code>apiClient.login</code>, <code>app/login/page.tsx</code></td></tr>
+<tr><td><code>POST /api/auth/logout</code></td><td>Optional</td><td>None</td><td><code>{success: true, message: "Logged out successfully"}</code></td><td>None in practice</td><td><code>apiClient.logout</code>, <code>components/AuthButton.tsx</code>, <code>components/DashboardLayout.tsx</code></td></tr>
+<tr><td><code>GET /api/auth/me</code></td><td>Required</td><td>None</td><td><code>{id, email}</code> decoded from the token</td><td>401</td><td><code>apiClient.getCurrentUser</code>, <code>lib/useAccount.ts</code>, <code>AuthButton.tsx</code></td></tr>
+<tr><td><code>OPTIONS /api/auth/signup</code>, <code>OPTIONS /api/auth/login</code></td><td>None</td><td>None</td><td>200 with CORS headers echoing the request's <code>Origin</code></td><td>None</td><td>None; CORS middleware answers real preflights first</td></tr>
+</tbody></table></div>
+
+<p>
+  Signup and login run on the backend because the frontend has no Supabase client. Login returns the
+  access token only; <code>AuthService.login</code> also reads the refresh token, but
+  <code>TokenResponse</code> drops it, so the browser cannot renew a session. Logout changes nothing on
+  the server. <code>/me</code> never touches the database: it returns whatever the token's payload says.
+</p>
+
+<pre><code>curl -s -X POST $API/api/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email": "student@example.com", "password": "&lt;password&gt;"}'
+
+curl -s $API/api/auth/me -H "Authorization: Bearer $TOKEN"</code></pre>
+
+<h3 id="s14-4"><span class="num">14.4</span><span>Profile</span></h3>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Route</th><th>Auth</th><th>Body</th><th>Returns</th><th>Errors</th><th>Caller</th></tr></thead>
+<tbody>
+<tr><td><code>GET /api/profile</code></td><td>Required</td><td>None</td><td><code>ProfileResponse</code>: <code>{profile: Profile | null}</code>; null when the user has no row</td><td>401; 500 with the exception text</td><td><code>apiClient.getProfile</code>, <code>lib/useAccount.ts</code></td></tr>
+<tr><td><code>PUT /api/profile</code></td><td>Required</td><td><code>Profile</code> (below)</td><td><code>{profile: Profile}</code> as saved</td><td>401; 409 <code>The username @name is taken. Try another one.</code>; 422 on validation, including the target score range; 500</td><td><code>apiClient.saveProfile</code>, <code>app/signup/page.tsx</code>, <code>app/login/page.tsx</code> (pending profile), <code>app/profile/page.tsx</code></td></tr>
+</tbody></table></div>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Profile field</th><th>Type</th><th>Constraint</th></tr></thead>
+<tbody>
+<tr><td><code>display_name</code></td><td>str</td><td>1 to 60 characters</td></tr>
+<tr><td><code>username</code></td><td>str</td><td><code>^[a-z0-9_]{3,24}$</code>, unique across users</td></tr>
+<tr><td><code>exam</code></td><td><code>"sat" | "gre"</code></td><td>Default <code>"sat"</code></td></tr>
+<tr><td><code>target_score</code></td><td>int or null</td><td>400 to 1600 for SAT, 260 to 340 for GRE</td></tr>
+<tr><td><code>test_date</code></td><td>date or null</td><td>ISO <code>yyyy-mm-dd</code></td></tr>
+<tr><td><code>daily_minutes</code></td><td>int</td><td>5 to 240, default 20</td></tr>
+<tr><td><code>avatar_color</code></td><td>str</td><td><code>^#[0-9A-Fa-f]{6}$</code>, default <code>#3A33E8</code></td></tr>
+</tbody></table></div>
+
+<p>
+  <code>PUT</code> is an upsert on <code>user_id</code>, so the same call creates and updates. The whole
+  profile is sent every time; there is no partial update.
+</p>
+
+<pre><code>curl -s -X PUT $API/api/profile \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"display_name": "Ada", "username": "ada_l", "exam": "sat",
+       "target_score": 1450, "test_date": "2026-12-05",
+       "daily_minutes": 30, "avatar_color": "#3A33E8"}'</code></pre>
+
+<h3 id="s14-5"><span class="num">14.5</span><span>Games and stats</span></h3>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Route</th><th>Auth</th><th>Input</th><th>Returns</th><th>Errors</th><th>Caller</th></tr></thead>
+<tbody>
+<tr><td><code>POST /api/games/save-score</code></td><td>Required</td><td><code>SaveScoreRequest</code>: <code>gameId</code> (str), <code>analytics</code> (<code>GameAnalytics</code>)</td><td><code>SaveScoreResponse</code>: <code>{success: true, sessionId}</code></td><td>401; 422; 500 with the exception text from <code>GameService</code></td><td><code>apiClient.saveScore</code> in each <code>components/*GameContainer.tsx</code> and <code>app/mock/page.tsx</code> (as <code>mock-exam</code>)</td></tr>
+<tr><td><code>GET /api/stats/user</code></td><td>Required</td><td>None</td><td><code>UserStatsResponse</code>; all zeros, empty lists and <code>updated_at: ""</code> if the user has no row</td><td>401; 500</td><td><code>apiClient.getUserStats</code>: <code>app/dashboard</code>, <code>app/stats</code>, <code>app/profile</code>, <code>app/learn</code> pages</td></tr>
+<tr><td><code>GET /api/stats/sessions</code></td><td>Required</td><td>Query <code>limit</code>: int, default 10, no bounds</td><td>List of <code>GameSessionResponse</code>: <code>{id, game_id, score, accuracy, correct_answers, wrong_answers, max_streak, created_at}</code>, newest first</td><td>401; 500</td><td><code>apiClient.getRecentSessions</code> via <code>useRecentSessions</code> in <code>lib/sessions.ts</code> (limit 30)</td></tr>
+</tbody></table></div>
+
+<div class="tablewrap"><table>
+<thead><tr><th><code>GameAnalytics</code> field</th><th>Type</th><th>Used by the server</th></tr></thead>
+<tbody>
+<tr><td><code>gameId</code></td><td>str</td><td>No; the outer <code>gameId</code> is stored</td></tr>
+<tr><td><code>score</code></td><td>int</td><td>Stored and added to <code>total_score</code></td></tr>
+<tr><td><code>accuracy</code></td><td>float</td><td>No; recomputed from the counts</td></tr>
+<tr><td><code>correctAnswers</code>, <code>wrongAnswers</code></td><td>int</td><td>Stored and summed</td></tr>
+<tr><td><code>questionAttempts</code></td><td>list of <code>{questionId: int, topic, difficulty, isCorrect: bool, timeSpent: int}</code></td><td>One <code>question_attempts</code> row each</td></tr>
+<tr><td><code>topicPerformance</code></td><td>map of topic to <code>{correct, total, accuracy}</code></td><td><code>correct / total</code> decides weak (under 0.5) and strong (0.8 or more); <code>accuracy</code> ignored</td></tr>
+<tr><td><code>streakInfo</code></td><td>dict</td><td>Only <code>maxStreak</code></td></tr>
+<tr><td><code>averageResponseTime</code></td><td>int</td><td>Stored, in milliseconds</td></tr>
+</tbody></table></div>
+
+<p>
+  Nothing bounds the numbers. A client can post any score, which is acceptable for a practice tool but
+  means scores are not evidence of anything. The client's <code>getUserStats</code> and
+  <code>getRecentSessions</code> swallow errors and return <code>null</code> and <code>[]</code>, so a
+  401 on these pages looks like a new account.
+</p>
+
+<pre><code>curl -s -X POST $API/api/games/save-score \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"gameId": "zombie", "analytics": {"gameId": "zombie", "score": 300,
+       "accuracy": 75, "correctAnswers": 3, "wrongAnswers": 1,
+       "questionAttempts": [{"questionId": 42, "topic": "Algebra",
+         "difficulty": "easy", "isCorrect": true, "timeSpent": 5200}],
+       "topicPerformance": {"Algebra": {"correct": 3, "total": 4, "accuracy": 75}},
+       "streakInfo": {"maxStreak": 2}, "averageResponseTime": 6100}}'
+
+curl -s "$API/api/stats/sessions?limit=5" -H "Authorization: Bearer $TOKEN"</code></pre>
+
+<h3 id="s14-6"><span class="num">14.6</span><span>Questions</span></h3>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Route</th><th>Auth</th><th>Input</th><th>Returns</th><th>Errors</th><th>Caller</th></tr></thead>
+<tbody>
+<tr><td><code>GET /api/questions/</code></td><td>Optional (<code>get_current_user_optional</code>)</td><td>Query, below</td><td><code>QuestionResponse</code>: <code>{questions: Question[], total}</code></td><td>422; 500 with the exception text</td><td><code>apiClient.getAIQuestions</code> via <code>fetchAIQuestions</code> and <code>fetchQuestionsWithCache</code> in <code>lib/api/questions.ts</code></td></tr>
+<tr><td><code>GET /api/questions/topics</code></td><td>Required</td><td>None</td><td><code>{topics: string[]}</code>, distinct topics across <i>all</i> users' attempts</td><td>401; 500</td><td><code>apiClient.getTopics</code>, which nothing calls</td></tr>
+</tbody></table></div>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Query parameter</th><th>Type</th><th>Default</th><th>Effect</th></tr></thead>
+<tbody>
+<tr><td><code>use_agent</code></td><td>bool</td><td><code>false</code></td><td>When false, the route returns an empty list. Every real caller sends <code>true</code>.</td></tr>
+<tr><td><code>limit</code></td><td>int, 1 to 100</td><td class="num-cell">10</td><td>Total questions wanted</td></tr>
+<tr><td><code>exam</code></td><td><code>"sat" | "gre"</code></td><td><code>sat</code></td><td></td></tr>
+<tr><td><code>section</code></td><td><code>"quant" | "verbal"</code></td><td><code>quant</code></td><td></td></tr>
+<tr><td><code>pace</code></td><td><code>"quick" | "deep"</code> or absent</td><td>absent</td><td>Quick keeps only short questions; deep is passed through to the sources</td></tr>
+<tr><td><code>use_web_search</code></td><td>bool</td><td><code>true</code></td><td>Lets the agent search the web for GRE (and fallback SAT) questions</td></tr>
+<tr><td><code>include_custom</code></td><td>bool</td><td><code>true</code></td><td>For a signed-in user, up to <code>limit // 2</code> of their approved custom questions are mixed in</td></tr>
+<tr><td><code>topic</code>, <code>difficulty</code></td><td>str</td><td>absent</td><td>Accepted and ignored</td></tr>
+</tbody></table></div>
+
+<p>
+  With <code>use_agent=true</code> the route loads custom questions (if signed in), then asks
+  <code>ExamLearningAgent.generate_questions</code> for the rest, using the all-zero UUID as the user id
+  for guests, and shuffles the result. If the agent throws, the route still answers 200 with just the
+  custom questions, which may be none. The frontend's <code>fetchAIQuestions</code> treats an empty list
+  as a failure and falls back to the built-in bank in <code>lib/questionBank.ts</code>. A
+  <code>Question</code> has <code>id</code>, <code>question</code>, <code>options</code>,
+  <code>correctAnswer</code>, <code>topic</code>, <code>difficulty</code>, <code>explanation</code>, and
+  optional <code>exam</code>, <code>section</code>, <code>skill</code>, <code>passage</code>,
+  <code>stem</code>, the four <code>*Html</code> fields, <code>source</code>, <code>sourceName</code> and
+  <code>sourceUrl</code>. <code>source</code> is <code>official</code>, <code>web</code>, <code>ai</code> or
+  <code>custom</code> from this route.
+</p>
+
+<p>
+  This is the slowest route in the API. It fetches from College Board, may search the web and calls an
+  LLM through OpenRouter, so it can take many seconds. <code>apiClient.getQuestions</code>, which calls it
+  without <code>use_agent</code>, is unused and would always get an empty list.
+</p>
+
+<pre><code>curl -s "$API/api/questions/?use_agent=true&amp;limit=10&amp;exam=sat&amp;section=verbal&amp;pace=quick" \
+  -H "Authorization: Bearer $TOKEN"</code></pre>
+
+<h3 id="s14-7"><span class="num">14.7</span><span>Learn</span></h3>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Route</th><th>Auth</th><th>Query</th><th>Returns</th><th>Errors</th><th>Caller</th></tr></thead>
+<tbody>
+<tr><td><code>GET /api/learn/videos</code></td><td>Required</td><td><code>exam</code> (<code>^(sat|gre)$</code>), <code>section</code> (<code>^(quant|verbal)$</code>), <code>topic</code> (2 to 80 chars), all required; <code>limit</code> 1 to 12, default 6</td><td><code>VideoResponse</code>: <code>{videos: [{id, title, channel, duration, url, thumbnail, published, trusted}]}</code></td><td>401; 422; 502 <code>Video search failed: ...</code></td><td><code>apiClient.getTopicVideos</code>, <code>components/learn/Videos.tsx</code></td></tr>
+</tbody></table></div>
+
+<p>
+  <code>find_topic_videos</code> in <code>services/videos.py</code> searches with the YouTube Data API
+  when <code>YOUTUBE_API_KEY</code> is set, Serper when <code>SERPER_API_KEY</code> is, and DuckDuckGo
+  otherwise. Results are cached in process memory per exam, section and topic.
+</p>
+
+<pre><code>curl -s "$API/api/learn/videos?exam=gre&amp;section=quant&amp;topic=Geometry&amp;limit=3" \
+  -H "Authorization: Bearer $TOKEN"</code></pre>
+
+<h3 id="s14-8"><span class="num">14.8</span><span>Materials</span></h3>
+
+<p>
+  All seven routes need a token. Each one scopes its query to the caller, either by
+  <code>_own_material</code> (404 <code>Material not found</code> if the material is not theirs) or by an
+  <code>.eq("user_id", ...)</code> on the question.
+</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Route</th><th>Input</th><th>Returns</th><th>Errors</th><th>Caller</th></tr></thead>
+<tbody>
+<tr><td><code>POST /api/materials</code></td><td>Multipart form: <code>exam</code>, <code>section</code> (required literals), <code>name</code>, <code>text</code>, <code>generate</code> (bool, default false), <code>file</code> (optional PDF or text)</td><td><code>{material, questions}</code>: the new <code>materials</code> row and the saved <code>custom_questions</code> rows, all <code>pending</code></td><td>413 over 4 MB; 400 unreadable file; 400 fewer than 40 readable characters; 422 no questions found</td><td><code>apiClient.uploadMaterial</code></td></tr>
+<tr><td><code>GET /api/materials</code></td><td>None</td><td><code>{materials}</code>, newest first, each with <code>question_count</code> and <code>approved_count</code></td><td>401</td><td><code>apiClient.getMaterials</code></td></tr>
+<tr><td><code>GET /api/materials/{material_id}/questions</code></td><td>Path: material UUID</td><td><code>{questions}</code> ordered by <code>id</code></td><td>404</td><td><code>apiClient.getMaterialQuestions</code></td></tr>
+<tr><td><code>PATCH /api/materials/questions/{question_id}</code></td><td>Path: int. Body <code>QuestionUpdate</code>: any of <code>question</code>, <code>options</code>, <code>correct_answer</code>, <code>explanation</code>, <code>status</code> (<code>pending</code> or <code>approved</code>)</td><td><code>{question}</code>, the updated row</td><td>404; 400 <code>The answer must be one of the choices.</code>; 400 <code>Pick the correct answer before approving this question.</code></td><td><code>apiClient.updateCustomQuestion</code> (sends only <code>correct_answer</code> and <code>status</code>)</td></tr>
+<tr><td><code>DELETE /api/materials/questions/{question_id}</code></td><td>Path: int</td><td><code>{success: true}</code>, even if nothing matched</td><td>401</td><td><code>apiClient.deleteCustomQuestion</code></td></tr>
+<tr><td><code>POST /api/materials/{material_id}/approve-all</code></td><td>Path: material UUID</td><td><code>{approved, needs_answer}</code> counts</td><td>404</td><td><code>apiClient.approveAllQuestions</code></td></tr>
+<tr><td><code>DELETE /api/materials/{material_id}</code></td><td>Path: material UUID</td><td><code>{success: true}</code></td><td>404</td><td><code>apiClient.deleteMaterial</code></td></tr>
+</tbody></table></div>
+
+<p>
+  Every caller is in <code>app/materials/page.tsx</code>. Uploading runs the regex parser in
+  <code>services/material_parser.py</code>, and calls the LLM too when <code>generate</code> is true or the
+  parser found nothing. The material row is inserted only once at least one question exists. These routes
+  do not catch database errors, so a missing table or a Supabase outage surfaces as the global 500, which
+  the browser sees as a CORS failure. A material id that is not a valid UUID makes PostgREST reject the
+  query, with the same result.
+</p>
+
+<pre><code>curl -s -X POST $API/api/materials \
+  -H "Authorization: Bearer $TOKEN" \
+  -F exam=sat -F section=quant -F name='Unit 3 quiz' -F generate=false \
+  -F file=@quiz.pdf
+
+curl -s -X PATCH $API/api/materials/questions/17 \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+  -d '{"correct_answer": 2, "status": "approved"}'</code></pre>
+
+<h3 id="s14-9"><span class="num">14.9</span><span>The frontend client</span></h3>
+
+<p>
+  <code>frontend/lib/api/client.ts</code> exports one instance, <code>apiClient</code>, of the class
+  <code>ApiClient</code>. Its base URL is <code>NEXT_PUBLIC_API_URL</code>, defaulting to
+  <code>http://localhost:8000</code>; <code>next.config.js</code> repeats the same default. The browser
+  calls the backend directly on that origin. <code>frontend/vercel.json</code> has an
+  <code>/api/:path*</code> rewrite to a placeholder Railway URL, but the client never uses relative
+  <code>/api</code> paths, so that rewrite does nothing.
+</p>
+
+<h4>Tokens</h4>
+<p>
+  The constructor reads <code>auth_token</code> from <code>localStorage</code>, or from the
+  <code>auth_token</code> cookie if storage is empty, copying it back to storage.
+  <code>setToken(token)</code> writes both, the cookie with <code>max-age=604800</code> and
+  <code>SameSite=Lax</code>; <code>setToken(null)</code> clears both. <code>login</code> and
+  <code>signup</code> call <code>setToken</code> when the response has an <code>access_token</code>;
+  <code>logout</code> calls <code>setToken(null)</code> in a <code>finally</code>, so the token is cleared
+  even if the request fails. There is no refresh: when the token expires, calls return 401 until the
+  user signs in again.
+</p>
+
+<h4>Requests and errors</h4>
+<p>
+  The private <code>request&lt;T&gt;(endpoint, options)</code> sets <code>Content-Type:
+  application/json</code>, adds <code>Authorization: Bearer</code> when a token is held, and fetches with
+  <code>mode: 'cors'</code> and <code>credentials: 'include'</code>. On a non-2xx response it parses the
+  body (falling back to <code>{detail: statusText}</code>) and throws <code>new Error(error.detail ||
+  'HTTP error! status: N')</code>. On success it returns parsed JSON when the content type is JSON, else
+  <code>{}</code>. Every failure is logged with <code>console.error('API request failed:', ...)</code> and
+  rethrown.
+</p>
+
+<p>
+  Three consequences follow. The status code is lost: callers see only a message, so a 401 and a 500
+  look alike, and nothing signs the user out on 401. A 422 has a list in <code>detail</code>, and
+  <code>new Error(list)</code> produces the message <code>[object Object]</code>; pages that show
+  <code>err.message</code> will show that. And a CORS-less 500 surfaces as a <code>TypeError</code> from
+  <code>fetch</code>, not as the server's message.
+</p>
+
+<p>
+  <code>uploadMaterial</code> is the one method that bypasses <code>request</code>: it builds a
+  <code>FormData</code> and calls <code>fetch</code> itself so the browser sets the multipart boundary, adds
+  the bearer header by hand, and throws <code>body.detail</code> the same way.
+  <code>getUserStats</code> and <code>getRecentSessions</code> catch everything and return
+  <code>null</code> and <code>[]</code>. <code>getQuestions</code> and <code>getTopics</code> have no
+  callers.
+</p>
+
+<h3 id="s14-10"><span class="num">14.10</span><span>Adding a route</span></h3>
+
+<ol>
+  <li>Put the handler in the router file for its area under <code>backend/src/api/</code>, or a new file
+  registered in <code>main.py</code> with a prefix and tag.</li>
+  <li>Depend on <code>get_current_user</code> and <code>get_db</code>; filter every query by
+  <code>current_user["id"]</code>.</li>
+  <li>Define request and response models in <code>backend/src/models/schemas.py</code> with real
+  constraints, and set <code>response_model</code>.</li>
+  <li>Raise <code>HTTPException</code> with a sentence a user can read; do not put
+  <code>str(e)</code> in it.</li>
+  <li>Add a typed method to <code>ApiClient</code> and call it from the page, not <code>fetch</code>.</li>
+  <li>Add the route to this chapter.</li>
+</ol>
+
+<h3 id="s14-11"><span class="num">14.11</span><span>Study notes</span></h3>
+<div class="study">
+<h4>Read in this order</h4>
+<ol>
+  <li><code>backend/src/main.py</code>, the prefixes, CORS and the exception handler.</li>
+  <li><code>backend/src/api/auth.py</code>, for <code>get_current_user</code>, which most routes depend on.</li>
+  <li><code>backend/src/models/schemas.py</code>, every request and response shape in one place.</li>
+  <li><code>backend/src/api/profile.py</code> and <code>stats.py</code>, the simplest authenticated routes.</li>
+  <li><code>backend/src/api/questions.py</code>, the optional-auth route and the agent call.</li>
+  <li><code>backend/src/api/materials.py</code>, multipart input and ownership checks.</li>
+  <li><code>frontend/lib/api/client.ts</code>, the other end of every row in this chapter.</li>
+</ol>
+<h4>Check yourself</h4>
+<p class="q">A game calls <code>GET /api/questions/?limit=10</code> and gets <code>{"questions": [], "total": 0}</code>. Why?</p>
+<p class="a"><code>use_agent</code> defaults to false, and without it the route builds no questions. Send <code>use_agent=true</code>, as <code>getAIQuestions</code> does.</p>
+<p class="q">The profile page shows the error "[object Object]". What status did the server return?</p>
+<p class="a">Almost certainly 422. Validation errors put a list in <code>detail</code>, and the client passes it straight to <code>new Error</code>.</p>
+<p class="q">Which material route reports success even when the id does not belong to the caller?</p>
+<p class="a"><code>DELETE /api/materials/questions/{id}</code>. It deletes nothing (the user filter matches no row) but always returns <code>{success: true}</code>.</p>
+<p class="q">Why does <code>uploadMaterial</code> not use <code>request()</code>?</p>
+<p class="a"><code>request()</code> forces <code>Content-Type: application/json</code>. A multipart body needs the browser to set the content type with its boundary.</p>
+<p class="q">Which fields of <code>GameAnalytics</code> does the server ignore?</p>
+<p class="a">The inner <code>gameId</code>, <code>accuracy</code>, each topic's <code>accuracy</code>, and everything in <code>streakInfo</code> except <code>maxStreak</code>.</p>
+</div>
+</section>

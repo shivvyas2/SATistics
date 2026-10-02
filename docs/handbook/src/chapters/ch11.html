@@ -1,0 +1,393 @@
+<section class="chapter" id="ch11" data-hue="dashboard">
+<p class="chapter-kicker">Chapter eleven</p>
+<h2><span class="num">11</span><span>Dashboard, statistics and sessions</span></h2>
+
+<p class="lede">
+  Every game and every mock exam ends the same way: the client posts one analytics object, the
+  backend writes a session row, one row per question attempted, and an updated running total for
+  the player. The dashboard and the statistics page are two views over those rows. This chapter
+  follows a finished game into the database and back out onto the screen, including how the weak
+  and strong topic lists are worked out and the places where the numbers are rougher than they
+  look.
+</p>
+
+<h3 id="s11-1"><span class="num">11.1</span><span>Intent</span></h3>
+
+<p>
+  The dashboard answers one question when you sign in: what should I do next? It names a focus
+  topic, offers a game to practice it and a lesson to study it, and shows videos on it. Everything
+  else on the page (the numbers, the recent sessions, the courses, the games you have not tried)
+  supports that one suggestion.
+</p>
+
+<p>
+  The statistics page answers a different question: how am I doing? It shows totals, a right and
+  wrong bar for every answer so far, an accuracy trend, the weak and strong topics, and a record per
+  game.
+</p>
+
+<p>
+  The storage design behind both is deliberately simple. Raw history lives in
+  <code>game_sessions</code> and <code>question_attempts</code>; a single
+  <code>user_stats</code> row per player holds running totals so neither page has to aggregate
+  history on every load.
+</p>
+
+<figure>
+<svg class="diagram" viewBox="0 0 860 300" role="img" aria-label="A game container's onGameOver calls apiClient.saveScore, which posts to /api/games/save-score. The route calls GameService.save_game_session, which inserts one game_sessions row, inserts question_attempts rows, and reads then updates or inserts user_stats. The dashboard and stats page read user_stats through GET /api/stats/user and game_sessions through GET /api/stats/sessions.">
+  <defs>
+    <marker id="ch11a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head" points="0,0 10,5 0,10"/></marker>
+    <marker id="ch11b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head-hot" points="0,0 10,5 0,10"/></marker>
+  </defs>
+  <text class="lbl-sm" x="20" y="24">BROWSER</text>
+  <text class="lbl-sm" x="250" y="24">FASTAPI</text>
+  <text class="lbl-sm" x="650" y="24">POSTGRES</text>
+
+  <rect class="box" x="20" y="40" width="190" height="56" rx="8"/><text class="lbl" x="115" y="64" text-anchor="middle">game container</text><text class="lbl-sm" x="115" y="84" text-anchor="middle">onGameOver, saveScore</text>
+  <rect class="box-alt" x="20" y="200" width="190" height="56" rx="8"/><text class="lbl" x="115" y="224" text-anchor="middle">dashboard, stats</text><text class="lbl-sm" x="115" y="244" text-anchor="middle">getUserStats, sessions</text>
+
+  <rect class="box" x="250" y="40" width="200" height="56" rx="8"/><text class="lbl" x="350" y="64" text-anchor="middle">POST /api/games</text><text class="lbl-sm" x="350" y="84" text-anchor="middle">/save-score</text>
+  <rect class="box-hot" x="250" y="120" width="340" height="56" rx="10"/><text class="lbl" x="420" y="144" text-anchor="middle">GameService.save_game_session</text><text class="lbl-hot" x="420" y="164" text-anchor="middle">insert, insert, read then write</text>
+  <rect class="box" x="250" y="200" width="200" height="56" rx="8"/><text class="lbl" x="350" y="224" text-anchor="middle">GET /api/stats</text><text class="lbl-sm" x="350" y="244" text-anchor="middle">/user, /sessions</text>
+
+  <rect class="box" x="650" y="40" width="190" height="40" rx="8"/><text class="lbl" x="745" y="65" text-anchor="middle">game_sessions</text>
+  <rect class="box" x="650" y="128" width="190" height="40" rx="8"/><text class="lbl" x="745" y="153" text-anchor="middle">question_attempts</text>
+  <rect class="box" x="650" y="216" width="190" height="40" rx="8"/><text class="lbl" x="745" y="241" text-anchor="middle">user_stats</text>
+
+  <path class="flow" d="M210 68 L 244 68" marker-end="url(#ch11a)"/>
+  <path class="flow" d="M350 96 L 350 114" marker-end="url(#ch11a)"/>
+  <path class="flow-hot" d="M590 135 L 620 135 L 620 60 L 644 60" marker-end="url(#ch11b)"/>
+  <path class="flow-hot" d="M590 148 L 644 148" marker-end="url(#ch11b)"/>
+  <path class="flow-hot" d="M590 162 L 620 162 L 620 236 L 644 236" marker-end="url(#ch11b)"/>
+  <path class="flow-dash" d="M450 228 L 470 228 L 470 270 L 760 270 L 760 262" marker-end="url(#ch11a)"/>
+  <path class="flow-dash" d="M450 214 L 610 214 L 610 90 L 644 90" marker-end="url(#ch11a)"/>
+  <path class="flow" d="M210 228 L 244 228" marker-end="url(#ch11a)"/>
+</svg>
+<figcaption>
+  One write path and two read endpoints. The write is three separate statements, not a
+  transaction; the reads never touch <code>question_attempts</code>.
+</figcaption>
+</figure>
+
+<h3 id="s11-2"><span class="num">11.2</span><span>Files and folders</span></h3>
+
+<pre class="tree">frontend/app/dashboard/page.tsx         greeting, Up next, numbers, videos, sessions, aside
+frontend/app/stats/page.tsx             totals, answer bar, AccuracyTrend, TopicList, by game, recent
+frontend/lib/sessions.ts                GameSession, useRecentSessions, recordsByGame, timeAgo
+frontend/lib/gameMeta.ts                gameTitle, including 'mock-exam'
+frontend/lib/api/client.ts              saveScore, getUserStats, getRecentSessions
+frontend/components/*GameContainer.tsx  each game's onGameOver calls saveScore
+frontend/app/mock/page.tsx              mock exams save as game 'mock-exam'
+
+backend/src/api/games.py                POST /api/games/save-score
+backend/src/api/stats.py                GET /api/stats/user, GET /api/stats/sessions
+backend/src/services/game_service.py    GameService: session, attempts, user_stats
+backend/src/services/supabase_agent_ops.py  SupabaseAgentOps: reads for the question agent
+backend/src/models/schemas.py           GameAnalytics, SaveScoreRequest, UserStatsResponse, GameSessionResponse
+backend/database/schema.sql             the three tables, indexes, RLS
+backend/database/add_user_id_to_attempts.sql  question_attempts.user_id</pre>
+
+<h3 id="s11-3"><span class="num">11.3</span><span>Model</span></h3>
+
+<p>
+  <b>The analytics object.</b> Every game builds the same shape, checked on the server by
+  <code>GameAnalytics</code> in <code>schemas.py</code>:
+</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Field</th><th>Type</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>gameId</code></td><td>str</td><td>The game, repeated inside the analytics</td></tr>
+<tr><td><code>score</code></td><td>int</td><td>Points for the round</td></tr>
+<tr><td><code>accuracy</code></td><td>float</td><td>Percent, 0 to 100, as the game computed it (the server ignores it)</td></tr>
+<tr><td><code>correctAnswers</code>, <code>wrongAnswers</code></td><td>int</td><td>Counts for the round</td></tr>
+<tr><td><code>questionAttempts</code></td><td>list</td><td><code>questionId</code>, <code>topic</code>, <code>difficulty</code>, <code>isCorrect</code>, <code>timeSpent</code> (ms)</td></tr>
+<tr><td><code>topicPerformance</code></td><td>dict</td><td>Per topic: <code>correct</code>, <code>total</code>, <code>accuracy</code> (percent)</td></tr>
+<tr><td><code>streakInfo</code></td><td>dict</td><td>Free-form; the server reads <code>maxStreak</code></td></tr>
+<tr><td><code>averageResponseTime</code></td><td>int</td><td>Milliseconds</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  <code>SaveScoreRequest</code> wraps it as <code>{ gameId, analytics }</code>. The outer
+  <code>gameId</code> is the one stored.
+</p>
+
+<p>
+  <b>Tables.</b> <code>backend/database/schema.sql</code> creates three tables, all with row level
+  security and all cascading from <code>auth.users</code>.
+</p>
+
+<ul>
+  <li><code>game_sessions</code>: a uuid <code>id</code>, <code>user_id</code>,
+  <code>game_id</code>, <code>score</code>, <code>accuracy</code> as <code>DECIMAL(5, 4)</code> (a
+  fraction from 0 to 1), <code>correct_answers</code>, <code>wrong_answers</code>,
+  <code>max_streak</code>, <code>average_response_time</code> and <code>created_at</code>. Indexed on
+  <code>user_id</code> and on <code>created_at DESC</code>.</li>
+  <li><code>question_attempts</code>: a uuid <code>id</code>, <code>session_id</code> (cascading from
+  the session), <code>question_id</code> as an integer, <code>topic</code>, <code>difficulty</code>,
+  <code>is_correct</code>, <code>time_spent</code> and <code>created_at</code>.
+  <code>add_user_id_to_attempts.sql</code> adds a denormalized, not-null <code>user_id</code>, two
+  indexes (<code>user_id</code>, and <code>user_id, topic</code>) and rewrites the policies to use it,
+  so per-user topic queries skip the join.</li>
+  <li><code>user_stats</code>: one row per user (<code>user_id</code> is unique) with
+  <code>total_games_played</code>, <code>total_score</code>,
+  <code>total_questions_answered</code>, <code>total_correct</code>, <code>total_wrong</code>,
+  <code>overall_accuracy</code> (a fraction), <code>favorite_game</code>, <code>weak_topics</code>
+  and <code>strong_topics</code> as <code>TEXT[]</code>, and <code>updated_at</code>.</li>
+</ul>
+
+<p>
+  On the client, <code>frontend/lib/sessions.ts</code> declares <code>GameSession</code> with the
+  same fields as <code>GameSessionResponse</code>, and <code>GameRecord</code>
+  (<code>gameId</code>, <code>plays</code>, <code>bestScore</code>, <code>lastPlayed</code>) for the
+  per-game rollup.
+</p>
+
+<h3 id="s11-4"><span class="num">11.4</span><span>The server side</span></h3>
+
+<p>
+  <b>Saving.</b> <code>POST /api/games/save-score</code> in <code>backend/src/api/games.py</code>
+  takes a <code>SaveScoreRequest</code>, resolves the user with <code>get_current_user</code> and
+  calls <code>GameService(db).save_game_session(user_id, game_id, analytics)</code>. A failure is a
+  500 with the error text; success returns <code>{ success: true, sessionId }</code>.
+</p>
+
+<p>
+  <code>save_game_session</code> in <code>backend/src/services/game_service.py</code> does three
+  things in order, each its own request to Supabase:
+</p>
+
+<ol>
+  <li>Insert the <code>game_sessions</code> row. <code>accuracy</code> is recomputed by
+  <code>_accuracy</code> as <code>correct / (correct + wrong)</code>, or 0 when there were no
+  answers, so the game's own percentage is never trusted. <code>max_streak</code> is
+  <code>streakInfo.get("maxStreak", 0)</code>.</li>
+  <li>If there are attempts, insert all of them in one call with the new <code>session_id</code> and
+  the <code>user_id</code>.</li>
+  <li>Call <code>_update_user_stats</code>.</li>
+</ol>
+
+<p>
+  Any exception is caught and returned as <code>{ success: False, error }</code>.
+</p>
+
+<p>
+  <b>Weak and strong topics.</b> <code>_update_user_stats</code> first classifies this round's
+  topics from <code>topicPerformance</code>, working from the counts rather than the game's
+  percentage (the comment notes that games report it as a percent). A topic with at least one
+  question is <b>weak</b> if fewer than half were right, <b>strong</b> if at least 80 percent were,
+  and neither in between.
+</p>
+
+<p>
+  If the player has no <code>user_stats</code> row yet, it inserts one with this round's totals and
+  lists. Otherwise it adds this round to each total, recomputes <code>overall_accuracy</code> as
+  <code>total_correct / total_questions_answered</code>, and merges the lists:
+</p>
+
+<pre>merged_weak   = (existing_weak   - this_round_strong) | this_round_weak
+merged_strong = (existing_strong - this_round_weak)   | this_round_strong</pre>
+
+<p>
+  So a topic moves from weak to strong (or back) as soon as one round says so, and a topic that
+  lands in the middle band keeps whatever label it had. The lists are sets converted to Python lists,
+  so their order is arbitrary.
+</p>
+
+<div class="note caution"><b>Favorite game is never computed.</b> <code>favorite_game</code> exists
+in the table, the response model and the dashboard's types, but no code writes it, so it is always
+<code>null</code>. The dashboard falls back to the most recently played game (section 11.6). To make
+it real, compute the most-played <code>game_id</code> from <code>game_sessions</code> in
+<code>_update_user_stats</code> and write it with the other totals.</div>
+
+<p>
+  <b>Reading.</b> <code>backend/src/api/stats.py</code> has two routes.
+  <code>GET /api/stats/user</code> returns the caller's <code>user_stats</code> row as
+  <code>UserStatsResponse</code>, or an all-zero response with empty lists and an empty
+  <code>updated_at</code> if there is no row. <code>GET /api/stats/sessions?limit=</code> returns the
+  newest <code>limit</code> sessions (default 10), newest first, as a list of
+  <code>GameSessionResponse</code>. Neither reads <code>question_attempts</code>.
+</p>
+
+<p>
+  <b>The agent's view.</b> <code>SupabaseAgentOps</code> in
+  <code>backend/src/services/supabase_agent_ops.py</code> is a set of static methods over the same
+  tables for the AI question agent in <code>agent.py</code>. Two are in use:
+  <code>get_user_performance</code> reads <code>user_stats</code> and reports accuracy as a percent;
+  <code>get_topic_performance</code> reads every <code>question_attempts</code> row for the user and
+  aggregates <code>total</code>, <code>correct</code>, <code>accuracy</code> and
+  <code>avg_time</code> per topic. That is the only place per-attempt history is read. The class also
+  has <code>save_game_session</code>, <code>save_question_attempts</code> and
+  <code>update_user_stats</code>, a second write path that expects a different, snake_case
+  <code>game_data</code> dictionary and never updates topic lists. Their only caller,
+  <code>ExamLearningAgent.update_performance</code>, is never called, so these three methods are
+  dead code. Games save through <code>GameService</code> only.
+</p>
+
+<h3 id="s11-5"><span class="num">11.5</span><span>The client</span></h3>
+
+<p>
+  <b>Saving.</b> Each game container (<code>ZombieGameContainer</code>,
+  <code>WhackAMoleGameContainer</code>, <code>CarnivalGameContainer</code>,
+  <code>SubwaySurfersGameContainer</code>, <code>SquidGameContainer</code>,
+  <code>PacManGameContainer</code>) registers an <code>onGameOver</code> handler that shows the
+  results screen (the four arcade-style games also record a local high score) and then calls
+  <code>apiClient.saveScore(gameId, analytics)</code>, logging any error to the console. The mock
+  exam in <code>frontend/app/mock/page.tsx</code> builds the same object itself, with a score of
+  100 per correct answer and the game id <code>'mock-exam'</code>. <code>saveScore</code> posts
+  <code>{ gameId, analytics }</code> to <code>/api/games/save-score</code>.
+</p>
+
+<p>
+  <b>Reading.</b> <code>getUserStats()</code> returns the stats object, or <code>null</code> on
+  any error or an empty body. <code>getRecentSessions(limit)</code> returns an array, or
+  <code>[]</code> on error. <code>useRecentSessions(limit)</code> in <code>sessions.ts</code> wraps the
+  second in state that starts as <code>null</code> (loading).
+</p>
+
+<p>
+  <code>recordsByGame(sessions)</code> walks the sessions, which arrive newest first, and builds one
+  <code>GameRecord</code> per game in a <code>Map</code>: plays counted, best score kept, and
+  <code>lastPlayed</code> taken from the first (newest) session seen. Map insertion order makes the
+  result most recently played first. <code>timeAgo(iso)</code> formats "just now", "<i>n</i> min
+  ago", "<i>n</i> h ago", "yesterday" or "<i>n</i> days ago", rounding at each step.
+</p>
+
+<h3 id="s11-6"><span class="num">11.6</span><span>How it works</span></h3>
+
+<p>
+  <b>The dashboard</b>, <code>frontend/app/dashboard/page.tsx</code>, loads the account, the stats
+  and the last 20 sessions, and derives everything else.
+</p>
+
+<ul>
+  <li><b>Greeting.</b> "Morning" before noon, "Afternoon" before 6 pm, else "Evening", plus the first
+  word of the display name (or the email's local part). Under it, a test-day countdown if the
+  profile has a future date, and the daily goal in minutes. An account without a profile gets a
+  lime "Finish your profile" card.</li>
+  <li><b>The exam and its courses.</b> The exam comes from the profile, defaulting to SAT;
+  <code>courses</code> are the two <code>COURSES</code> for that exam.</li>
+  <li><b>Focus topics.</b> <code>weak_topics</code> filtered to topics that belong to this exam's
+  courses. <code>focusTopic</code> is the first of them, or the first topic of the first course
+  (SAT Algebra, GRE Arithmetic) when there are none.</li>
+  <li><b>Next game.</b> <code>favorite_game</code> if it is a known game, else the game of the most
+  recent session, else <code>'whackamole'</code>. Since <code>favorite_game</code> is always null
+  today, this is in practice "the last thing you played".</li>
+  <li><b>Up next.</b> A cobalt-soft card names the focus topic, says whether it is your weakest topic
+  or a good place to start, and offers "Play <i>game</i>" and "Study the lesson". Playing calls
+  <code>practice(course)</code>, which stores the course's exam and section with
+  <code>setExamPrefs</code> and pushes to <code>/games/&lt;nextGameId&gt;/select</code>. The game's
+  cover fills the right side.</li>
+  <li><b>Numbers.</b> Games played, accuracy (the stored fraction times 100) and questions answered,
+  each with a skeleton until stats arrive.</li>
+  <li><b>Watch.</b> <code>RecommendedVideos</code> asks for three videos on the focus topic through
+  <code>useTopicVideos</code> and hides itself if none come back.</li>
+  <li><b>Recent sessions.</b> Up to eight <code>SessionCard</code>s, tinted lime-soft at 80 percent
+  accuracy or more, white at 50 or more, coral-soft below, with right and wrong counts, best streak,
+  an accuracy bar and the score. With no sessions, a dashed empty state links to the games.</li>
+  <li><b>The aside.</b> The exam's courses as tiles (each starts <code>practice</code>), up to four
+  focus topics with a "Practice" button, and "Haven't tried yet": up to four games whose id is not
+  among the last 20 sessions, drawn with <code>GameCover</code>.</li>
+</ul>
+
+<p>
+  <b>The statistics page</b>, <code>frontend/app/stats/page.tsx</code>, loads stats and the last 50
+  sessions. Until both arrive it shows four skeleton tiles; if <code>total_games_played</code> is 0
+  (or stats failed) it shows "Nothing to show yet". Otherwise:
+</p>
+
+<ul>
+  <li>Four tiles: games played, accuracy, questions answered, and best streak, which is the maximum
+  <code>max_streak</code> over the 50 loaded sessions.</li>
+  <li>"Every answer so far": a lime segment over a coral bar, sized by
+  <code>overall_accuracy</code>, labelled with the totals.</li>
+  <li><code>AccuracyTrend</code>, when there are at least two sessions: up to
+  <code>TREND_LENGTH</code> (12) bars, oldest on the left, colored lime, cobalt or coral by the same
+  80 and 50 percent thresholds, each with a <code>title</code> naming the game.</li>
+  <li>Two <code>TopicList</code>s, "Work on these" and "Going well". Their empty hints state the
+  rules in plain words: under half right, and at least four in five.</li>
+  <li>"By game" from <code>recordsByGame</code>, each linking to that game's select page, and the
+  newest 15 sessions as a list.</li>
+</ul>
+
+<h3 id="s11-7"><span class="num">11.7</span><span>Edge cases and tests</span></h3>
+
+<p>
+  There are no automated tests for this area. These are the behaviors to know.
+</p>
+
+<ul>
+  <li><b>Mock exams are sessions too.</b> A mock exam is stored with <code>game_id</code>
+  <code>'mock-exam'</code>. When picking "Up next", the dashboard skips any session whose id is not
+  in <code>games</code>, so a mock exam never becomes the suggested game. The stats page's "By game"
+  card still links mock exams to <code>/games/mock-exam/select</code>, which renders "That game
+  doesn't exist"; it should link to <code>/mock</code> instead.</li>
+  <li><b>Topic labels are jumpy.</b> Labels come from single rounds, so one wrong answer in a topic
+  marks it weak until a later round scores 80 percent or better on it. They are not computed from
+  the attempt history, even though <code>get_topic_performance</code> could.</li>
+  <li><b>No transaction.</b> If the attempts insert or the stats update fails after the session
+  insert, the route returns 500 but the session row stays, and the totals miss that round. The
+  client does not retry, so nothing is duplicated, but nothing is repaired either.</li>
+  <li><b>Lost updates.</b> <code>_update_user_stats</code> reads the row, adds in Python and writes
+  it back. Two games finishing at the same moment for one player (two tabs) can overwrite each
+  other. A Postgres function doing the increment in one statement would fix it.</li>
+  <li><b>Silent failures.</b> <code>getUserStats</code> returns <code>null</code> on error. The stats
+  page then shows "Nothing to show yet"; the dashboard's number tiles keep their skeletons, because
+  they treat <code>null</code> as "still loading".</li>
+  <li><b>Windows, not history.</b> "Haven't tried yet" looks at the last 20 sessions and "Best
+  streak" at the last 50, so a game played long ago can reappear as untried and an old streak can
+  drop off.</li>
+  <li><b>Unbounded limit.</b> <code>/api/stats/sessions</code> accepts any <code>limit</code>; the
+  clients ask for 20 and 50. Add an upper bound with <code>Query(..., le=...)</code> if you expose
+  it further.</li>
+  <li><b>Question ids are integers.</b> <code>question_attempts.question_id</code> and
+  <code>QuestionAttempt.questionId</code> are both integers; a question source with string ids must
+  map them first or the whole save fails validation.</li>
+  <li><b>Leftovers.</b> <code>games.py</code> declares an unused <code>security = HTTPBearer()</code>,
+  and <code>backend/src/api/games.ts</code>, <code>backend/src/services/gameScoreService.ts</code>
+  and <code>backend/src/types/database.ts</code> are TypeScript from an earlier design that the
+  FastAPI app never loads.</li>
+</ul>
+
+<p>
+  To check the path by hand, finish a short game, then compare the new <code>game_sessions</code>
+  row, its <code>question_attempts</code> and the <code>user_stats</code> row in the Supabase table
+  editor against the results screen. A good unit test would call <code>_update_user_stats</code>
+  with a stub client and assert the merged lists for a topic that moves from weak to strong.
+</p>
+
+<h3 id="s11-8"><span class="num">11.8</span><span>Study notes</span></h3>
+
+<div class="study">
+<h4>Read in this order</h4>
+<ol>
+  <li><code>backend/database/schema.sql</code>, then <code>add_user_id_to_attempts.sql</code>.</li>
+  <li><code>backend/src/models/schemas.py</code>, <code>GameAnalytics</code> through <code>GameSessionResponse</code>.</li>
+  <li><code>backend/src/services/game_service.py</code>, all of it.</li>
+  <li><code>backend/src/api/games.py</code> and <code>backend/src/api/stats.py</code>.</li>
+  <li>One game container's <code>onGameOver</code>, for example <code>frontend/components/WhackAMoleGameContainer.tsx</code>.</li>
+  <li><code>frontend/lib/sessions.ts</code>.</li>
+  <li><code>frontend/app/dashboard/page.tsx</code>, then <code>frontend/app/stats/page.tsx</code>.</li>
+  <li><code>backend/src/services/supabase_agent_ops.py</code>, to see the read side the agent uses.</li>
+</ol>
+<h4>Check yourself</h4>
+<p class="q">A round has 3 Geometry questions and the player gets 2 right. Geometry was weak before. What is it after?</p>
+<p class="a">Still weak. Two out of three is about 67 percent, which is neither under 50 nor at least
+80, so this round adds Geometry to neither list and the existing label stands.</p>
+<p class="q">Why does the server recompute accuracy instead of storing the game's value?</p>
+<p class="a">Games report accuracy as a percent while the columns hold a fraction from 0 to 1, and
+the counts are the source of truth. <code>_accuracy</code> derives it from
+<code>correctAnswers</code> and <code>wrongAnswers</code>.</p>
+<p class="q">The dashboard suggests the game you played last, not the one you play most. Why?</p>
+<p class="a"><code>favorite_game</code> is never written, so the fallback runs: the first record from
+<code>recordsByGame</code>, which is the most recent session's game.</p>
+<p class="q">Which endpoint reads <code>question_attempts</code>?</p>
+<p class="a">None. The stats routes read <code>user_stats</code> and <code>game_sessions</code> only;
+the attempts are read by <code>SupabaseAgentOps.get_topic_performance</code> for the question
+agent.</p>
+<p class="q">What happens to a player's totals if <code>saveScore</code> fails because their token expired?</p>
+<p class="a">Nothing is written. The request fails with 401, the container logs the error, and the
+round exists only on the results screen and in the local arcade high score.</p>
+</div>
+</section>

@@ -1,0 +1,492 @@
+<section class="chapter" id="ch07" data-hue="questions">
+<p class="chapter-kicker">Chapter seven</p>
+<h2><span class="num">7</span><span>The question engine</span></h2>
+
+<p class="lede">
+  One endpoint builds every question set the games play. It mixes in the user's own approved
+  questions, pulls official SAT questions from the College Board, asks an LLM to copy questions
+  from web pages or write new ones for whatever is still missing, and tags each question with
+  where it came from. When any of that fails, the browser falls back to a small built-in bank, so
+  a game always starts.
+</p>
+
+<h3 id="s7-1"><span class="num">7.1</span><span>Intent</span></h3>
+
+<p>
+  The project's promise is real exam questions inside arcade games. "Real" is the hard part. The
+  College Board publishes its Educator Question Bank behind an open JSON API, so SAT questions can
+  be official. ETS does not publish GRE questions for reuse, so for the GRE the engine searches
+  the web for practice pages and asks a model to copy out questions that are actually on them,
+  writing original ones only to fill the gap. Every question carries a <code>source</code> so the
+  game can say honestly where it came from.
+</p>
+
+<p>
+  The engine is also personal. Before it picks anything it reads the user's weak topics from
+  Supabase and leans the selection toward them. And it is game-aware: a fast arcade game asks for
+  <code>pace=quick</code> and gets short questions; the slow game asks for <code>pace=deep</code>
+  and gets passages and multi-step problems. The exam, section and pace model is
+  <a href="#ch06">chapter 6</a>.
+</p>
+
+<figure>
+<svg class="diagram" viewBox="0 0 860 470" role="img" aria-label="A game container in the browser calls fetchAIQuestions, which calls GET /api/questions on FastAPI. The route loads the user's approved custom questions from Supabase, then runs the ExamLearningAgent, which reads performance from Supabase, fetches SAT questions from the College Board question bank, and sends the shortfall to an LLM step that searches DuckDuckGo, reads pages and calls OpenRouter. If the request fails or returns nothing, the browser uses the offline bank. Questions end up in QuestionCard or the canvas.">
+  <defs>
+    <marker id="ch07a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head" points="0,0 10,5 0,10"/></marker>
+    <marker id="ch07b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head-hot" points="0,0 10,5 0,10"/></marker>
+  </defs>
+  <text class="lbl-sm" x="30" y="24">BROWSER</text>
+  <text class="lbl-sm" x="270" y="24">FASTAPI</text>
+  <text class="lbl-sm" x="620" y="24">OUTSIDE</text>
+
+  <rect class="box" x="30" y="44" width="190" height="50" rx="8"/>
+  <text class="lbl" x="125" y="64" text-anchor="middle">Game container</text>
+  <text class="lbl-sm" x="125" y="82" text-anchor="middle">getExamPrefs, gamePace</text>
+
+  <rect class="box" x="30" y="140" width="190" height="50" rx="8"/>
+  <text class="lbl" x="125" y="160" text-anchor="middle">fetchAIQuestions</text>
+  <text class="lbl-sm" x="125" y="178" text-anchor="middle">lib/api/questions.ts</text>
+
+  <rect class="box-alt" x="30" y="290" width="190" height="50" rx="8"/>
+  <text class="lbl" x="125" y="310" text-anchor="middle">getBankQuestions</text>
+  <text class="lbl-sm" x="125" y="328" text-anchor="middle">36 built-in questions</text>
+
+  <rect class="box" x="30" y="396" width="190" height="50" rx="8"/>
+  <text class="lbl" x="125" y="416" text-anchor="middle">QuestionCard or canvas</text>
+  <text class="lbl-sm" x="125" y="434" text-anchor="middle">QuestionContent, hints</text>
+
+  <rect class="box" x="270" y="44" width="270" height="50" rx="8"/>
+  <text class="lbl" x="405" y="64" text-anchor="middle">load_custom_questions</text>
+  <text class="lbl-sm" x="405" y="82" text-anchor="middle">signed in only, up to limit // 2</text>
+
+  <rect class="box-hot" x="270" y="136" width="270" height="58" rx="10"/>
+  <text class="lbl" x="405" y="160" text-anchor="middle">GET /api/questions</text>
+  <text class="lbl-hot" x="405" y="180" text-anchor="middle">use_agent=true</text>
+
+  <rect class="box" x="270" y="236" width="270" height="50" rx="8"/>
+  <text class="lbl" x="405" y="256" text-anchor="middle">ExamLearningAgent</text>
+  <text class="lbl-sm" x="405" y="274" text-anchor="middle">analyze_performance, then sources</text>
+
+  <rect class="box" x="270" y="336" width="270" height="50" rx="8"/>
+  <text class="lbl" x="405" y="356" text-anchor="middle">_questions_from_llm</text>
+  <text class="lbl-sm" x="405" y="374" text-anchor="middle">the shortfall, at most 25</text>
+
+  <rect class="box" x="620" y="44" width="220" height="50" rx="8"/>
+  <text class="lbl" x="730" y="64" text-anchor="middle">Supabase</text>
+  <text class="lbl-sm" x="730" y="82" text-anchor="middle">custom_questions, user_stats</text>
+
+  <rect class="box-alt" x="620" y="236" width="220" height="50" rx="8"/>
+  <text class="lbl" x="730" y="256" text-anchor="middle">College Board qbank</text>
+  <text class="lbl-sm" x="730" y="274" text-anchor="middle">SAT only, no key</text>
+
+  <rect class="box" x="620" y="326" width="220" height="40" rx="8"/>
+  <text class="lbl" x="730" y="351" text-anchor="middle">DuckDuckGo and pages</text>
+
+  <rect class="box" x="620" y="396" width="220" height="50" rx="8"/>
+  <text class="lbl" x="730" y="416" text-anchor="middle">OpenRouter</text>
+  <text class="lbl-sm" x="730" y="434" text-anchor="middle">OPENROUTER_MODEL</text>
+
+  <path class="flow" d="M125 94 L 125 134" marker-end="url(#ch07a)"/>
+  <path class="flow-hot" d="M220 165 L 264 165" marker-end="url(#ch07b)"/>
+  <path class="flow" d="M405 136 L 405 100" marker-end="url(#ch07a)"/>
+  <path class="flow" d="M540 69 L 614 69" marker-end="url(#ch07a)"/>
+  <path class="flow-hot" d="M405 194 L 405 230" marker-end="url(#ch07b)"/>
+  <path class="flow-hot" d="M540 261 L 614 261" marker-end="url(#ch07b)"/>
+  <path class="flow-dash" d="M540 248 L 580 248 L 580 84 L 614 84" marker-end="url(#ch07a)"/>
+  <path class="flow" d="M405 286 L 405 330" marker-end="url(#ch07a)"/>
+  <path class="flow" d="M540 350 L 580 350 L 580 346 L 614 346" marker-end="url(#ch07a)"/>
+  <path class="flow" d="M540 372 L 580 372 L 580 421 L 614 421" marker-end="url(#ch07a)"/>
+  <path class="flow-dash" d="M125 190 L 125 284" marker-end="url(#ch07a)"/>
+  <text class="lbl-sm" x="133" y="242">empty or error</text>
+  <path class="flow" d="M125 340 L 125 390" marker-end="url(#ch07a)"/>
+  <path class="flow-hot" d="M30 178 L 14 178 L 14 421 L 24 421" marker-end="url(#ch07b)"/>
+
+  <line class="wall" x1="250" y1="34" x2="250" y2="456"/>
+  <line class="wall" x1="600" y1="34" x2="600" y2="456"/>
+</svg>
+<figcaption>
+  The hot path is a signed-in SAT request: custom questions, then official questions, then the
+  model for anything missing. The dashed path on the left is the offline fallback in the browser.
+  The dashed path on the right is the performance read that picks the weak topics.
+</figcaption>
+</figure>
+
+<h3 id="s7-2"><span class="num">7.2</span><span>Files and folders</span></h3>
+
+<pre class="tree">backend/src/api/questions.py              GET /api/questions, GET /api/questions/topics
+backend/src/services/agent.py             ExamLearningAgent, get_llm_client, extract_json,
+                                          LLM_MODEL, MAX_LLM_QUESTIONS, PACE_REQUIREMENTS
+backend/src/services/question_sources.py  CollegeBoardSource, WebQuestionSource,
+                                          is_quick_question, _balance_difficulty, normalize_text
+backend/src/services/custom_questions.py  load_custom_questions, to_game_question
+backend/src/services/supabase_agent_ops.py   get_user_performance, get_topic_performance
+backend/src/utils/html_utils.py           sanitize_html, html_to_text, has_figure
+
+frontend/lib/api/questions.ts             SATQuestion, fetchAIQuestions, fetchQuestionsWithCache
+frontend/lib/api/client.ts                apiClient.getAIQuestions
+frontend/lib/questionBank.ts              the offline bank, getBankQuestions
+frontend/components/QuestionContent.tsx   renders HTML/MathML or plain text
+frontend/components/exam/QuestionCard.tsx the in-game question panel, sourceLabel
+frontend/lib/hints.ts                     strategyHint, whyNot, insightFor, eliminationHint
+frontend/components/exam/HintButton.tsx
+frontend/components/exam/useQuestionHints.ts</pre>
+
+<h3 id="s7-3"><span class="num">7.3</span><span>Model</span></h3>
+
+<h4>The request</h4>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Query param</th><th>Default</th><th>Effect</th></tr></thead>
+<tbody>
+<tr><td><code>limit</code></td><td class="num-cell">10</td><td>1 to 100</td></tr>
+<tr><td><code>use_agent</code></td><td>false</td><td>Must be true to get anything; the client always sends true</td></tr>
+<tr><td><code>use_web_search</code></td><td>true</td><td>Lets the LLM step search the web first</td></tr>
+<tr><td><code>exam</code>, <code>section</code></td><td>sat, quant</td><td><code>Literal</code> types, anything else is a 422</td></tr>
+<tr><td><code>pace</code></td><td>none</td><td><code>quick</code> or <code>deep</code></td></tr>
+<tr><td><code>include_custom</code></td><td>true</td><td>Mix in the user's approved questions</td></tr>
+<tr><td><code>topic</code>, <code>difficulty</code></td><td>none</td><td>Declared but never read</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  Auth is optional. <code>get_current_user_optional</code> uses <code>HTTPBearer(auto_error=False)</code>
+  and returns <code>None</code> on a missing or bad token instead of failing, so the endpoint
+  serves guests. A guest is analysed as user <code>00000000-0000-0000-0000-000000000000</code>,
+  which has no stats, and gets no custom questions.
+</p>
+
+<h4>Sources and ids</h4>
+
+<div class="tablewrap"><table>
+<thead><tr><th>source</th><th>Made by</th><th>id</th></tr></thead>
+<tbody>
+<tr><td><code>official</code></td><td><code>CollegeBoardSource._normalize</code></td><td><code>int(questionId, 16) &amp; 0x7FFFFFFF</code></td></tr>
+<tr><td><code>web</code>, <code>ai</code></td><td><code>_normalize_llm_question</code></td><td><code>zlib.crc32(stem) &amp; 0x7FFFFFFF</code></td></tr>
+<tr><td><code>custom</code></td><td><code>to_game_question</code></td><td><code>CUSTOM_ID_OFFSET</code> (1,500,000,000) plus the row id</td></tr>
+<tr><td><code>practice</code></td><td><code>getBankQuestions</code> in the browser</td><td>9001 to 9309</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  Ids matter because game sessions store <code>questionId</code> per attempt. The offset is
+  meant to keep custom ids apart from the others, but the masked hash and hex ids range up to
+  2,147,483,647, so a collision is possible, just unlikely.
+</p>
+
+<h3 id="s7-4"><span class="num">7.4</span><span>The server side</span></h3>
+
+<h4>The route</h4>
+
+<p>
+  <code>get_questions</code> in <code>backend/src/api/questions.py</code> does four things when
+  <code>use_agent</code> is true. If the caller is signed in and <code>include_custom</code> is
+  set, it loads up to <code>limit // 2</code> custom questions on a worker thread. It builds an
+  <code>ExamLearningAgent</code> and asks it for <code>limit - len(custom)</code> more. It
+  validates the combined list through the <code>Question</code> model and shuffles it. If the
+  agent raises, it logs and returns the custom questions alone. Any other error becomes a 500.
+</p>
+
+<div class="note caution"><b>use_agent=false returns nothing.</b> The docstring and the
+fallback comment mention static questions, but there is no static bank on the server any more.
+Without <code>use_agent=true</code> the route returns an empty list. The offline bank lives only
+in the frontend.</div>
+
+<p>
+  The same router serves <code>GET /api/questions/topics</code>, which requires auth and returns
+  the distinct <code>topic</code> values in <code>question_attempts</code>. It does not filter by
+  user, so it lists topics from everyone's attempts. Nothing in the frontend calls it.
+</p>
+
+<h4>The agent</h4>
+
+<p>
+  <code>ExamLearningAgent.generate_questions</code> runs <code>analyze_performance</code> on a
+  thread. That reads the <code>user_stats</code> row through
+  <code>SupabaseAgentOps.get_user_performance</code> (total answered, accuracy, weak and strong
+  topics) and aggregates <code>question_attempts</code> per topic through
+  <code>get_topic_performance</code>. It sets <code>recommended_difficulty</code> to easy below 50
+  percent accuracy, hard above 75, medium otherwise. Both reads catch their own exceptions and
+  return empty data, so a missing database degrades to "new user".
+</p>
+
+<p>
+  For the SAT it then calls <code>CollegeBoardSource.fetch</code>. Whatever is still missing,
+  for any exam, goes to <code>_questions_from_llm</code>. The agent appends a summary to
+  <code>context_memory</code>, a plain list on the instance; a new agent is built per request, so
+  that memory never outlives the request.
+</p>
+
+<h4>CollegeBoardSource</h4>
+
+<p>
+  The source talks to <code>BASE_URL</code>, the College Board's
+  <code>qbank-api</code> host, in two steps. <code>_get_index</code> posts to
+  <code>/get-questions</code> with <code>asmtEventId: 99</code>, the test number and the domain
+  codes from <code>SECTIONS</code> (Math is test 2, domains <code>H,P,Q,S</code>; Reading and
+  Writing is test 1, domains <code>INI,CAS,EOI,SEC</code>). It keeps only entries with an
+  <code>external_id</code> and caches the index per section for
+  <code>INDEX_TTL_SECONDS</code>, six hours, in a class attribute.
+</p>
+
+<ol>
+  <li><code>_fits_pace</code> pre-filters on index metadata. Quick drops hard questions and, in
+  verbal, keeps only the <code>QUICK_SKILLS</code> (Words in Context, Boundaries, Form, Structure,
+  and Sense, Transitions). Deep drops easy quant questions and, in verbal, the quick skills.</li>
+  <li><code>_pick_candidates</code> oversamples: five times the limit for quick, four otherwise,
+  because many items are later dropped. It splits the target evenly across the three difficulty
+  codes and fills about half of each band with items whose domain or skill matches a weak topic
+  (<code>_matches_topic</code> is a case-insensitive substring test either way round).</li>
+  <li>Each candidate is fetched from <code>/get-question</code>, at most
+  <code>MAX_CONCURRENT_REQUESTS</code> (8) at once, on one <code>httpx.AsyncClient</code> with a
+  20 second timeout. Failures are logged and skipped.</li>
+  <li><code>_normalize</code> rejects anything that is not <code>type == "mcq"</code>, has fewer
+  than two options, or contains a figure (<code>has_figure</code>). It finds the correct index from
+  <code>keys</code>, or from the letter in <code>correct_answer</code>, and builds both the plain
+  text and the sanitized HTML forms.</li>
+  <li>For quick pace, <code>is_quick_question</code> drops anything whose full text exceeds
+  <code>QUICK_MAX_CHARS</code> (220 for quant, 420 for verbal) or that has an option over
+  <code>QUICK_MAX_OPTION_CHARS</code> (60).</li>
+  <li><code>_balance_difficulty</code> takes questions round-robin from the easy, medium and hard
+  bands until it reaches the limit.</li>
+</ol>
+
+<h4>The LLM step</h4>
+
+<p>
+  <code>get_llm_client</code> returns an OpenAI SDK client pointed at
+  <code>https://openrouter.ai/api/v1</code>, or <code>None</code> when
+  <code>OPENROUTER_API_KEY</code> is not set. With no client, <code>_questions_from_llm</code>
+  logs and returns an empty list; it does not even search, because a page is useless without a
+  model to read it. The model is <code>LLM_MODEL</code>, taken from <code>OPENROUTER_MODEL</code>
+  with the default <code>anthropic/claude-haiku-4.5</code>. The count is capped at
+  <code>MAX_LLM_QUESTIONS</code>, 25, because one call cannot reliably return more.
+</p>
+
+<p>
+  With <code>use_web_search</code>, <code>WebQuestionSource.find_pages</code> runs one or two
+  DuckDuckGo text searches through the <code>ddgs</code> package: "{label} practice questions
+  with answers and explanations", plus one for the first weak topic. <code>search</code> retries
+  up to three times, sleeping 2 and then 4 seconds. Non-PDF result URLs are de-duplicated and the
+  first eight are fetched with browser headers and a 12 second timeout. <code>_read_page</code>
+  keeps a page only if its text has a line that starts like a lettered choice
+  (<code>A.</code> or <code>(B)</code>); it keeps 9,000 characters starting 1,500 before that line.
+  At most <code>MAX_PAGES</code>, four, are used.
+</p>
+
+<p>
+  The prompt is the student context from <code>build_agent_context</code> (accuracy, recommended
+  difficulty, weak and strong topics, per-topic accuracy), then a task. With pages, the task is to
+  copy questions from the numbered sources exactly, only where the source gives the answer, and
+  then write original ones for the rest, with <code>sourceIndex</code> recording which. Without
+  pages, it is to write them all. The requirements ask for the section's
+  <code>option_count</code>, a mix of difficulties, no figures, the pace line from
+  <code>PACE_REQUIREMENTS</code>, and passages in a separate field. The call uses temperature 0.4
+  and <code>max_tokens=12000</code>; <code>extract_json</code> parses from the first
+  <code>[</code> to the last <code>]</code>.
+</p>
+
+<p>
+  <code>_normalize_llm_question</code> is where honesty is enforced. A question needs a stem, two
+  to five options and an integer <code>correctAnswer</code> in range. It is tagged
+  <code>web</code> only if <code>sourceIndex</code> points at a real page and the first 50
+  normalized characters of its stem or passage appear in that page's normalized text; the
+  <code>sourceName</code> is then the page's host. Otherwise it is <code>ai</code>, "AI-written
+  practice question", whatever the model claimed. Quick pace applies
+  <code>is_quick_question</code> again.
+</p>
+
+<h4>Sanitizing HTML</h4>
+
+<p>
+  Official questions arrive as HTML with MathML. <code>backend/src/utils/html_utils.py</code>
+  parses it into a small tree with the standard library's <code>HTMLParser</code> and renders it
+  two ways. <code>sanitize_html</code> keeps tags in <code>HTML_TAGS</code> and
+  <code>MATH_TAGS</code>, keeps only the attributes in <code>KEPT_ATTRS</code>, removes
+  <code>DROPPED_TAGS</code> (script, style, svg, img, iframe and others) with their content,
+  removes <code>sr-only</code> elements, unwraps unknown tags, turns underline spans into
+  <code>&lt;u&gt;</code>, and expands <code>&lt;mfenced&gt;</code>, which browsers no longer
+  draw, into explicit <code>&lt;mo&gt;</code> brackets. <code>html_to_text</code> writes MathML
+  out linearly, so a fraction becomes <code>(12x + 28)/4</code> and a square root becomes
+  <code>√(...)</code>, for canvas games and for the LLM. <code>has_figure</code> reports any
+  svg, img or figure element.
+</p>
+
+<h4>Custom questions</h4>
+
+<p>
+  <code>load_custom_questions</code> selects the user's <code>custom_questions</code> rows for the
+  exam and section with <code>status = 'approved'</code>, looks up material names, converts each
+  with <code>to_game_question</code> (topic defaults to "My material", source is
+  <code>custom</code>, <code>sourceName</code> is the material's name), applies the quick filter
+  for quick pace, shuffles and returns up to the limit. Errors return an empty list. How rows get
+  there is <a href="#ch12">chapter 12</a>.
+</p>
+
+<h3 id="s7-5"><span class="num">7.5</span><span>The client</span></h3>
+
+<h4>Fetching</h4>
+
+<p>
+  <code>fetchAIQuestions(limit, fallbackQuestions, pace)</code> reads the exam and section from
+  <code>getExamPrefs()</code> and calls <code>apiClient.getAIQuestions</code>, which always sends
+  <code>use_agent=true</code> and <code>use_web_search=true</code> and adds the bearer token if the
+  client has one. A non-empty list is returned as is. An empty list is turned into an error, and
+  any error leads to <code>getBankQuestions(exam, section, pace)</code>, or to
+  <code>fallbackQuestions</code> if the bank had nothing.
+</p>
+
+<p>
+  <code>fetchQuestionsWithCache(gameId, limit, fallbackQuestions)</code> wraps it with a
+  five-minute cache in <code>sessionStorage</code> under
+  <code>ai_questions_${gameId}_${exam}_${section}</code>, and derives the pace from
+  <code>gamePace(gameId)</code>. Only Carnival and Whack-a-Mole use it; the other games call
+  <code>fetchAIQuestions</code> directly and get a fresh set every run.
+</p>
+
+<h4>The offline bank</h4>
+
+<p>
+  <code>frontend/lib/questionBank.ts</code> holds 36 hand-written questions: nine per exam and
+  section, three of each difficulty, ids 9001 to 9309. GRE quant uses the four standard
+  Quantitative Comparison choices from <code>QC_OPTIONS</code>; GRE verbal has five-choice items.
+  <code>getBankQuestions</code> drops hard questions for quick pace and easy ones for deep pace
+  (<code>PACE_EXCLUDES</code>), so a game gets six, prepends any passage to
+  <code>question</code>, and tags each one <code>source: 'practice'</code>. The landing page's
+  <code>HeroQuestion</code> also shows the first three SAT quant items.
+</p>
+
+<h4>Rendering</h4>
+
+<p>
+  <code>QuestionContent</code> takes an optional <code>html</code> and a required
+  <code>text</code>. With HTML it runs a second sanitizer in the browser: it parses with
+  <code>DOMParser</code>, removes any element whose tag is not in <code>ALLOWED_TAGS</code> (the
+  same list as the backend), strips attributes not in <code>ALLOWED_ATTRS</code>, and renders the
+  result with <code>dangerouslySetInnerHTML</code>. Without HTML it renders the text with
+  <code>whitespace-pre-line</code>. Note the difference: the backend unwraps an unknown tag and
+  keeps its text, the frontend removes it and its text.
+</p>
+
+<p>
+  <code>QuestionCard</code> is the overlay panel the React-rendered games share. It shows
+  "Question n of m", the skill or topic and the difficulty, then the passage, the stem and the
+  choices, each through <code>QuestionContent</code>. A choice is a button when the game passes
+  <code>onPick</code> and plain text when the player answers inside the game world. After a wrong
+  answer it shows either an "insight" (the player will see the question again, so the right
+  answer stays hidden) or the explanation under "Why X is correct".
+  <code>sourceLabel</code> turns <code>source</code> into a caption such as "Official College
+  Board question", or "From" followed by the page host or material name; Zombie, Subway Surfers and Squid Game print it.
+</p>
+
+<h4>Hints</h4>
+
+<p>
+  <code>useQuestionHints(question)</code> resets when the question changes. The first request
+  shows <code>strategyHint</code>: a tip chosen by matching the question's own wording against
+  <code>PROMPT_TIPS</code>, then its skill and topic against <code>STRATEGY_TIPS</code>, then
+  <code>DEFAULT_TIP</code>. Each later request calls <code>eliminationHint</code>, which rules out
+  one wrong choice, preferring one the explanation addresses, and stops when only the right answer
+  and one other remain. <code>whyNot</code> extracts the "Choice B is incorrect ..." sentence that
+  College Board rationales contain, and rejects it if it is too short, uninformative, or names the
+  correct letter. <code>insightFor</code> uses the same function after a wrong answer.
+  <code>HintButton</code> is just the button, labelled "Hint" then "Another hint". Zombie, Subway
+  Surfers, Squid Game and Pac-Man use the hook.
+</p>
+
+<h3 id="s7-6"><span class="num">7.6</span><span>How it works</span></h3>
+
+<p>
+  A signed-in player starts Subway Surfers on SAT Math with ten questions.
+</p>
+
+<ol>
+  <li><code>SubwaySurfersGameContainer</code> calls <code>fetchAIQuestions(20, undefined, 'quick')</code>.</li>
+  <li>The browser sends <code>GET /api/questions/?use_agent=true&amp;limit=20&amp;use_web_search=true&amp;exam=sat&amp;section=quant&amp;pace=quick</code> with the bearer token.</li>
+  <li>The route resolves the user and loads up to 10 approved custom SAT Math questions. Say it finds 3.</li>
+  <li>The agent reads performance, finds weak topic "Advanced Math", and asks the College Board source for 17.</li>
+  <li>The source filters the cached index to non-hard items, picks 85 candidates (17 times 5) spread over easy and medium with half on Advanced Math, fetches them eight at a time, normalizes, drops long ones and balances. Say 17 survive.</li>
+  <li>Nothing is missing, so no LLM call is made. The route validates 20 questions, shuffles and returns them.</li>
+  <li>The game renders each with <code>QuestionCard</code>; the player can ask for hints.</li>
+</ol>
+
+<h4>With no API keys</h4>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Situation</th><th>What the player gets</th></tr></thead>
+<tbody>
+<tr><td>SAT, no <code>OPENROUTER_API_KEY</code></td><td>Official questions only. The College Board API needs no key. If it returns too few, the set is short.</td></tr>
+<tr><td>GRE, no <code>OPENROUTER_API_KEY</code></td><td>Only approved custom questions. With none, the route returns an empty list and the browser falls back to the bank.</td></tr>
+<tr><td>No Supabase configuration</td><td>Performance and custom reads catch their errors, so the set is untargeted and has no custom questions.</td></tr>
+<tr><td>Backend down or erroring</td><td>The bank: six questions per section after the pace filter.</td></tr>
+</tbody>
+</table></div>
+
+<h3 id="s7-7"><span class="num">7.7</span><span>Performance and cost</span></h3>
+
+<p>
+  The College Board path makes one request per candidate. A 50-question quick request from
+  Carnival is up to 250 detail calls, eight at a time. The index cache is per process, so on
+  serverless hosting each cold instance pays for its own index fetch. The LLM path costs one
+  model call of up to 12,000 output tokens per request, plus up to two searches and eight page
+  reads; the search retries use <code>time.sleep</code>, but they run in a worker thread through
+  <code>asyncio.to_thread</code>, so they do not block the event loop. The only client cache is
+  the five-minute one in <code>fetchQuestionsWithCache</code>.
+</p>
+
+<h3 id="s7-8"><span class="num">7.8</span><span>Edge cases and tests</span></h3>
+
+<ul>
+  <li><b>Short sets are not topped up.</b> If the backend returns three questions, the game gets
+  three. The bank is used only when the list is empty.</li>
+  <li><b>The mock exam uses no pace</b>, so it gets the whole index and no length filter (<a href="#ch12">chapter 12</a>).</li>
+  <li><b>GRE requests over 25</b> get at most 25 from the model, plus custom questions.</li>
+  <li><b>Agent failure hides official questions.</b> Any exception inside
+  <code>generate_questions</code> returns only the custom questions, even if some official ones
+  were already loaded.</li>
+  <li><b>Unused parameters.</b> <code>topic</code> and <code>difficulty</code> are accepted and
+  ignored. <code>recommended_difficulty</code> reaches the prompt but not the College Board
+  picker, which always spreads evenly.</li>
+  <li><b>Random elimination.</b> When no wrong choice has a usable explanation,
+  <code>eliminationHint</code> picks one at random on every render; only the one picked at click
+  time is shown.</li>
+  <li><b>Comments.</b> <code>hints.ts</code> has two stacked comments above
+  <code>PROMPT_TIPS</code>, the first left over from an earlier version.</li>
+</ul>
+
+<p>
+  There are no automated tests. <code>html_to_text</code>, <code>_normalize_llm_question</code>,
+  <code>_balance_difficulty</code>, <code>whyNot</code> and <code>getBankQuestions</code> are pure
+  functions and the cheapest place to start.
+</p>
+
+<h3 id="s7-9"><span class="num">7.9</span><span>Study notes</span></h3>
+<div class="study">
+<h4>Read in this order</h4>
+<ol>
+  <li><code>frontend/lib/api/questions.ts</code>, the whole file.</li>
+  <li><code>backend/src/api/questions.py</code>, <code>get_questions</code>.</li>
+  <li><code>backend/src/services/agent.py</code>, <code>generate_questions</code>, then <code>_questions_from_llm</code> and <code>_normalize_llm_question</code>.</li>
+  <li><code>backend/src/services/question_sources.py</code>, <code>CollegeBoardSource.fetch</code> and the helpers it calls, then <code>WebQuestionSource</code>.</li>
+  <li><code>backend/src/utils/html_utils.py</code>, <code>sanitize_html</code> then <code>html_to_text</code>.</li>
+  <li><code>backend/src/services/custom_questions.py</code>.</li>
+  <li><code>frontend/components/QuestionContent.tsx</code> and <code>frontend/components/exam/QuestionCard.tsx</code>.</li>
+  <li><code>frontend/lib/hints.ts</code> and <code>frontend/components/exam/useQuestionHints.ts</code>.</li>
+</ol>
+<h4>Check yourself</h4>
+<p class="q">The model says a question came from source 2. When is it tagged <code>web</code>?</p>
+<p class="a">Only when page 2 exists and the first 50 normalized characters of the stem or passage
+appear in that page's text. Otherwise it is tagged <code>ai</code>.</p>
+<p class="q">Why does the College Board source fetch four or five times as many candidates as it needs?</p>
+<p class="a">Free-response items, items with figures and, for quick pace, long items are dropped
+after the detail fetch, when their content is known.</p>
+<p class="q">A fresh clone runs with no keys at all. What does a GRE game show?</p>
+<p class="a">The backend returns an empty list (or fails), and <code>fetchAIQuestions</code> falls
+back to the built-in bank: six of the nine questions for that section, after the pace filter.</p>
+<p class="q">Why is HTML sanitized in the browser when the backend already did it?</p>
+<p class="a">Defence in depth before <code>dangerouslySetInnerHTML</code>. The frontend allowlist
+is the same, so a well-behaved backend loses nothing.</p>
+<p class="q">How much of a set can custom questions take?</p>
+<p class="a">Up to <code>limit // 2</code>, and only for a signed-in user with approved questions
+for that exam and section.</p>
+</div>
+</section>

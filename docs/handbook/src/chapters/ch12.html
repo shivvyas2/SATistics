@@ -1,0 +1,457 @@
+<section class="chapter" id="ch12" data-hue="mock">
+<p class="chapter-kicker">Chapter twelve</p>
+<h2><span class="num">12</span><span>Mock exams and your own material</span></h2>
+
+<p class="lede">
+  Two features sit beside the games. The mock exam is a timed section in test-day format: one
+  clock, no feedback until the end, a score report after. "My material" lets a student upload a
+  practice test or notes, review the questions found in it, and approve the ones that should
+  appear in their games and mock exams. Both reuse the question engine of
+  <a href="#ch07">chapter 7</a> rather than adding their own.
+</p>
+
+<h3 id="s12-1"><span class="num">12.1</span><span>Intent</span></h3>
+
+<p>
+  Games are good for repetition, but a student also needs to feel the real exam's pace and to see
+  an honest score afterwards. The mock exam gives them that with the same questions the games use.
+  It lives entirely in the browser: one page, three screens (setup, exam, results), and a single
+  call to save the result alongside game sessions so it feeds statistics and weak topics.
+</p>
+
+<p>
+  Students also have their own material: a teacher's handout, a practice test PDF, class notes.
+  The materials feature turns that into questions in the standard game format. The design rule is
+  that nothing from an upload reaches a game until the student has looked at it. Every question
+  starts as <code>pending</code>, and a question cannot be approved without a correct answer.
+</p>
+
+<h3 id="s12-2"><span class="num">12.2</span><span>Files and folders</span></h3>
+
+<pre class="tree">frontend/app/mock/page.tsx                Setup, Exam, Results, MockExamPage
+frontend/components/exam/Calculator.tsx   the on-screen calculator (quant only)
+frontend/app/materials/page.tsx           upload form, list, QuestionReview
+frontend/lib/materials.ts                 Material, CustomQuestion
+frontend/lib/api/client.ts                uploadMaterial, getMaterials, getMaterialQuestions,
+                                          updateCustomQuestion, deleteCustomQuestion,
+                                          approveAllQuestions, deleteMaterial, saveScore
+frontend/middleware.ts                    /mock and /materials need the auth_token cookie
+
+backend/src/api/materials.py              the /api/materials routes
+backend/src/services/material_parser.py   extract_text, parse_questions,
+                                          questions_from_llm, merge_questions
+backend/src/services/custom_questions.py  load_custom_questions, to_game_question
+backend/database/add_materials.sql        materials, custom_questions, indexes, RLS</pre>
+
+<p>
+  <code>add_materials.sql</code> is a separate migration. It is not part of
+  <code>schema.sql</code> and <code>reset.sql</code> neither drops nor creates these tables, so a
+  new database needs it run on its own.
+</p>
+
+<h3 id="s12-3"><span class="num">12.3</span><span>Model</span></h3>
+
+<h4>Two tables</h4>
+
+<pre><code>-- backend/database/add_materials.sql (abridged)
+CREATE TABLE IF NOT EXISTS materials (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  exam TEXT NOT NULL CHECK (exam IN ('sat', 'gre')),
+  section TEXT NOT NULL CHECK (section IN ('quant', 'verbal')),
+  created_at TIMESTAMP WITH TIME ZONE ...
+);
+
+CREATE TABLE IF NOT EXISTS custom_questions (
+  id BIGSERIAL PRIMARY KEY,
+  material_id UUID NOT NULL REFERENCES materials(id) ON DELETE CASCADE,
+  user_id UUID NOT NULL REFERENCES auth.users(id) ON DELETE CASCADE,
+  exam TEXT NOT NULL,
+  section TEXT NOT NULL,
+  question TEXT NOT NULL,
+  passage TEXT NOT NULL DEFAULT '',
+  options JSONB NOT NULL,
+  correct_answer INTEGER,               -- NULL until found or picked
+  topic TEXT NOT NULL DEFAULT 'My material',
+  difficulty TEXT NOT NULL DEFAULT 'medium',
+  explanation TEXT NOT NULL DEFAULT '',
+  origin TEXT ... CHECK (origin IN ('extracted', 'generated')),
+  status TEXT ... DEFAULT 'pending' CHECK (status IN ('pending', 'approved')),
+  created_at ...
+);</code></pre>
+
+<p>
+  A material is a name, an owner, an exam and a section. It holds no text and no file: the upload
+  is read once, turned into rows in <code>custom_questions</code>, and discarded. There is no
+  storage bucket. If the parser misses a question, the only way to get it is to upload again.
+</p>
+
+<p>
+  Three indexes support the reads: by <code>materials.user_id</code>, by
+  <code>custom_questions.material_id</code>, and a compound one on
+  <code>(user_id, exam, section, status)</code>, which is exactly the filter
+  <code>load_custom_questions</code> uses. Both tables have RLS enabled with an owner-only policy
+  for all operations.
+</p>
+
+<div class="note"><b>Ownership is enforced in Python.</b> The backend's
+<code>Database.get_client</code> prefers <code>SUPABASE_SERVICE_ROLE_KEY</code>, which bypasses
+RLS. Every query in <code>materials.py</code> therefore filters by <code>user_id</code> itself,
+and <code>_own_material</code> returns 404 for a material that is not the caller's. The RLS
+policies are a backstop. If the backend ever ran with only the anon key, the inserts would fail,
+because <code>auth.uid()</code> would be null.</div>
+
+<h4>Client types</h4>
+
+<p>
+  <code>frontend/lib/materials.ts</code> mirrors the rows. <code>Material</code> adds two optional
+  counts the list route computes, <code>question_count</code> and <code>approved_count</code>.
+  <code>CustomQuestion</code> has <code>correct_answer: number | null</code>,
+  <code>origin: 'extracted' | 'generated'</code> and <code>status: 'pending' | 'approved'</code>.
+  It omits <code>topic</code> and <code>difficulty</code>, which the page never shows.
+</p>
+
+<h4>Limits</h4>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Constant</th><th>File</th><th>Value</th><th>Effect</th></tr></thead>
+<tbody>
+<tr><td><code>MAX_UPLOAD_BYTES</code></td><td><code>materials.py</code></td><td class="num-cell">4 MiB</td><td>413 above it; Vercel rejects bodies over 4.5 MB</td></tr>
+<tr><td><code>MAX_FILE_BYTES</code></td><td><code>materials/page.tsx</code></td><td class="num-cell">4 MiB</td><td>The same check before sending</td></tr>
+<tr><td><code>MIN_TEXT_CHARS</code></td><td><code>materials.py</code></td><td class="num-cell">40</td><td>400 "No readable text found"</td></tr>
+<tr><td><code>MAX_TEXT_CHARS</code></td><td><code>material_parser.py</code></td><td class="num-cell">400,000</td><td>Truncates text read from a file</td></tr>
+<tr><td><code>LLM_CHUNK_CHARS</code></td><td><code>material_parser.py</code></td><td class="num-cell">12,000</td><td>Text per model call</td></tr>
+<tr><td><code>MAX_LLM_CHUNKS</code></td><td><code>material_parser.py</code></td><td class="num-cell">4</td><td>The model reads at most the first 48,000 characters</td></tr>
+</tbody>
+</table></div>
+
+<h3 id="s12-4"><span class="num">12.4</span><span>The server side</span></h3>
+
+<h4>Routes</h4>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Method and path</th><th>Does</th></tr></thead>
+<tbody>
+<tr><td><code>POST /api/materials</code></td><td>Multipart upload: read, parse, maybe call the model, insert material and questions</td></tr>
+<tr><td><code>GET /api/materials</code></td><td>The caller's materials, newest first, with question and approved counts</td></tr>
+<tr><td><code>GET /api/materials/{material_id}/questions</code></td><td>One material's questions, ordered by id</td></tr>
+<tr><td><code>PATCH /api/materials/questions/{question_id}</code></td><td>Edit a question or change its status</td></tr>
+<tr><td><code>DELETE /api/materials/questions/{question_id}</code></td><td>Delete one question</td></tr>
+<tr><td><code>POST /api/materials/{material_id}/approve-all</code></td><td>Approve every question that has an answer</td></tr>
+<tr><td><code>DELETE /api/materials/{material_id}</code></td><td>Delete a material and its questions</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  Every route depends on <code>get_current_user</code>, so all of them require a valid bearer
+  token. The router is mounted at <code>/api/materials</code> in
+  <code>backend/src/main.py</code>.
+</p>
+
+<h4>Upload</h4>
+
+<p>
+  <code>upload_material</code> takes form fields <code>exam</code> and <code>section</code>
+  (both <code>Literal</code>), <code>name</code>, <code>text</code>, <code>generate</code> and an
+  optional <code>file</code>. If a file is present it reads all of it, checks the size, and
+  replaces <code>text</code> with <code>extract_text(filename, content)</code>; pasted text is
+  ignored in that case. An empty name falls back to the file name, and later to "Untitled
+  material". Then:
+</p>
+
+<ol>
+  <li>Text shorter than 40 characters after trimming is a 400 that suggests the PDF is scanned.</li>
+  <li><code>parse_questions(text)</code> runs the rule-based parser.</li>
+  <li>If <code>generate</code> is set or the parser found nothing, <code>questions_from_llm</code>
+  runs too.</li>
+  <li><code>merge_questions</code> keeps every parsed question and adds model questions whose
+  first 60 normalized characters are new.</li>
+  <li>No questions at all is a 422 that explains the numbered format.</li>
+  <li>One <code>materials</code> row is inserted, then all questions in one insert, each with the
+  material's exam and section, topic defaulting to "My material" and difficulty to medium. The
+  response is the material and the saved rows.</li>
+</ol>
+
+<h4>Reading files</h4>
+
+<p>
+  <code>extract_text</code> treats a file as PDF if its name ends in <code>.pdf</code> or its
+  first five bytes are <code>%PDF-</code>, and reads it with <code>pypdf</code>'s
+  <code>PdfReader</code>, joining each page's <code>extract_text()</code>. There is no OCR, so a
+  scanned PDF yields little or no text. Anything else is decoded as UTF-8 with
+  <code>errors="replace"</code>. The file input in the browser accepts <code>.pdf</code>,
+  <code>.txt</code>, <code>.md</code>, <code>application/pdf</code> and <code>text/plain</code>,
+  but the server does not check the type: a Word document would be decoded as noise and most
+  likely fail with "No questions found".
+</p>
+
+<h4>The parser</h4>
+
+<p>
+  <code>parse_questions</code> reads line by line with five regular expressions.
+</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Pattern</th><th>Matches</th></tr></thead>
+<tbody>
+<tr><td><code>QUESTION_START</code></td><td><code>1.</code>, <code>12)</code>, <code>3:</code> or <code>Question 4.</code> followed by text; up to three digits</td></tr>
+<tr><td><code>OPTION_START</code></td><td><code>A)</code>, <code>b.</code>, <code>(C)</code> followed by text; letters A to E</td></tr>
+<tr><td><code>ANSWER_LINE</code></td><td><code>Answer: C</code>, <code>Correct answer is (B)</code></td></tr>
+<tr><td><code>EXPLANATION_LINE</code></td><td><code>Explanation:</code>, <code>Solution:</code>, <code>Rationale:</code></td></tr>
+<tr><td><code>ANSWER_KEY_HEADING</code></td><td>A line that is just <code>Answer Key</code> or <code>Answers</code></td></tr>
+</tbody>
+</table></div>
+
+<p>
+  An answer key heading ends the questions: everything after it is scanned with
+  <code>ANSWER_KEY_ENTRY</code> for pairs like <code>1. C</code> or <code>2-D</code>. Options must
+  arrive in order (A, then B, then C), so a line that happens to start with a later letter, such as
+  "C. Smith wrote", is not taken as a choice. A new numbered line starts a new question only once the current one has options, so a
+  numbered list inside a stem stays part of it. Continuation lines join the stem, the last option
+  or the explanation, depending on what came last. A question survives with two to five options.
+  Its answer comes from its own answer line, else the key, else it is <code>None</code>. Parsed
+  questions are <code>origin: "extracted"</code> and have no topic or difficulty.
+</p>
+
+<h4>The model</h4>
+
+<p>
+  <code>questions_from_llm</code> imports the agent's <code>get_llm_client</code> lazily, so the
+  parser still works where the agent's dependencies are missing, and returns an empty list when
+  <code>OPENROUTER_API_KEY</code> is not set. It splits the text into 12,000-character chunks,
+  keeps the first four, and sends them in parallel with temperature 0.3. The prompt asks the
+  model to extract every multiple-choice question exactly, to give
+  <code>correctAnswer</code> only when the material states it, and, with <code>generate</code>,
+  to write up to eight original questions per chunk with <code>fromMaterial: false</code>.
+</p>
+
+<p>
+  <code>_normalize_llm_question</code> applies the same honesty test as the question engine: a
+  question counts as extracted only if the model said so and the first 50 normalized characters
+  of its stem appear in the chunk. A generated question without a valid answer is dropped,
+  because it cannot be reviewed into shape. An extracted one without an answer is kept with
+  <code>correctAnswer: None</code>.
+</p>
+
+<h4>Review</h4>
+
+<p>
+  <code>QuestionUpdate</code> accepts <code>question</code>, <code>options</code>,
+  <code>correct_answer</code>, <code>explanation</code> and <code>status</code>.
+  <code>update_question</code> merges the change over the stored row and rejects an answer
+  outside the options (400) and an approval without an answer (400). <code>approve_all</code>
+  approves the rows with an answer and returns <code>approved</code> and
+  <code>needs_answer</code> counts. <code>delete_material</code> deletes the questions and then
+  the material; the foreign key cascade would do the first step anyway.
+</p>
+
+<h3 id="s12-5"><span class="num">12.5</span><span>The client</span></h3>
+
+<h4>The materials page</h4>
+
+<p>
+  <code>/materials</code> starts from the exam and section in <code>getExamPrefs()</code> and loads
+  the list. The form has exam and section toggles, a file input, a textarea whose placeholder shows
+  the expected format, a name, and a checkbox "Also write new questions from this material" that
+  sets <code>generate</code>. <code>apiClient.uploadMaterial</code> builds a
+  <code>FormData</code> and calls <code>fetch</code> directly, so the browser sets the multipart
+  boundary; the generic <code>request</code> helper would force a JSON content type.
+</p>
+
+<p>
+  After an upload the new material opens in the review pane. Each question is a
+  <code>QuestionReview</code> card with a "Needs review" or "In your games" chip, a "Written by AI"
+  chip for generated questions, and its choices as buttons. Tapping a choice sets
+  <code>correct_answer</code>. "Approve for games" is disabled until an answer exists and toggles
+  to "Take out of games". "Approve all with answers" calls the bulk route. The page only edits the
+  answer and status; editing text through the API is possible but has no UI.
+</p>
+
+<h4>The mock exam page</h4>
+
+<p>
+  <code>/mock</code> holds three components behind one state machine in
+  <code>MockExamPage</code>.
+</p>
+
+<p>
+  <b>Setup</b> picks exam, section and a length. <code>questionCount</code> turns the length
+  into a number from <code>MODULE_QUESTIONS</code>, the real module sizes:
+</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Section</th><th>Quick check</th><th>One module</th><th>Full section</th></tr></thead>
+<tbody>
+<tr><td>SAT Math</td><td class="num-cell">10</td><td class="num-cell">22</td><td class="num-cell">44</td></tr>
+<tr><td>SAT Reading &amp; Writing</td><td class="num-cell">10</td><td class="num-cell">27</td><td class="num-cell">54</td></tr>
+<tr><td>GRE Quantitative</td><td class="num-cell">10</td><td class="num-cell">12</td><td class="num-cell">24</td></tr>
+<tr><td>GRE Verbal</td><td class="num-cell">10</td><td class="num-cell">12</td><td class="num-cell">24</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  The time shown is the count times the section's <code>secondsPerQuestion</code> from
+  <a href="#ch06">chapter 6</a>, in whole minutes. "Start the clock" saves the exam and section to
+  the preferences and calls <code>fetchAIQuestions(count)</code> with no pace, so the engine
+  applies no length filter and includes the user's approved custom questions.
+</p>
+
+<p>
+  <b>Exam</b> renders full screen, outside the dashboard layout. One clock, computed from
+  <code>Date.now()</code> every 500 ms, counts down <code>questions.length * secondsPerQuestion</code>;
+  at zero it finishes with whatever is answered, read through a ref so the timer sees the latest
+  answers. The clock turns coral under five minutes or 15 percent of the total, whichever is
+  smaller, and can be hidden. Questions with a passage use a two-column layout. The player can mark
+  a question for review, jump through a navigator grid that marks answered, unanswered and flagged
+  questions, open the <code>Calculator</code> on quant sections, and finish early through a
+  confirmation that counts unanswered questions. Nothing is graded until the end.
+</p>
+
+<p>
+  <b>Results</b> shows correct count, accuracy, time used and an estimated score: a straight line
+  across <code>SCORE_RANGE</code> (200 to 800 for an SAT section, 130 to 170 for a GRE section),
+  rounded to 10 on the SAT and 1 on the GRE. The page says plainly that real scores are equated and
+  this is only a marker. Below that are topics sorted weakest first and every question in a
+  <code>&lt;details&gt;</code> element with the correct answer, the player's answer and the
+  explanation.
+</p>
+
+<p>
+  On finish, <code>finish</code> also builds a <code>GameAnalytics</code> object and calls
+  <code>apiClient.saveScore('mock-exam', ...)</code>: score is correct answers times 100, each
+  attempt gets the average time per question in milliseconds, and the longest correct streak goes
+  in <code>streakInfo</code>. Errors are logged, not shown. The type is imported from
+  <code>frontend/games/whackamole/types</code>, a leftover of where the shape was first written.
+</p>
+
+<h3 id="s12-6"><span class="num">12.6</span><span>How it works</span></h3>
+
+<figure>
+<svg class="diagram" viewBox="0 0 860 200" role="img" aria-label="An upload goes to POST /api/materials, which extracts text, parses questions, optionally calls the model, merges and stores pending rows. Review approves them. Approved rows are loaded into games and mock exams by load_custom_questions.">
+  <defs>
+    <marker id="ch12a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head" points="0,0 10,5 0,10"/></marker>
+    <marker id="ch12b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head-hot" points="0,0 10,5 0,10"/></marker>
+  </defs>
+  <rect class="box" x="20" y="30" width="150" height="50" rx="8"/>
+  <text class="lbl" x="95" y="52" text-anchor="middle">Upload form</text>
+  <text class="lbl-sm" x="95" y="70" text-anchor="middle">file or pasted text</text>
+
+  <rect class="box-hot" x="230" y="30" width="190" height="50" rx="8"/>
+  <text class="lbl" x="325" y="52" text-anchor="middle">extract, parse</text>
+  <text class="lbl-hot" x="325" y="70" text-anchor="middle">model if asked or empty</text>
+
+  <rect class="box" x="480" y="30" width="160" height="50" rx="8"/>
+  <text class="lbl" x="560" y="52" text-anchor="middle">merge, insert</text>
+  <text class="lbl-sm" x="560" y="70" text-anchor="middle">status pending</text>
+
+  <rect class="box-alt" x="690" y="30" width="150" height="50" rx="8"/>
+  <text class="lbl" x="765" y="52" text-anchor="middle">custom_questions</text>
+  <text class="lbl-sm" x="765" y="70" text-anchor="middle">Supabase</text>
+
+  <rect class="box" x="480" y="130" width="160" height="50" rx="8"/>
+  <text class="lbl" x="560" y="152" text-anchor="middle">Review on /materials</text>
+  <text class="lbl-sm" x="560" y="170" text-anchor="middle">answer, approve</text>
+
+  <rect class="box-hot" x="230" y="130" width="190" height="50" rx="8"/>
+  <text class="lbl" x="325" y="152" text-anchor="middle">load_custom_questions</text>
+  <text class="lbl-hot" x="325" y="170" text-anchor="middle">approved only</text>
+
+  <rect class="box" x="20" y="130" width="150" height="50" rx="8"/>
+  <text class="lbl" x="95" y="152" text-anchor="middle">Games, mock exam</text>
+  <text class="lbl-sm" x="95" y="170" text-anchor="middle">source custom</text>
+
+  <path class="flow" d="M170 55 L 224 55" marker-end="url(#ch12a)"/>
+  <path class="flow" d="M420 55 L 474 55" marker-end="url(#ch12a)"/>
+  <path class="flow" d="M640 55 L 684 55" marker-end="url(#ch12a)"/>
+  <path class="flow-dash" d="M765 80 L 765 155 L 646 155" marker-end="url(#ch12a)"/>
+  <path class="flow-hot" d="M480 155 L 426 155" marker-end="url(#ch12b)"/>
+  <path class="flow-hot" d="M230 155 L 176 155" marker-end="url(#ch12b)"/>
+</svg>
+<figcaption>
+  Material becomes rows once, at upload. From then on only the review state changes, and only
+  approved rows are read back into question sets.
+</figcaption>
+</figure>
+
+<ol>
+  <li>A student pastes a ten-question worksheet with an "Answer Key" at the end and leaves the
+  checkbox off.</li>
+  <li><code>parse_questions</code> finds ten questions and takes their answers from the key. The
+  model is not called.</li>
+  <li>Ten pending rows are saved. The page opens them; the student clicks "Approve all with
+  answers".</li>
+  <li>The next time a signed-in game or mock exam for that exam and section asks for questions,
+  <code>load_custom_questions</code> returns up to half the requested limit from these rows, each
+  with <code>source: 'custom'</code> and <code>sourceName</code> set to the material's name, so the
+  question panel shows "From" and the material name.</li>
+</ol>
+
+<p>
+  With no <code>OPENROUTER_API_KEY</code>, step 2 is all there is: the checkbox does nothing and
+  unnumbered notes produce a 422. Custom questions still appear in the GRE when no other source is
+  available, which makes them the main way to get real GRE questions into a keyless setup.
+</p>
+
+<h3 id="s12-7"><span class="num">12.7</span><span>Edge cases and tests</span></h3>
+
+<ul>
+  <li><b>Pasted text is not capped.</b> <code>MAX_TEXT_CHARS</code> applies only inside
+  <code>extract_text</code>; a large paste goes to the parser in full.</li>
+  <li><b>The whole file is read before the size check.</b> On Vercel the platform limit stops
+  oversized bodies first; elsewhere the server holds the bytes in memory.</li>
+  <li><b>Only the first 48,000 characters reach the model.</b> The parser sees up to 400,000.</li>
+  <li><b>Unhandled rejections.</b> On the materials page, delete question, approve all and delete
+  material have no <code>try</code>; a failure shows nothing to the user.</li>
+  <li><b>The file input is not cleared.</b> After an upload <code>setFile(null)</code> resets
+  state, but the uncontrolled input still shows the old file name.</li>
+  <li><b>Unreachable mock error.</b> The mock page shows an error when no questions load, but
+  <code>fetchAIQuestions</code> always falls back to the bank, which is never empty. With the
+  backend down, a 54-question full section silently becomes a 9-question exam, with the clock
+  scaled to match.</li>
+  <li><b>The SAT blurb overstates.</b> Setup says SAT questions are official ones. Custom questions
+  and, when the College Board falls short, model questions can be mixed in.</li>
+  <li><b>Mock exams change game settings.</b> Starting one writes its exam and section to
+  <code>exam_prefs</code>.</li>
+  <li><b>No resume.</b> Exam state is React state; a reload loses the attempt.</li>
+  <li><b>Delete is idempotent.</b> <code>DELETE /api/materials/questions/{question_id}</code>
+  returns success for an id that does not exist.</li>
+</ul>
+
+<p>
+  There are no automated tests. <code>parse_questions</code> is the obvious first target: it is a
+  pure function with many formats to pin, including answer keys, out-of-order letters and
+  multi-line options.
+</p>
+
+<h3 id="s12-8"><span class="num">12.8</span><span>Study notes</span></h3>
+<div class="study">
+<h4>Read in this order</h4>
+<ol>
+  <li><code>backend/database/add_materials.sql</code>.</li>
+  <li><code>backend/src/api/materials.py</code>, <code>upload_material</code> first.</li>
+  <li><code>backend/src/services/material_parser.py</code>, <code>parse_questions</code> with a sample worksheet beside it.</li>
+  <li><code>backend/src/services/custom_questions.py</code>.</li>
+  <li><code>frontend/app/materials/page.tsx</code> and <code>uploadMaterial</code> in <code>frontend/lib/api/client.ts</code>.</li>
+  <li><code>frontend/app/mock/page.tsx</code>, <code>MockExamPage</code> first, then <code>Exam</code>, then <code>Results</code>.</li>
+</ol>
+<h4>Check yourself</h4>
+<p class="q">Where is the uploaded PDF stored?</p>
+<p class="a">Nowhere. It is read in memory, turned into <code>custom_questions</code> rows and
+discarded. The <code>materials</code> row holds only a name, owner, exam and section.</p>
+<p class="q">When is the model called during an upload?</p>
+<p class="a">When <code>generate</code> is true, or when the parser found no questions, and only
+if <code>OPENROUTER_API_KEY</code> is set.</p>
+<p class="q">Why can a generated question never be saved without an answer, while an extracted one can?</p>
+<p class="a">An extracted question's answer may be in the student's head or answer sheet, so
+review can supply it. A generated question with no answer has nothing to check against, so
+<code>_normalize_llm_question</code> drops it.</p>
+<p class="q">How does the mock exam's clock length follow from the exam?</p>
+<p class="a">It is the number of questions actually loaded times the section's
+<code>secondsPerQuestion</code>, so a shorter set gets a shorter clock.</p>
+<p class="q">The backend uses the service role key. What stops one user reading another's material?</p>
+<p class="a">The routes filter every query by the caller's <code>user_id</code> and
+<code>_own_material</code> 404s on foreign ids. RLS would only apply to a client using a user's
+own token or the anon key.</p>
+</div>
+</section>

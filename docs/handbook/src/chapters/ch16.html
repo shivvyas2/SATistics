@@ -1,0 +1,310 @@
+<section class="chapter" id="ch16" data-hue="web">
+<p class="chapter-kicker">Chapter sixteen</p>
+<h2><span class="num">16</span><span>Contributing</span></h2>
+
+<p class="lede">
+  A change to SATistics travels a short road: an issue, a branch, a few focused commits, a pull
+  request that passes CI, and a merge to <code>main</code> that Vercel deploys within minutes. The
+  road is short because the codebase is split by area, so most changes touch one folder of the
+  frontend, one router of the backend, or one chapter of this book. This chapter is the map and
+  the rules of the road.
+</p>
+
+<p>
+  <code>CONTRIBUTING.md</code> at the repository root is the short version and the one GitHub
+  shows to new contributors. This chapter agrees with it and adds the detail: which files belong to
+  which area, what the checks prove and what they do not, the conventions you will see in the code,
+  and how to change this handbook. <code>CODE_OF_CONDUCT.md</code> sets the expectations for how we
+  treat each other, and <code>SECURITY.md</code> explains how to report a vulnerability privately
+  instead of in a public issue.
+</p>
+
+<h3 id="s16-1"><span class="num">16.1</span><span>Picking something to work on</span></h3>
+
+<p>
+  Start from the area you care about. Each row names the chapter that explains it and the files
+  you will open first.
+</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Area</th><th>Chapter</th><th>Main files</th></tr></thead>
+<tbody>
+<tr><td>Look and feel, design tokens</td><td><a href="#ch04">4</a></td><td><code>frontend/tailwind.config.js</code>, <code>frontend/app/globals.css</code>, <code>frontend/components/brand/</code></td></tr>
+<tr><td>Accounts and profiles</td><td><a href="#ch05">5</a></td><td><code>backend/src/api/auth.py</code>, <code>backend/src/services/auth_service.py</code>, <code>backend/src/api/profile.py</code>, <code>frontend/app/signup/</code>, <code>frontend/middleware.ts</code></td></tr>
+<tr><td>Questions and the AI agent</td><td><a href="#ch06">6</a>, <a href="#ch07">7</a></td><td><code>backend/src/services/agent.py</code>, <code>backend/src/services/question_sources.py</code>, <code>frontend/lib/api/questions.ts</code>, <code>frontend/lib/questionBank.ts</code></td></tr>
+<tr><td>Uploaded material</td><td><a href="#ch12">12</a></td><td><code>backend/src/api/materials.py</code>, <code>backend/src/services/material_parser.py</code>, <code>backend/src/services/custom_questions.py</code>, <code>frontend/app/materials/</code></td></tr>
+<tr><td>Games</td><td><a href="#ch08">8</a>, <a href="#ch09">9</a></td><td><code>frontend/games/</code>, <code>frontend/components/*GameContainer.tsx</code>, <code>frontend/components/exam/</code>, <code>frontend/lib/games.ts</code>, <code>frontend/lib/gameMeta.ts</code></td></tr>
+<tr><td>Lessons and videos</td><td><a href="#ch10">10</a></td><td><code>frontend/lib/courses.ts</code>, <code>frontend/lib/lessons.ts</code>, <code>frontend/app/learn/</code>, <code>backend/src/services/videos.py</code></td></tr>
+<tr><td>Dashboard and stats</td><td><a href="#ch11">11</a></td><td><code>frontend/app/dashboard/</code>, <code>frontend/app/stats/</code>, <code>backend/src/api/stats.py</code>, <code>backend/src/services/game_service.py</code></td></tr>
+<tr><td>Mock exams</td><td><a href="#ch12">12</a></td><td><code>frontend/app/mock/</code>, <code>frontend/components/exam/Calculator.tsx</code></td></tr>
+<tr><td>Tables and policies</td><td><a href="#ch13">13</a></td><td><code>backend/database/</code></td></tr>
+<tr><td>API routes</td><td><a href="#ch14">14</a></td><td><code>backend/src/main.py</code>, <code>backend/src/api/</code>, <code>backend/src/models/schemas.py</code>, <code>frontend/lib/api/client.ts</code></td></tr>
+<tr><td>Deploying</td><td><a href="#ch15">15</a></td><td><code>backend/vercel.json</code>, <code>backend/api/index.py</code>, <code>frontend/next.config.js</code></td></tr>
+</tbody>
+</table></div>
+
+<p>
+  For a first change, <code>CONTRIBUTING.md</code> suggests work that needs no deep knowledge of
+  the rest of the system: a lesson in <code>frontend/lib/lessons.ts</code>, more questions in the
+  offline bank in <code>frontend/lib/questionBank.ts</code>, tests for pure functions, accessibility
+  in game overlays, or an issue labelled <code>good first issue</code>.
+</p>
+
+<p>
+  For anything bigger than a fix, open an issue first. The repository has three issue templates in
+  <code>.github/ISSUE_TEMPLATE/</code>: a bug report, a feature request, and a new game proposal
+  that asks how the player chooses an answer and which assets (with licenses) the game will use.
+  Agreeing on an idea is cheaper than reworking a finished pull request. A new question type, topic
+  or exam section always starts as an issue, because SAT and GRE content must follow the official
+  domains listed in <code>frontend/lib/courses.ts</code>.
+</p>
+
+<h3 id="s16-2"><span class="num">16.2</span><span>Branches and commits</span></h3>
+
+<p>
+  Branch from <code>main</code> for every change and open a pull request. Never push to
+  <code>main</code> directly: both Vercel projects deploy it to production on every push
+  (<a href="#s15-1">15.1</a>), and nothing makes the deploy wait for CI.
+</p>
+
+<pre>git switch main
+git pull
+git switch -c add-pac-man-hint-button
+# ...edit, check, commit...
+git push -u origin add-pac-man-hint-button</pre>
+
+<p>Commits follow the history that is already there:</p>
+
+<ul>
+  <li><b>Small and focused.</b> One logical change per commit. A refactor and a feature are separate commits, and usually separate pull requests.</li>
+  <li><b>Imperative subject lines</b> that say what changed for the user: "Add hints, material uploads, arcade skin and touch support to the games", "Fix backend Vercel deployment". Not "updated files". A scope prefix such as <code>fix(learn):</code> or <code>feat(games):</code> is welcome but not required.</li>
+  <li><b>A body when the why is not obvious.</b> Recent commits use a short bulleted body listing each user-visible change. Explain causes, not just effects: "Remove root vercel.json: its invalid rootDirectory field failed every backend build".</li>
+  <li><b>No AI co-author trailers.</b> If a tool helped, you are still the author and the one responsible for the change.</li>
+  <li><b>No secrets, ever.</b> Not in code, docs, fixtures or screenshots. CI runs a gitleaks scan on every pull request, but it is a net, not a plan.</li>
+</ul>
+
+<h3 id="s16-3"><span class="num">16.3</span><span>Checks before a pull request</span></h3>
+
+<p>
+  Run what CI runs. <code>.github/workflows/ci.yml</code> has three jobs; run the first two
+  yourself before you push.
+</p>
+
+<pre>cd frontend
+npm run lint          # next lint with next/core-web-vitals
+npx tsc --noEmit      # the whole project under strict mode
+npm run build         # catches server/client boundary and route errors</pre>
+
+<pre>cd backend
+pip install -r requirements.txt
+uvicorn src.main:app --reload --port 8000
+curl http://localhost:8000/api/health/</pre>
+
+<div class="tablewrap"><table>
+<thead><tr><th>CI job</th><th>Steps</th><th>What it proves</th></tr></thead>
+<tbody>
+<tr><td>Frontend</td><td>Node 22, <code>npm ci</code>, <code>npm run lint</code>, <code>npx tsc --noEmit</code>, <code>npm run build</code> with <code>NEXT_PUBLIC_API_URL=http://localhost:8000</code></td><td>The frontend lints, type-checks and builds</td></tr>
+<tr><td>Backend</td><td>Python 3.12, <code>pip install -r requirements.txt</code>, <code>python -c "from src.main import app"</code></td><td>Every module imports and every router registers</td></tr>
+<tr><td>Secret scan</td><td><code>gitleaks/gitleaks-action</code> over the full history, pull requests only</td><td>No key-shaped string entered the branch</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  Note what the backend job does not prove. Importing the app does not call a route, touch
+  Supabase or run a query. A typo inside a handler passes CI. So for any backend change, start the
+  server, call the route you changed (the interactive docs at <code>/docs</code> are the quickest
+  way), and then click through the screens that use it, on a desktop window and at phone width.
+</p>
+
+<h3 id="s16-4"><span class="num">16.4</span><span>There are no tests yet</span></h3>
+
+<p>
+  SATistics has no automated test suite. There is no test runner in
+  <code>frontend/package.json</code>, no test dependency in <code>backend/requirements.txt</code>,
+  and no test files. Lint, the type checker, the build and the import check are the only automated
+  guards. Say so in your pull request instead of implying coverage that does not exist, and describe
+  how you verified the change by hand.
+</p>
+
+<p>
+  Adding tests is one of the most useful contributions you can make. The best first targets are
+  pure functions with no network or DOM, where a test is short and a regression would be silent:
+</p>
+
+<ul>
+  <li><b>Backend parsing and ranking.</b> <code>parse_questions</code> and <code>merge_questions</code> in <code>backend/src/services/material_parser.py</code>; <code>is_quick_question</code> and <code>normalize_text</code> in <code>question_sources.py</code>; <code>extract_json</code> in <code>agent.py</code>; the duration parser, <code>_mentions</code> and <code>_score</code> in <code>videos.py</code>. pytest with plain function calls is enough.</li>
+  <li><b>Frontend logic.</b> <code>frontend/lib/exam.ts</code>, <code>frontend/lib/sessions.ts</code> and <code>getBankQuestions</code> in <code>frontend/lib/questionBank.ts</code>. A small Vitest setup would cover these without a browser.</li>
+  <li><b>API contracts.</b> FastAPI's <code>TestClient</code> against the routers with <code>get_db</code> and <code>get_current_user</code> overridden by dependency injection would test validation and auth checks without a real Supabase project.</li>
+</ul>
+
+<p>
+  A pull request that adds a test runner should also add it to <code>ci.yml</code>, so the tests
+  keep running after the first one is merged.
+</p>
+
+<h3 id="s16-5"><span class="num">16.5</span><span>The pull request</span></h3>
+
+<p>
+  <code>.github/PULL_REQUEST_TEMPLATE.md</code> asks for three things: what changed, why (link the
+  issue with <code>Closes #123</code>), and how you verified it. Fill in all three. Before you ask
+  for review, walk the checklist:
+</p>
+
+<ul>
+  <li>One change per pull request.</li>
+  <li><code>npm run lint</code>, <code>npx tsc --noEmit</code> and <code>npm run build</code> pass in <code>frontend/</code>.</li>
+  <li>For backend changes, the server starts and <code>/api/health/</code> responds, and you called the changed route.</li>
+  <li>You clicked through the affected screens on desktop and at phone width. Anything visual has a screenshot or a short recording.</li>
+  <li>No secrets, keys or personal data in the diff.</li>
+  <li>A new environment variable is read on the backend and documented with a placeholder in <code>backend/.env.example</code> (or <code>frontend/.env.example</code>, if it truly belongs in the browser, which should be rare).</li>
+  <li>A schema change is a new SQL file under <code>backend/database/</code> and is folded into <code>reset.sql</code>, with RLS enabled and policies on every new table.</li>
+  <li><code>CHANGELOG.md</code> has a line under "Unreleased" if a user would notice the change.</li>
+  <li>The handbook chapter for the area is updated if behaviour changed (<a href="#s16-8">16.8</a>).</li>
+</ul>
+
+<h3 id="s16-6"><span class="num">16.6</span><span>Common changes, at a glance</span></h3>
+
+<h4>Adding a game</h4>
+
+<p>
+  A game is a class in its own folder under <code>frontend/games/</code>, a container component
+  that mounts it, and three registrations. The steps, and the contract every game shares, are in
+  <a href="#ch08">chapter 8</a> and <a href="#ch09">chapter 9</a>. In outline:
+</p>
+
+<ol>
+  <li>Open a "New game proposal" issue.</li>
+  <li>Create <code>frontend/games/&lt;id&gt;/</code>. Canvas games extend <code>BaseGame</code> in <code>frontend/games/BaseGame.ts</code>, which declares <code>init</code>, <code>update</code>, <code>render</code> and <code>handleInput</code>; the 3D games use <code>three</code>.</li>
+  <li>Add a container in <code>frontend/components/</code> and a branch for it in <code>GameContainer.tsx</code>.</li>
+  <li>Register the game in <code>frontend/lib/games.ts</code> and its title, genre and <code>answerBy</code> line in <code>GAME_META</code> in <code>frontend/lib/gameMeta.ts</code>.</li>
+  <li>Get questions through <code>frontend/lib/api/questions.ts</code>, show them with the components in <code>frontend/components/exam/</code>, and save results with <code>apiClient.saveScore</code>. A game that builds its own question pipeline is hard to maintain.</li>
+</ol>
+
+<h4>Adding or improving a lesson</h4>
+
+<p>
+  Lessons are static data. A topic must exist in a course's <code>topics</code> list in
+  <code>frontend/lib/courses.ts</code>, and its lesson is an entry in
+  <code>frontend/lib/lessons.ts</code> with a <code>summary</code>, <code>ideas</code>, a worked
+  <code>example</code>, <code>traps</code> and a quick <code>check</code>, matching the
+  <code>Lesson</code> interface at the top of the file. The topic name must match the topic names
+  the question bank uses, or the lesson's practice link and videos will not line up.
+  <a href="#ch10">Chapter 10</a> covers the rest.
+</p>
+
+<h4>Adding an API route</h4>
+
+<ol>
+  <li>Add a handler to the router in <code>backend/src/api/</code> that fits, or a new module with <code>router = APIRouter()</code> registered in <code>backend/src/main.py</code> with <code>app.include_router(..., prefix="/api/&lt;name&gt;", tags=[...])</code>.</li>
+  <li>Declare request and response models in <code>backend/src/models/schemas.py</code>.</li>
+  <li>Require a user with <code>Depends(get_current_user)</code> from <code>src/api/auth.py</code>, and take the database with <code>Depends(get_db)</code>. Filter every query by <code>current_user["id"]</code>: the service-role client bypasses RLS, so the handler is the only thing keeping one user out of another's rows.</li>
+  <li>Keep logic that is more than a query in <code>backend/src/services/</code>.</li>
+  <li>Add a typed method to <code>ApiClient</code> in <code>frontend/lib/api/client.ts</code>.</li>
+</ol>
+
+<p><a href="#ch14">Chapter 14</a> lists every existing route and its auth rule.</p>
+
+<h3 id="s16-7"><span class="num">16.7</span><span>Code style</span></h3>
+
+<p>
+  There is no formatter configuration in the repository, so match the file you are editing. These
+  are the conventions the code follows.
+</p>
+
+<h4>TypeScript and React</h4>
+
+<ul>
+  <li><b>Strict mode.</b> <code>frontend/tsconfig.json</code> sets <code>"strict": true</code>. Write real types; a handful of files still use <code>any</code> (for example the auth responses in <code>lib/api/client.ts</code>), and replacing them is welcome, adding more is not.</li>
+  <li><b>Path aliases.</b> Import with <code>@/lib/...</code>, <code>@/components/...</code>, <code>@/games/...</code> and <code>@/types/...</code>, as configured in <code>tsconfig.json</code>, not with long relative paths.</li>
+  <li><b>App Router.</b> Each page is <code>frontend/app/&lt;route&gt;/page.tsx</code>. Interactive pages and components start with <code>'use client'</code>; keep the directive as low in the tree as you can. A new signed-in route also goes into <code>protectedPrefixes</code> in <code>frontend/middleware.ts</code> and the disallow list in <code>frontend/app/robots.ts</code>.</li>
+  <li><b>Components.</b> Named function components with a <code>Props</code> interface above them, one main component per file, grouped by feature under <code>components/</code> (<code>exam/</code>, <code>learn/</code>, <code>brand/</code>, <code>arcade/</code>). Shared data and helpers live in <code>lib/</code>, one concern per file.</li>
+  <li><b>Network.</b> All API calls go through the single <code>apiClient</code> in <code>lib/api/client.ts</code>. Do not call <code>fetch</code> against the backend from a component.</li>
+  <li><b>Lint.</b> ESLint extends <code>next/core-web-vitals</code> (<code>frontend/.eslintrc.json</code>).</li>
+</ul>
+
+<h4>Styling</h4>
+
+<ul>
+  <li><b>Theme tokens.</b> Use the colours in <code>frontend/tailwind.config.js</code>: <code>paper</code>, <code>ink</code>, <code>mist</code>, and <code>cobalt</code>, <code>lime</code> and <code>coral</code> with their <code>soft</code> variants. Use the shadows <code>shadow-brutal</code>, <code>shadow-brutal-sm</code>, <code>shadow-brutal-lg</code> and <code>shadow-glass</code>, and the <code>font-display</code> and <code>font-serif</code> families. Do not add raw hex values to components.</li>
+  <li><b>Component classes.</b> Reuse the classes in <code>frontend/app/globals.css</code>: <code>.btn</code> with <code>.btn-cobalt</code>, <code>.btn-ink</code>, <code>.btn-lime</code> or <code>.btn-paper</code>, plus <code>.brutal</code>, <code>.glass</code>, <code>.field</code> and <code>.chip</code>.</li>
+  <li><b>Copy.</b> Sentence case, plain verbs, no emoji in the interface. <a href="#ch04">Chapter 4</a> has the full rules.</li>
+</ul>
+
+<h4>Python</h4>
+
+<ul>
+  <li><b>Layers.</b> Routers in <code>src/api/</code> stay thin: validate, authorise, call a service, shape the response. Services in <code>src/services/</code> hold the logic. Pydantic models live in <code>src/models/schemas.py</code>, and their field names are camelCase (<code>gameId</code>) because they mirror the TypeScript types.</li>
+  <li><b>Imports</b> are absolute from the <code>src</code> package: <code>from src.services.videos import find_topic_videos</code>.</li>
+  <li><b>Type hints</b> use <code>typing</code> (<code>List</code>, <code>Dict</code>, <code>Optional</code>, <code>Literal</code>). Keep code runnable on Python 3.9: no <code>X | None</code> unions and no <code>match</code> statements.</li>
+  <li><b>Docstrings</b> open every module and route, in one plain sentence.</li>
+  <li><b>Blocking work</b> such as a Supabase query or a DuckDuckGo search inside an async route runs through <code>asyncio.to_thread</code>, as <code>questions.py</code> and <code>videos.py</code> do.</li>
+  <li><b>Configuration</b> comes from <code>os.getenv</code> with a documented default, and every new name goes into <code>backend/.env.example</code>.</li>
+</ul>
+
+<h4>Dead code to leave alone or remove deliberately</h4>
+
+<p>
+  A few files are left over from the hackathon and are not used: the TypeScript files under
+  <code>backend/src/</code> (<code>index.ts</code>, <code>config/supabase.ts</code>,
+  <code>api/games.ts</code>, <code>services/gameScoreService.ts</code>, <code>types/</code>), the
+  <code>frontend/games/mario/</code> folder, which no entry in <code>lib/games.ts</code> points to,
+  and the <code>backend/setup.sh</code> and <code>start.sh</code> scripts, which call files that no
+  longer exist. Do not build on them. Removing them is a fine pull request on its own.
+</p>
+
+<h3 id="s16-8"><span class="num">16.8</span><span>Updating this handbook</span></h3>
+
+<p>
+  The handbook is part of the code. If your change alters behaviour a chapter describes, update the
+  chapter in the same pull request. The source is in <code>docs/handbook/src/</code>:
+</p>
+
+<pre class="tree">docs/handbook/
+build.py             assembles index.html from src/, generates the contents
+make-book.sh         runs build.py, render-pdf.sh, then render-epub.sh
+render-pdf.sh        typesets the PDF in two passes for real page numbers
+render-epub.sh       packs the Kindle edition with pack-epub.py
+src/WRITING.md       the rules every chapter follows
+src/chapters/        one HTML fragment per chapter, ch01.html to ch16.html, chA, chB
+src/book.css         the stylesheet</pre>
+
+<p>
+  Read <code>src/WRITING.md</code> before you edit. The rules that trip people up: every name,
+  path and number must exist in the repository; no em dashes; no secrets or personal data; each
+  chapter is well-formed XML with one root <code>&lt;section&gt;</code>, because the same fragment
+  goes into the EPUB; and every id starts with the chapter stem. Check a chapter, then build:
+</p>
+
+<pre>python3 -c "import xml.dom.minidom,sys; xml.dom.minidom.parseString('&lt;div&gt;'+open(sys.argv[1]).read()+'&lt;/div&gt;')" docs/handbook/src/chapters/ch16.html
+python3 docs/handbook/build.py      # warns on em dashes and unresolved links
+./docs/handbook/make-book.sh        # index.html, PDF and EPUB</pre>
+
+<p>
+  A new <code>h3</code> appears in the contents automatically. A new chapter file also needs its
+  stem added to the right part in the <code>PARTS</code> list at the top of <code>build.py</code>.
+</p>
+
+<h3 id="s16-9"><span class="num">16.9</span><span>Study notes</span></h3>
+<div class="study">
+<h4>Read in this order</h4>
+<ol>
+  <li><code>CONTRIBUTING.md</code>, the short form of this chapter.</li>
+  <li><code>.github/workflows/ci.yml</code> and <code>.github/PULL_REQUEST_TEMPLATE.md</code>, what runs and what you are asked.</li>
+  <li><code>frontend/tsconfig.json</code>, <code>frontend/.eslintrc.json</code> and <code>frontend/tailwind.config.js</code>, the rules the compiler and the design enforce.</li>
+  <li><code>backend/src/main.py</code> and one small router, <code>backend/src/api/learn.py</code>, as the pattern for a new route.</li>
+  <li><code>frontend/lib/gameMeta.ts</code> and <code>frontend/components/GameContainer.tsx</code>, where a new game is registered.</li>
+  <li><code>docs/handbook/src/WRITING.md</code>, before you touch a chapter.</li>
+</ol>
+<h4>Check yourself</h4>
+<p class="q">CI is green on your backend pull request. What has it not checked?</p>
+<p class="a">Any route's behaviour. The backend job only imports <code>src.main</code>, so it proves modules load and routers register, nothing more. You have to start the server and call the route.</p>
+<p class="q">Why must a new backend query filter by <code>current_user["id"]</code> when every table has RLS?</p>
+<p class="a">The backend's client uses the service-role key, which bypasses RLS. The filter in the handler is the only boundary between users.</p>
+<p class="q">You add a signed-in page at <code>/review</code>. Which two lists change besides the page itself?</p>
+<p class="a"><code>protectedPrefixes</code> in <code>frontend/middleware.ts</code> and the disallow list in <code>frontend/app/robots.ts</code>.</p>
+<p class="q">Where does a schema change go?</p>
+<p class="a">A new SQL file under <code>backend/database/</code>, the same change folded into <code>reset.sql</code>, RLS and policies on any new table, and a note in the pull request that it must be run on production before merge.</p>
+<p class="q">Your chapter edit builds in the browser but stops <code>build.py</code>. What is the usual cause?</p>
+<p class="a">It is not well-formed XML: an unclosed tag, an unescaped <code>&amp;</code> or <code>&lt;</code>, or a void element that is not self-closed.</p>
+</div>
+</section>

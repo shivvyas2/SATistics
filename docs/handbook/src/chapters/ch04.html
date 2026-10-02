@@ -1,0 +1,488 @@
+<section class="chapter" id="ch04" data-hue="design">
+<p class="chapter-kicker">Chapter four</p>
+<h2><span class="num">4</span><span>The design system</span></h2>
+
+<p class="lede">
+  SATistics looks like a filled-in answer sheet that learned to play games: thick ink outlines,
+  hard offset shadows, flat blocks of cobalt and lime, and the occasional frosted glass panel
+  floating over soft paper. The whole system is small. It is seven color tokens and four shadows in
+  the Tailwind config, a dozen component classes in one stylesheet, two fonts, a handful of SVG
+  brand pieces and one app shell. This chapter walks through each of them and ends with the rules
+  for building a screen that fits.
+</p>
+
+<p>
+  There is no component library and no design token package. Pages are client components that
+  compose Tailwind utilities with the classes in <code>frontend/app/globals.css</code>. That keeps
+  the system easy to read and easy to break, so most of this chapter is about the conventions the
+  existing screens follow rather than about APIs.
+</p>
+
+<h3 id="s4-1"><span class="num">4.1</span><span>Two ideas: brutal and glass</span></h3>
+
+<p>
+  The comment above the component layer in <code>globals.css</code> names the identity in one line:
+  "brutalist outlines with frosted glass panels". The two halves do different jobs.
+</p>
+
+<p>
+  <b>Neo-brutalism</b> carries anything you can press or anything that holds content. It is a
+  2&#160;px <code>ink</code> border, a solid offset shadow with no blur, generous radii (16 to 32
+  px), and flat fills from the palette. Buttons move toward their shadow when hovered and sink into
+  it when pressed, which makes the shadow read as physical depth. Cards, form fields, chips, the
+  shell's outer frame and the game covers all use the same outline.
+</p>
+
+<p>
+  <b>Glass</b> is for decoration and for secondary panels that sit over something busy: the landing
+  page's section nav, the "how it works" steps, the key idea cards on a lesson, the caption on the
+  developer page and the "Today's focus" card on the auth screens. It is a translucent white fill,
+  a thin white border, a soft blurred shadow and <code>backdrop-blur-xl</code>. Glass only works
+  over something with texture, which is why the app's background is the <code>.paper-blobs</code>
+  gradient rather than a flat color.
+</p>
+
+<p>
+  The brand motif is the exam answer sheet. The logo mark is four answer bubbles laid out like a
+  gamepad's face buttons, a decorative <code>BubbleRow</code> shows A to D with one bubble filled,
+  and a <code>Pencil</code> draws a No. 2 test pencil in coral, paper and lime.
+</p>
+
+<h3 id="s4-2"><span class="num">4.2</span><span>Files and folders</span></h3>
+
+<pre class="tree">frontend/tailwind.config.js            color tokens, font families, shadows, 4xl radius
+frontend/app/globals.css               component classes, focus ring, reduced motion, game skins
+frontend/app/layout.tsx                loads Bricolage Grotesque and Instrument Serif
+frontend/lib/arcade.ts                 loads Press Start 2P for the arcade games, high scores
+frontend/components/brand/Logo.tsx     Logo, LogoMark, BubbleRow, Pencil
+frontend/components/brand/Icons.tsx    17 stroke icons that inherit currentColor
+frontend/components/brand/GameCover.tsx  SVG cover art for each game
+frontend/components/DashboardLayout.tsx  the signed-in app shell
+frontend/components/auth/AuthShell.tsx   the signed-out shell, Field, FormError
+frontend/components/arcade/ArcadeFrame.tsx  pixel cabinet: ArcadeFrame, ArcadeTopBar, ArcadeStartScreen
+frontend/components/arcade/GameHud.tsx      site-styled HUD: HUD_PANEL, GameTopBar, Pips</pre>
+
+<p>
+  The Tailwind <code>content</code> globs cover <code>pages/</code>, <code>components/</code> and
+  <code>app/</code>. A class written anywhere else, for example in a string inside
+  <code>frontend/games/</code> or <code>frontend/lib/</code>, is not scanned and will be purged from
+  the build. Keep class names in those three folders.
+</p>
+
+<h3 id="s4-3"><span class="num">4.3</span><span>Tokens</span></h3>
+
+<p>
+  All tokens live under <code>theme.extend</code> in <code>frontend/tailwind.config.js</code>, so
+  the default Tailwind palette is still available. The house rule is to use the tokens and nothing
+  else for color; the only other hues in the codebase are the pink <code>#F45D9C</code> that appears
+  as an avatar swatch and in cover art, and the neon colors inside the arcade games.
+</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Token</th><th>Value</th><th>Soft variant</th><th>Used for</th></tr></thead>
+<tbody>
+<tr><td><code>paper</code></td><td><code>#ECEAE4</code></td><td>none</td><td>Page background, the html element, <code>.theme-paper</code></td></tr>
+<tr><td><code>ink</code></td><td><code>#17171C</code></td><td>none</td><td>Text, every outline, every hard shadow, the active nav item</td></tr>
+<tr><td><code>cobalt</code></td><td><code>#3A33E8</code></td><td><code>#DCDBFB</code></td><td>Primary accent, links, focus ring, hero cards, filled bubbles</td></tr>
+<tr><td><code>lime</code></td><td><code>#D4F34A</code></td><td><code>#F1FBC9</code></td><td>Call to action, success, "learned", strong topics</td></tr>
+<tr><td><code>coral</code></td><td><code>#FF6B4A</code></td><td><code>#FFE1D9</code></td><td>Errors, wrong answers, weak topics, traps</td></tr>
+<tr><td><code>mist</code></td><td><code>#F7F6F2</code></td><td>none</td><td>The shell's inner surface, <code>.btn-paper</code>, light HUD chips</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  <code>cobalt</code>, <code>lime</code> and <code>coral</code> are objects with a
+  <code>DEFAULT</code> and a <code>soft</code> key, so both <code>bg-lime</code> and
+  <code>bg-lime-soft</code> exist. The soft variants are tints for large areas (a lesson's traps
+  section is <code>bg-coral-soft</code>, a quick check is <code>bg-cobalt-soft</code>); the full
+  colors are for small, loud things.
+</p>
+
+<p>
+  Four shadows are defined. <code>shadow-brutal</code> is <code>4px 4px 0 0</code> in ink,
+  <code>shadow-brutal-sm</code> is 2&#160;px and <code>shadow-brutal-lg</code> is 8&#160;px (used
+  once, on the shell's outer frame). <code>shadow-glass</code> is a large soft drop shadow plus a
+  one-pixel white inset highlight. Hover states that need a 5&#160;px or a cobalt shadow write an
+  arbitrary value instead, for example <code>shadow-[3px_3px_0_0_#3A33E8]</code> on the active nav
+  link and on a focused field. The config also adds <code>rounded-4xl</code> (2&#160;rem), though
+  most screens write radii such as <code>rounded-[24px]</code> directly.
+</p>
+
+<p>
+  Two font families are declared: <code>font-display</code> reads the CSS variable
+  <code>--font-display</code> and <code>font-serif</code> reads <code>--font-serif</code>, each with
+  a system fallback. Section 4.5 covers where those variables come from.
+</p>
+
+<h3 id="s4-4"><span class="num">4.4</span><span>Component classes</span></h3>
+
+<p>
+  <code>globals.css</code> defines its reusable pieces inside <code>@layer components</code> with
+  <code>@apply</code>, so they sort before utilities and any utility on the same element wins. That
+  is deliberate: <code>className="btn btn-ink w-full py-3.5"</code> overrides the button's padding
+  without a specificity fight.
+</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Class</th><th>What it applies</th></tr></thead>
+<tbody>
+<tr><td><code>.theme-paper</code></td><td><code>min-h-screen bg-paper text-ink</code>. Put it on the root of every non-game screen.</td></tr>
+<tr><td><code>.brutal</code></td><td>2&#160;px ink border and <code>shadow-brutal</code>. The outline on its own.</td></tr>
+<tr><td><code>.glass</code></td><td><code>border-white/70 bg-white/55 shadow-glass backdrop-blur-xl</code>.</td></tr>
+<tr><td><code>.btn</code></td><td>Inline flex, <code>rounded-2xl</code>, ink border, bold 15&#160;px text, <code>shadow-brutal</code>. Hover lifts by one pixel and grows the shadow to 5&#160;px; active shifts 3&#160;px and drops the shadow; disabled is half opacity with no pointer events.</td></tr>
+<tr><td><code>.btn-ink</code>, <code>.btn-lime</code>, <code>.btn-cobalt</code>, <code>.btn-paper</code></td><td>Fill and text color only. Always combine with <code>.btn</code>.</td></tr>
+<tr><td><code>.arrow-btn</code></td><td>A 44&#160;px round outlined button for a single icon, usually an arrow that rotates 45 degrees on group hover.</td></tr>
+<tr><td><code>.field</code></td><td>Full width, <code>rounded-2xl</code>, ink border, white fill, <code>shadow-brutal-sm</code>, no outline. On focus the shadow turns cobalt.</td></tr>
+<tr><td><code>.chip</code></td><td>Small pill with an ink border and semibold text, for tags, toggles and topic lists.</td></tr>
+<tr><td><code>.paper-blobs</code></td><td>Three radial gradients (two white, one cobalt-soft) over paper. Outside the layer, plain CSS.</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  Below the component layer the file sets a global <code>:focus-visible</code> ring (3&#160;px solid
+  cobalt, 3&#160;px offset) and a <code>prefers-reduced-motion</code> rule that cuts every animation
+  and transition to 0.01&#160;ms. It also holds styles that belong to other features:
+  <code>.question-content</code> for exam questions rendered from HTML and MathML,
+  <code>.dark-scroll</code>, <code>.game-hud</code> and <code>.game-reading</code> for text over game
+  scenes, the <code>.arcade-*</code> classes and the <code>.hud-panel</code> skins described in
+  section 4.8.
+</p>
+
+<div class="note caution"><b>Two leftovers.</b> The <code>body</code> rule sets
+<code>background: #0a0a0a</code> and <code>color: #fff</code>, from when every screen was dark. The
+<code>html</code> element is paper, and every current screen paints its own background, so you only
+see it if a page forgets <code>.theme-paper</code>. About 400 lines of <code>.retro-*</code> Game Boy
+classes are still in the file; their only user is <code>frontend/components/GameCard.tsx</code>, which
+nothing imports.</div>
+
+<h3 id="s4-5"><span class="num">4.5</span><span>Type</span></h3>
+
+<p>
+  <code>frontend/app/layout.tsx</code> loads two Google fonts with <code>next/font/google</code>,
+  which self-hosts them at build time. <code>Bricolage_Grotesque</code> becomes the CSS variable
+  <code>--font-display</code>; <code>Instrument_Serif</code>, at weight 400 in normal and italic,
+  becomes <code>--font-serif</code>. Both use <code>display: 'swap'</code>. The root
+  <code>&lt;html&gt;</code> carries both variable classes and <code>&lt;body&gt;</code> carries
+  <code>font-display</code>, so the grotesque is the default everywhere.
+</p>
+
+<p>
+  Headings are heavy and tight: <code>font-extrabold tracking-tight</code> at
+  <code>text-4xl</code> or <code>text-5xl</code> for a page title, <code>text-2xl</code> or
+  <code>text-xl</code> for a section. The serif is an accent and only ever appears in italic, as the
+  second line of a big headline: "Your score, <i>leveled up.</i>" on signup, "Back for <i>another
+  round?</i>" on login, "one game at a time." on the landing page. The pattern in JSX is a
+  <code>&lt;span className="block font-serif font-normal italic"&gt;</code> inside the
+  <code>&lt;h1&gt;</code>. Do not set body copy in the serif.
+</p>
+
+<p>
+  A third font, <code>Press_Start_2P</code>, is loaded in <code>frontend/lib/arcade.ts</code> as
+  <code>--font-arcade</code>. It is exported as <code>arcadeFontVariable</code> and only applied
+  inside <code>ArcadeFrame</code>, so the pixel font is downloaded only on pages that use it.
+</p>
+
+<h3 id="s4-6"><span class="num">4.6</span><span>Brand components</span></h3>
+
+<p>
+  <code>frontend/components/brand/Logo.tsx</code> exports four pieces. <code>Logo</code> is the
+  wordmark: the text "SATistics" in 22&#160;px extrabold inside a <code>Link</code>, with an
+  <code>inverted</code> prop for white on cobalt and an <code>href</code> that defaults to
+  <code>/</code> (the shell passes <code>/dashboard</code>). <code>LogoMark</code> is the square
+  icon: an ink tile with rounded corners, a lime bubble on top and three outlined bubbles, inverted
+  to a white tile with cobalt rings when asked. <code>BubbleRow</code> draws four lettered bubbles
+  and fills the one at index <code>filled</code> (default 2, so C) in cobalt.
+  <code>Pencil</code> draws the pencil. All three SVGs are <code>aria-hidden</code>; they are
+  decoration.
+</p>
+
+<p>
+  <code>Icons.tsx</code> holds 17 stroke icons on a 24 by 24 grid: <code>ArrowUpRight</code>,
+  <code>ArrowLeft</code>, <code>HomeIcon</code>, <code>GamepadIcon</code>, <code>ChartIcon</code>,
+  <code>UserIcon</code>, <code>SearchIcon</code>, <code>LogoutIcon</code>, <code>CheckIcon</code>,
+  <code>PlayIcon</code>, <code>MenuIcon</code>, <code>CloseIcon</code>, <code>BookIcon</code>,
+  <code>UploadIcon</code>, <code>ExpandIcon</code>, <code>ShrinkIcon</code> and
+  <code>ClockIcon</code>. A shared <code>base()</code> helper gives each one
+  <code>stroke="currentColor"</code>, a 2.2 stroke width, round caps and joins,
+  <code>aria-hidden</code>, and a default size of <code>h-5 w-5</code>. Color an icon by setting the
+  text color of its parent; size it with a <code>className</code>. Add new icons here in the same
+  shape rather than pulling in an icon package.
+</p>
+
+<p>
+  <code>GameCover.tsx</code> draws a cover for each game as SVG on a 300 by 400 view box, using
+  constants that mirror the tokens (<code>INK</code>, <code>PAPER</code>, <code>LIME</code>,
+  <code>COBALT</code>, <code>CORAL</code>, plus <code>PINK</code>). The <code>COVERS</code> record has
+  an entry, a background color and an <code>art</code> fragment, for <code>zombie</code>,
+  <code>whackamole</code>, <code>carnival</code>, <code>subway-surfers</code>,
+  <code>squid-game</code> and <code>pac-man</code>. The zombie cover is a lime crosshair over a
+  zombie hand in front of two answer tombstones; Whack-A-Mole is a cobalt mole holding a "B" card
+  under a coral mallet. A small <code>letter()</code> helper places an answer letter in the display
+  font. Unknown ids get <code>FALLBACK</code>, a lime circle on ink.
+</p>
+
+<p>
+  The SVG uses <code>preserveAspectRatio="xMidYMid slice"</code> and fills its parent absolutely, so
+  the parent decides the shape: <code>aspect-[3/4]</code> on the auth screens, a square
+  <code>w-16</code> thumbnail in session lists, a circle on the dashboard. With
+  <code>showTitle</code> on (the default) the game's title from <code>GAME_META</code> sits in a
+  white outlined label at the bottom left. A new game needs an entry in <code>COVERS</code> or it
+  will show the fallback everywhere.
+</p>
+
+<h3 id="s4-7"><span class="num">4.7</span><span>The app shell</span></h3>
+
+<figure>
+<svg class="diagram" viewBox="0 0 860 300" role="img" aria-label="DashboardLayout on a wide screen: a framed panel with a 256 pixel sidebar on the left holding the logo, the avatar, seven nav links and the goal card; a scrolling main column in the middle; and an optional aside on the right, 320 pixels or 440 to 560 pixels when wide, shown only at the xl breakpoint.">
+  <rect class="box-alt" x="20" y="20" width="820" height="260" rx="24"/>
+  <text class="lbl-sm" x="40" y="44">theme-paper paper-blobs, lg:p-4</text>
+  <rect class="box" x="40" y="56" width="780" height="208" rx="20"/>
+  <rect class="box-alt" x="56" y="70" width="160" height="180" rx="12"/>
+  <text class="lbl" x="136" y="96" text-anchor="middle">sidebar w-64</text>
+  <text class="lbl-sm" x="136" y="120" text-anchor="middle">Logo</text>
+  <text class="lbl-sm" x="136" y="140" text-anchor="middle">Avatar, name, @username</text>
+  <text class="lbl-sm" x="136" y="160" text-anchor="middle">NAV (7 links)</text>
+  <text class="lbl-sm" x="136" y="180" text-anchor="middle">goal card</text>
+  <text class="lbl-sm" x="136" y="200" text-anchor="middle">Log out</text>
+  <rect class="box-hot" x="232" y="70" width="380" height="180" rx="12"/>
+  <text class="lbl" x="422" y="150" text-anchor="middle">main: children</text>
+  <text class="lbl-hot" x="422" y="172" text-anchor="middle">lg:overflow-y-auto</text>
+  <rect class="box-alt" x="628" y="70" width="176" height="180" rx="12"/>
+  <text class="lbl" x="716" y="140" text-anchor="middle">aside (optional)</text>
+  <text class="lbl-sm" x="716" y="162" text-anchor="middle">xl and up only</text>
+  <text class="lbl-sm" x="716" y="182" text-anchor="middle">320px, or 440/560 wide</text>
+</svg>
+<figcaption>
+  <code>DashboardLayout</code> at desktop width. Below <code>lg</code> the frame drops away, the
+  sidebar becomes a menu under a top bar, and the aside is not rendered at all.
+</figcaption>
+</figure>
+
+<p>
+  Every signed-in page renders inside <code>DashboardLayout</code> from
+  <code>frontend/components/DashboardLayout.tsx</code>. It takes <code>children</code>, an optional
+  <code>aside</code> and an <code>asideWide</code> flag. The outer div is
+  <code>theme-paper paper-blobs</code>; inside it a <code>bg-mist/80</code> panel becomes, from
+  <code>lg</code> up, a rounded 32&#160;px frame with an ink border and
+  <code>shadow-brutal-lg</code> that fills the viewport, with its own scrolling main column.
+</p>
+
+<p>
+  The sidebar shows the <code>Logo</code>, then the signed-in person's <code>Avatar</code> (76&#160;px,
+  from <code>components/profile/ProfileFields.tsx</code>), name and <code>@username</code>, read
+  through <code>useAccount</code>. While the account loads, a pulsing outlined circle stands in. The
+  <code>NAV</code> array lists seven links: Home, Learn, Games, Mock exam, My material, Statistics
+  and Profile. A link is active when the path matches exactly, except Games and Learn, which match
+  by prefix so a lesson or a game's select page keeps its tab lit. The active link is an ink pill
+  with white text and a cobalt offset shadow, and carries <code>aria-current="page"</code>.
+</p>
+
+<p>
+  At the bottom, a dashed goal card shows the exam's target score and either a test-day countdown
+  (from <code>daysUntil</code>) or the daily minutes. If the account has no profile, a lime "Set up
+  your profile" link takes its place. "Log out" calls <code>apiClient.logout()</code>, clears the
+  account cache and pushes to <code>/login</code> whether or not the request succeeded.
+</p>
+
+<p>
+  Below <code>lg</code> a top bar holds the logo and an <code>.arrow-btn</code> menu toggle with
+  <code>aria-expanded</code> and a label that flips between "Open menu" and "Close menu". The menu
+  renders the same sidebar markup inline. The <code>aside</code> column is
+  <code>hidden xl:block</code>, so anything a page puts there is invisible below 1280&#160;px unless
+  the page repeats it in the main column. The lesson page does this (its video panel has an
+  <code>xl:hidden</code> copy); the dashboard does not, so its courses, focus topics and "Haven't
+  tried yet" covers do not appear on tablets or phones.
+</p>
+
+<p>
+  Signed-out screens use <code>AuthShell</code> instead: a cobalt showcase panel on the left from
+  <code>lg</code> up (logo, a headline, a caption, three tilted <code>GameCover</code>s behind a
+  glass card) and the form column on the right, capped at 440&#160;px. It also exports
+  <code>Field</code>, which pairs a bold label with an optional hint, and <code>FormError</code>, a
+  coral-soft box with <code>role="alert"</code>.
+</p>
+
+<h3 id="s4-8"><span class="num">4.8</span><span>Inside the games</span></h3>
+
+<p>
+  Games run full screen over 3D or canvas scenes, so they do not use the shell. There are three
+  looks, chosen per game.
+</p>
+
+<p>
+  <b>Site-styled HUD.</b> <code>frontend/components/arcade/GameHud.tsx</code> brings the brutal
+  outline into the game. <code>HUD_PANEL</code> is a class string for an ink card with a lime offset
+  shadow, used for question panels; question cards are styled for a dark background, so the panel
+  stays ink even on a light scene. <code>GameTopBar</code> puts a round pause button on the left and
+  a row of stat chips in the middle, each chip toned <code>paper</code>, <code>lime</code>,
+  <code>cobalt</code> (soft) or <code>coral</code> (soft) through a <code>TONES</code> map. An empty
+  44&#160;px span on the right balances the pause button so the chips stay centered.
+  <code>Pips</code> draws filled and empty dots for lives or shots and labels itself "3 of 5" for
+  screen readers. Whack-A-Mole, Balloon Pop and Pac-Man use this set.
+</p>
+
+<p>
+  <b>Arcade cabinet.</b> <code>ArcadeFrame.tsx</code> wraps a game in a fixed black screen that sets
+  <code>--arcade-color</code> from its <code>color</code> prop, applies the pixel font variable and
+  lays the <code>.arcade-crt</code> scanline and vignette overlay on top. <code>ArcadeTopBar</code>
+  is a marquee of red labels over glowing values, with pause and mute buttons;
+  <code>ArcadeStartScreen</code> is the attract screen with a zero-padded "HI-SCORE", a START button,
+  a blinking "INSERT COIN" and a plain "Back to games" link. High scores come from
+  <code>getHighScore</code> and <code>recordHighScore</code> in <code>lib/arcade.ts</code>, stored
+  in localStorage under <code>arcade_hi_&lt;gameId&gt;</code>. Only the zombie game uses this frame
+  today.
+</p>
+
+<p>
+  <b>Themed skins.</b> Subway Surfers and Squid Game use <code>.hud-panel</code>, whose background,
+  accent, radius and shadow come from CSS variables. <code>.skin-subway</code> sets yellow on deep
+  navy with squared corners, like station signage; <code>.skin-squid</code> sets tracksuit green
+  with a guard-pink offset shadow. <code>.hud-banner</code> paints a strip in the accent color
+  across the top of a panel. A new skin is four variables in a new <code>.skin-*</code> class.
+</p>
+
+<h3 id="s4-9"><span class="num">4.9</span><span>Words</span></h3>
+
+<p>
+  The copy is part of the system and follows a few rules you can check by reading any screen.
+</p>
+
+<ul>
+  <li><b>Sentence case everywhere.</b> "Mark as learned", "Set up your profile", "Recent
+  sessions", "Haven't tried yet". Never Title Case on buttons or headings. The arcade attract screen
+  is the one place that shouts in capitals, on purpose.</li>
+  <li><b>No emoji in the interface.</b> Icons come from <code>Icons.tsx</code>. The arcade top bar's
+  menu and music glyphs are text symbols inside labelled buttons. The <code>name</code> fields in
+  <code>frontend/lib/games.ts</code> still carry older titles with emoji; show titles through
+  <code>gameTitle</code> from <code>frontend/lib/gameMeta.ts</code> instead.</li>
+  <li><b>Plain verbs on buttons.</b> "Log in", "Continue", "Create profile", "Open lesson",
+  "Practice in a game", "Play Whack-A-Mole". Say what will happen.</li>
+  <li><b>Talk to one person, briefly.</b> "Your account is ready. Finish your profile to start."
+  Empty states say what will fill them: "Finish a game and your score, accuracy and streak show up
+  here."</li>
+  <li><b>Errors say what to do.</b> "Usernames are 3 to 24 lowercase letters, numbers or
+  underscores." "The username @maya is taken. Try another one." End sentences with a period.</li>
+  <li><b>Loading text ends in an ellipsis character</b>: "Logging in…", "Finding a video
+  lesson…".</li>
+</ul>
+
+<h3 id="s4-10"><span class="num">4.10</span><span>Building a new screen</span></h3>
+
+<p>
+  A new signed-in page is a client component in <code>frontend/app/&lt;name&gt;/page.tsx</code>.
+  Follow the shape of <code>frontend/app/stats/page.tsx</code>, which is the simplest complete
+  example.
+</p>
+
+<ol>
+  <li>Wrap the page in <code>&lt;DashboardLayout&gt;</code>. Add the route to the
+  <code>NAV</code> array if it deserves a tab, and to <code>protectedPrefixes</code> in
+  <code>frontend/middleware.ts</code> if it needs a login.</li>
+  <li>Inside, use <code>&lt;div className="mx-auto max-w-4xl p-5 sm:p-8"&gt;</code> (or
+  <code>max-w-3xl</code> for reading, <code>max-w-5xl</code> for grids).</li>
+  <li>Open with an <code>h1</code> in <code>text-5xl font-extrabold tracking-tight</code> and a
+  one-sentence <code>text-ink/65</code> description under it.</li>
+  <li>Group content in cards: <code>rounded-[24px] border-2 border-ink bg-white p-5</code>. Promote
+  the one most important card with a fill (<code>bg-cobalt text-white</code> or
+  <code>bg-lime</code>) and <code>shadow-brutal</code>. Use soft tints for status, never for
+  decoration.</li>
+  <li>Use <code>.btn</code> with one variant for actions. One <code>btn-ink</code> or
+  <code>btn-lime</code> per view is the primary action; others are <code>btn-paper</code>.</li>
+  <li>Show skeletons while loading (<code>animate-pulse rounded-[22px] bg-white</code> at the size
+  of what is coming), and a dashed outlined box with a next step when empty.</li>
+  <li>If you use <code>aside</code>, decide what small screens see instead.</li>
+</ol>
+
+<p>
+  A minimal page looks like this:
+</p>
+
+<pre>'use client'
+import { DashboardLayout } from '@/components/DashboardLayout'
+
+export default function ExamplePage() {
+  return (
+    &lt;DashboardLayout&gt;
+      &lt;div className="mx-auto max-w-4xl p-5 sm:p-8"&gt;
+        &lt;h1 className="text-5xl font-extrabold tracking-tight"&gt;Example&lt;/h1&gt;
+        &lt;p className="mt-2 max-w-xl text-ink/65"&gt;One sentence on what this page is for.&lt;/p&gt;
+        &lt;section className="mt-8 rounded-[24px] border-2 border-ink bg-white p-5"&gt;
+          &lt;h2 className="text-xl font-extrabold"&gt;A section&lt;/h2&gt;
+          &lt;button className="btn btn-ink mt-4"&gt;Do the thing&lt;/button&gt;
+        &lt;/section&gt;
+      &lt;/div&gt;
+    &lt;/DashboardLayout&gt;
+  )
+}</pre>
+
+<h3 id="s4-11"><span class="num">4.11</span><span>Accessibility rules</span></h3>
+
+<p>
+  The codebase already follows these; keep doing so.
+</p>
+
+<ul>
+  <li><b>Never remove the focus ring.</b> <code>:focus-visible</code> draws a cobalt outline on
+  everything. <code>.field</code> sets <code>outline-none</code> but replaces it with a cobalt
+  shadow; if you suppress an outline, replace it.</li>
+  <li><b>Respect reduced motion.</b> The global rule already zeroes transitions and animations. Do
+  not drive essential state changes with animation alone, and add a
+  <code>prefers-reduced-motion</code> override for any keyframe animation you add, as
+  <code>.arcade-blink</code> does.</li>
+  <li><b>Label icon-only buttons.</b> The menu toggle, the pause button, the back arrow on signup,
+  the play overlay on a video thumbnail and each avatar swatch all carry an
+  <code>aria-label</code>.</li>
+  <li><b>Expose state.</b> Toggles use <code>aria-pressed</code> (exam choice, daily minutes, avatar
+  color, "Mark as learned"), nav uses <code>aria-current="page"</code>, the signup steps use
+  <code>aria-current="step"</code>.</li>
+  <li><b>Announce results.</b> Errors render in <code>FormError</code> with
+  <code>role="alert"</code>; quick check feedback and "Profile saved" sit in
+  <code>aria-live="polite"</code> regions.</li>
+  <li><b>Decorative SVG is hidden.</b> Logo marks, bubbles, the pencil, covers and icons are all
+  <code>aria-hidden</code>. Do not put meaning only in a cover; put the game's title in text
+  beside it.</li>
+  <li><b>Keep contrast.</b> Ink on paper, mist, white, lime and every soft tint is high contrast.
+  White text goes on ink, cobalt and coral only. Muted text uses <code>text-ink/55</code> to
+  <code>text-ink/70</code>; do not go lighter for anything a person needs to read.
+  <code>avatarTextColor</code> switches to ink on the lime swatch for the same reason.</li>
+  <li><b>Label every field.</b> Use <code>Field</code> with a matching <code>htmlFor</code> and
+  <code>id</code>, and group choice buttons in a <code>fieldset</code> with a
+  <code>legend</code>.</li>
+</ul>
+
+<h3 id="s4-12"><span class="num">4.12</span><span>Study notes</span></h3>
+
+<div class="study">
+<h4>Read in this order</h4>
+<ol>
+  <li><code>frontend/tailwind.config.js</code>, the whole token set in 40 lines.</li>
+  <li><code>frontend/app/globals.css</code>, the first 90 lines, then the game sections from <code>.game-hud</code> down.</li>
+  <li><code>frontend/app/layout.tsx</code>, how the fonts become CSS variables.</li>
+  <li><code>frontend/components/DashboardLayout.tsx</code>, the shell and its breakpoints.</li>
+  <li><code>frontend/components/auth/AuthShell.tsx</code>, glass over cobalt, and <code>Field</code>.</li>
+  <li><code>frontend/components/brand/Logo.tsx</code> and <code>GameCover.tsx</code>.</li>
+  <li><code>frontend/components/arcade/GameHud.tsx</code>, then <code>ArcadeFrame.tsx</code>.</li>
+  <li><code>frontend/app/stats/page.tsx</code>, a whole screen built from these parts.</li>
+</ol>
+<h4>Check yourself</h4>
+<p class="q">Why can a page write <code>btn btn-ink py-3.5</code> and get the larger padding?</p>
+<p class="a">Because <code>.btn</code> is declared in <code>@layer components</code>, which Tailwind
+emits before the utilities layer. The <code>py-3.5</code> utility comes later in the cascade with the
+same specificity, so it wins.</p>
+<p class="q">Where does <code>font-serif</code> get its typeface, and what happens if the font fails to load?</p>
+<p class="a"><code>layout.tsx</code> loads Instrument Serif through <code>next/font/google</code> as the
+variable <code>--font-serif</code> on <code>&lt;html&gt;</code>; Tailwind's <code>font-serif</code>
+reads that variable and falls back to Georgia, then the generic serif.</p>
+<p class="q">You add a seventh game and its card shows a lime circle on black. Why?</p>
+<p class="a"><code>GameCover</code> found no entry for the new id in <code>COVERS</code> and used
+<code>FALLBACK</code>. Add cover art keyed by the game's id.</p>
+<p class="q">A page passes a helpful panel as <code>aside</code>. A tester on an iPad says it is missing. What is going on?</p>
+<p class="a">The aside column is <code>hidden xl:block</code>, so it only renders at 1280&#160;px and
+wider. Render the same content in the main column with <code>xl:hidden</code>, as the lesson page
+does with its videos.</p>
+<p class="q">Why is the app's background a gradient rather than flat paper?</p>
+<p class="a">Glass panels blur what is behind them. Over a flat color the blur has nothing to work
+on and the panel looks like a grey box; the <code>.paper-blobs</code> gradients give it soft
+texture to frost.</p>
+</div>
+</section>

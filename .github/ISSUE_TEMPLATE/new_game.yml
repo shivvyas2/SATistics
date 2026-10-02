@@ -1,0 +1,34 @@
+name: New game proposal
+description: Propose a new arcade game built on SAT or GRE questions
+labels: [game, enhancement]
+body:
+  - type: input
+    id: name
+    attributes:
+      label: Working title
+    validations:
+      required: true
+  - type: textarea
+    id: loop
+    attributes:
+      label: How answering becomes gameplay
+      description: How does the player choose an answer? What happens on a right or wrong answer? (See handbook chapters 8 and 9 for the game contract.)
+    validations:
+      required: true
+  - type: dropdown
+    id: pace
+    attributes:
+      label: Best fit for
+      options: [Quick questions (short math, vocabulary), Deep questions (passages, multi-step problems), Both]
+    validations:
+      required: true
+  - type: dropdown
+    id: tech
+    attributes:
+      label: Rendering
+      options: [Three.js, HTML canvas, DOM and CSS, Not sure]
+  - type: textarea
+    id: assets
+    attributes:
+      label: Assets
+      description: Models, textures or audio you plan to use, with their licenses.

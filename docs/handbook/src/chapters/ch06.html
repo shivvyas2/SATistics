@@ -1,0 +1,403 @@
+<section class="chapter" id="ch06" data-hue="questions">
+<p class="chapter-kicker">Chapter six</p>
+<h2><span class="num">6</span><span>Exams, courses and practice settings</span></h2>
+
+<p class="lede">
+  Every question in SATistics belongs to one exam and one section. That pair, plus a question
+  count, is the only setting a player chooses before a game. This chapter covers where the pair
+  is defined, how it is stored, how it reaches the games and the backend, and what a question
+  looks like once it arrives. It ends with a checklist for adding an exam or a section.
+</p>
+
+<h3 id="s6-1"><span class="num">6.1</span><span>Intent</span></h3>
+
+<p>
+  The product trains for two tests, the Digital SAT and the GRE, and each has a quantitative and
+  a verbal section. Rather than build a separate game per test, the app keeps one small model of
+  "what am I practising" and threads it through everything: the game setup screen, the question
+  loader, the timer, the offline bank, the learning hub's courses and the mock exam. A game never
+  knows which exam it is running; it receives questions and a number of seconds per question.
+</p>
+
+<p>
+  The model is deliberately thin. It is a pair of string ids, a question count and a table of
+  real-exam pacing. There is no database row for it: the choice lives in the browser's
+  <code>localStorage</code>, under one key, and the backend is told the exam and section as query
+  parameters on every question request. The profile's <code>exam</code> field,
+  covered with profiles, is a separate thing: it sets the target score scale and is not
+  read by the question loader.
+</p>
+
+<h3 id="s6-2"><span class="num">6.2</span><span>Files and folders</span></h3>
+
+<pre class="tree">frontend/lib/exam.ts                       ExamId, SectionId, Pace, ExamPrefs, EXAMS,
+                                           QUESTION_COUNTS, QUICK_SECONDS_PER_QUESTION,
+                                           gamePace, getExamPrefs, setExamPrefs, sectionLabel
+frontend/lib/courses.ts                    Course, COURSES (official topic domains), courseFor
+frontend/lib/api/questions.ts              SATQuestion, fetchAIQuestions, fetchQuestionsWithCache
+frontend/lib/questionBank.ts               offline bank, keyed by exam and section (chapter 7)
+frontend/app/games/[gameId]/select/page.tsx   the game setup screen
+frontend/app/mock/page.tsx                 MODULE_QUESTIONS, SCORE_RANGE (chapter 12)
+
+backend/src/services/question_sources.py   EXAMS (names, option_count), section_label
+backend/src/models/schemas.py              Question, QuestionResponse
+backend/src/api/questions.py               exam and section as Literal query params
+backend/src/api/materials.py               exam and section as Literal form fields
+backend/database/add_materials.sql         CHECK (exam IN ('sat', 'gre'))</pre>
+
+<p>
+  The frontend and backend each keep their own <code>EXAMS</code> table. They are not generated
+  from one another and they hold different facts: the frontend's has display names and pacing,
+  the backend's has the names used in prompts and search queries and the number of answer
+  choices.
+</p>
+
+<h3 id="s6-3"><span class="num">6.3</span><span>Model</span></h3>
+
+<h4>Exam, section and pace</h4>
+
+<pre><code>// frontend/lib/exam.ts
+export type ExamId = 'sat' | 'gre'
+export type SectionId = 'quant' | 'verbal'
+export type Pace = 'quick' | 'deep'
+
+export interface ExamPrefs {
+  exam: ExamId
+  section: SectionId
+  questionCount: number
+}</code></pre>
+
+<p>
+  <code>SectionId</code> uses the GRE's vocabulary for both tests. On the SAT,
+  <code>quant</code> means Math and <code>verbal</code> means Reading and Writing. The display
+  name comes from <code>EXAMS</code>, never from the id.
+</p>
+
+<p>
+  <code>Pace</code> is not a player setting. It is a property of the game: <code>gamePace</code>
+  returns <code>'deep'</code> for any id in <code>DEEP_GAMES</code>, which today holds only
+  <code>'squid-game'</code>, and <code>'quick'</code> for everything else. Quick games want short
+  questions that can be read while something is moving on screen; the deep game wants passages
+  and multi-step problems. <a href="#ch07">Chapter 7</a> shows how each question source honours it.
+</p>
+
+<h4>The pacing table</h4>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Exam</th><th>Section id</th><th>Name</th><th>pacing</th><th>secondsPerQuestion</th></tr></thead>
+<tbody>
+<tr><td>SAT</td><td><code>quant</code></td><td>Math</td><td>22 questions in 35 min</td><td class="num-cell">95</td></tr>
+<tr><td>SAT</td><td><code>verbal</code></td><td>Reading &amp; Writing</td><td>27 questions in 32 min</td><td class="num-cell">71</td></tr>
+<tr><td>GRE</td><td><code>quant</code></td><td>Quantitative</td><td>12 questions in 21 min</td><td class="num-cell">105</td></tr>
+<tr><td>GRE</td><td><code>verbal</code></td><td>Verbal</td><td>12 questions in 18 min</td><td class="num-cell">90</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  <code>secondsPerQuestion</code> is the official section length divided by its question count,
+  rounded down (35 minutes over 22 questions is 95.45 seconds). It is used where the app wants
+  the real exam's pace: the deep game's per-question timer and the mock exam's single clock.
+  Quick games ignore it and use <code>QUICK_SECONDS_PER_QUESTION</code>, which is 35.
+</p>
+
+<p>
+  <code>QUESTION_COUNTS</code> is <code>[6, 10, 20]</code>, the three choices on the setup
+  screen. The default preferences are <code>{ exam: 'sat', section: 'quant', questionCount: 10 }</code>.
+</p>
+
+<h4>Storage</h4>
+
+<p>
+  <code>getExamPrefs</code> reads the JSON under the <code>localStorage</code> key
+  <code>exam_prefs</code> and validates each field on the way out: an exam that is not a key of
+  <code>EXAMS</code>, a section that is neither <code>'quant'</code> nor <code>'verbal'</code>,
+  or a count not in <code>QUESTION_COUNTS</code> falls back to the default for that field alone.
+  On the server (<code>typeof window === 'undefined'</code>) or on a parse error it returns the
+  defaults. <code>setExamPrefs</code> writes the whole object and swallows storage errors. Neither
+  function touches the backend, so preferences are per browser, not per account.
+</p>
+
+<h4>Courses and official domains</h4>
+
+<pre><code>// frontend/lib/courses.ts
+export interface Course {
+  exam: ExamId
+  section: SectionId
+  title: string
+  summary: string
+  topics: string[]   // official content domains
+}</code></pre>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Course</th><th>topics</th></tr></thead>
+<tbody>
+<tr><td>SAT Math</td><td>Algebra, Advanced Math, Problem-Solving and Data Analysis, Geometry and Trigonometry</td></tr>
+<tr><td>SAT Reading &amp; Writing</td><td>Information and Ideas, Craft and Structure, Expression of Ideas, Standard English Conventions</td></tr>
+<tr><td>GRE Quant</td><td>Arithmetic, Algebra, Geometry, Data Analysis</td></tr>
+<tr><td>GRE Verbal</td><td>Text Completion, Sentence Equivalence, Reading Comprehension</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  The SAT topic strings are the College Board's own domain names. They matter because the
+  official question bank reports a question's topic as its <code>primary_class_cd_desc</code>,
+  which uses the same strings, so topic statistics from games line up with course topics without
+  a mapping table. The offline bank uses the same names for its <code>topic</code> fields.
+  <code>courseFor(exam, section)</code> finds the matching course and falls back to
+  <code>COURSES[0]</code>, SAT Math, if none matches. Besides the setup screen, the landing page,
+  the dashboard, the learning hub and <code>frontend/lib/lessons.ts</code> import this file.
+</p>
+
+<h4>A question</h4>
+
+<p>
+  The question shape is defined twice, once per language, and the two are kept in step by hand.
+</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Field</th><th>Type</th><th>Meaning</th></tr></thead>
+<tbody>
+<tr><td><code>id</code></td><td>int</td><td>Stable per source, see chapter 7 for how each source makes it</td></tr>
+<tr><td><code>question</code></td><td>str</td><td>Full plain text, passage first if there is one</td></tr>
+<tr><td><code>options</code></td><td>list of str</td><td>Plain-text choices, 2 to 5</td></tr>
+<tr><td><code>correctAnswer</code></td><td>int</td><td>0-based index into <code>options</code></td></tr>
+<tr><td><code>topic</code>, <code>difficulty</code>, <code>explanation</code></td><td>str</td><td>Difficulty is <code>easy</code>, <code>medium</code> or <code>hard</code></td></tr>
+<tr><td><code>exam</code>, <code>section</code>, <code>skill</code></td><td>optional str</td><td>Skill is the fine-grained College Board skill</td></tr>
+<tr><td><code>passage</code>, <code>stem</code></td><td>optional str</td><td>The passage and the question without it</td></tr>
+<tr><td><code>questionHtml</code>, <code>passageHtml</code>, <code>optionsHtml</code>, <code>explanationHtml</code></td><td>optional</td><td>Sanitized HTML and MathML, only on official questions</td></tr>
+<tr><td><code>source</code>, <code>sourceName</code>, <code>sourceUrl</code></td><td>optional str</td><td>Where the question came from</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  The plain and rich forms exist side by side because the games need both. Canvas games draw
+  text themselves and can only use <code>question</code> and <code>options</code>. The React
+  overlays and the mock exam render HTML through <code>QuestionContent</code> and fall back to the
+  plain text when no HTML is present. <code>question</code> always carries the passage too, so a
+  game that shows only one string still shows everything; renderers that have room use
+  <code>passage</code> and <code>stem</code> separately.
+</p>
+
+<p>
+  <code>source</code> takes five values in practice: <code>official</code> (College Board),
+  <code>web</code> (copied from a practice page), <code>ai</code> (written by the model),
+  <code>custom</code> (the user's own material, <a href="#ch12">chapter 12</a>) and
+  <code>practice</code> (the offline bank, set only in the browser). The comment in
+  <code>schemas.py</code> lists three of them and the comment in <code>SATQuestion</code> lists
+  four; neither mentions <code>custom</code>. The field is a free string in both, so nothing
+  breaks.
+</p>
+
+<h3 id="s6-4"><span class="num">6.4</span><span>The server side</span></h3>
+
+<pre><code># backend/src/services/question_sources.py
+EXAMS = {
+    "sat": {
+        "name": "SAT",
+        "sections": {
+            "quant": {"name": "Math", "option_count": 4},
+            "verbal": {"name": "Reading and Writing", "option_count": 4},
+        },
+    },
+    "gre": {
+        "name": "GRE",
+        "sections": {
+            "quant": {"name": "Quantitative Reasoning", "option_count": 5},
+            "verbal": {"name": "Verbal Reasoning", "option_count": 5},
+        },
+    },
+}</code></pre>
+
+<p>
+  <code>section_label(exam, section)</code> joins the two names, giving strings like
+  <code>"GRE Quantitative Reasoning"</code>. That label goes into the LLM prompts, the
+  DuckDuckGo queries and the material parser's prompt. <code>option_count</code> is only read by
+  the agent's prompt ("Single-answer multiple choice with 5 options"). The lesson-video search in
+  <code>backend/src/services/videos.py</code> also reads the names from this table.
+</p>
+
+<p>
+  The names differ from the frontend's on purpose: the backend uses the official long names
+  because they make better search queries. Do not "fix" one to match the other without checking
+  what reads it.
+</p>
+
+<p>
+  Validation happens at the edges. <code>GET /api/questions</code> declares
+  <code>exam: Literal["sat", "gre"]</code> and <code>section: Literal["quant", "verbal"]</code>,
+  so FastAPI rejects anything else with a 422 before any code runs. <code>POST /api/materials</code>
+  does the same with form fields, and <code>GET /api/learn/videos</code> uses a regex pattern
+  <code>^(sat|gre)$</code>. In the database, <code>materials.exam</code> and
+  <code>profiles.exam</code> carry a <code>CHECK (exam IN ('sat', 'gre'))</code>. The response
+  model is <code>QuestionResponse</code>: a list of <code>Question</code> and a
+  <code>total</code>.
+</p>
+
+<h3 id="s6-5"><span class="num">6.5</span><span>The client</span></h3>
+
+<p>
+  The setup screen at <code>/games/[gameId]/select</code> is the only place a player edits the
+  preferences for games. It is a client component. Because preferences live in
+  <code>localStorage</code>, it renders a pulsing placeholder on first paint and loads them in a
+  <code>useEffect</code>, which avoids a hydration mismatch between the server render (defaults)
+  and the browser (saved values).
+</p>
+
+<p>
+  It shows three rows of toggle buttons: exam (from <code>Object.keys(EXAMS)</code>), section
+  (from the chosen exam's <code>sections</code>) and question count (from
+  <code>QUESTION_COUNTS</code>), each with <code>aria-pressed</code>. Under the counts it prints
+  the real exam's <code>pacing</code> string, and under that the topic chips from
+  <code>courseFor(prefs.exam, prefs.section).topics</code>. Every click goes through
+  <code>updatePrefs</code>, which merges the change, sets state and calls
+  <code>setExamPrefs</code> at once. There is no save button. "Start game" is a plain link to
+  <code>/games/[gameId]</code>; it carries no parameters, because the game page reads the
+  preferences itself.
+</p>
+
+<p>
+  An unknown <code>gameId</code> (not in <code>games</code> from <code>frontend/lib/games.ts</code>)
+  renders a "That game doesn't exist" card with a link back to <code>/games</code>.
+</p>
+
+<h4>What each game does with the preferences</h4>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Container</th><th>Asks for</th><th>Pace</th><th>Timer</th></tr></thead>
+<tbody>
+<tr><td><code>ZombieGameContainer</code></td><td><code>questionCount</code></td><td>quick</td><td><code>QUICK_SECONDS_PER_QUESTION</code></td></tr>
+<tr><td><code>SubwaySurfersGameContainer</code></td><td><code>questionCount * 2</code></td><td>quick</td><td><code>QUICK_SECONDS_PER_QUESTION</code></td></tr>
+<tr><td><code>SquidGameContainer</code></td><td><code>questionCount * 2</code></td><td>deep</td><td>section's <code>secondsPerQuestion</code></td></tr>
+<tr><td><code>PacManGameContainer</code></td><td class="num-cell">20</td><td>quick</td><td><code>QUICK_SECONDS_PER_QUESTION</code></td></tr>
+<tr><td><code>CarnivalGameContainer</code></td><td class="num-cell">50, cached</td><td>quick</td><td>game's own</td></tr>
+<tr><td><code>WhackAMoleGameContainer</code></td><td class="num-cell">50, cached</td><td>quick</td><td><code>QUICK_SECONDS_PER_QUESTION</code> pop time</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  Subway Surfers and Squid Game fetch twice the count so their difficulty can adapt as the run
+  goes, then cap the run at <code>questionCount</code>. Pac-Man, Carnival and Whack-a-Mole ignore
+  the count setting. Every container reads <code>getExamPrefs()</code> on mount and the loader in
+  <code>frontend/lib/api/questions.ts</code> reads it again to build the request, so the exam and
+  section always come from storage, never from props.
+</p>
+
+<h3 id="s6-6"><span class="num">6.6</span><span>How it works</span></h3>
+
+<ol>
+  <li>The player opens <code>/games/squid-game/select</code>. The effect calls
+  <code>getExamPrefs()</code>; say it returns GRE, verbal, 10.</li>
+  <li>The screen shows "Real exam pace: 12 questions in 18 min" and the chips Text Completion,
+  Sentence Equivalence, Reading Comprehension.</li>
+  <li>The player taps 20. <code>setExamPrefs</code> writes
+  <code>{"exam":"gre","section":"verbal","questionCount":20}</code> to <code>exam_prefs</code>.</li>
+  <li>"Start game" navigates to <code>/games/squid-game</code>. <code>SquidGameContainer</code>
+  reads the preferences again and calls <code>fetchAIQuestions(40, undefined, 'deep')</code>.</li>
+  <li><code>fetchAIQuestions</code> reads the preferences a third time and requests
+  <code>/api/questions/?use_agent=true&amp;limit=40&amp;use_web_search=true&amp;exam=gre&amp;section=verbal&amp;pace=deep</code>.</li>
+  <li>The questions come back (chapter 7). The container builds the game with
+  <code>questionCount: 20</code> and <code>secondsPerQuestion: 90</code>, from
+  <code>EXAMS.gre.sections.verbal</code>.</li>
+</ol>
+
+<p>
+  The mock exam (<a href="#ch12">chapter 12</a>) has its own exam and section picker, and before
+  it loads questions it calls <code>setExamPrefs({ ...getExamPrefs(), exam, section })</code>,
+  because the loader only reads the section from storage. A side effect is that choosing a mock
+  exam also changes the section the next game will use.
+</p>
+
+<h3 id="s6-7"><span class="num">6.7</span><span>Adding an exam or a section</span></h3>
+
+<p>
+  There is no single registry, so a new exam touches both halves of the stack. In order:
+</p>
+
+<ol>
+  <li><code>frontend/lib/exam.ts</code>: extend <code>ExamId</code> (or <code>SectionId</code>) and
+  add the entry to <code>EXAMS</code> with a real <code>pacing</code> string and
+  <code>secondsPerQuestion</code>. If you add a section, update the hand-written check in
+  <code>getExamPrefs</code>, which accepts only <code>'verbal'</code> and <code>'quant'</code>.</li>
+  <li><code>frontend/lib/courses.ts</code>: add a <code>Course</code> per section, with the
+  official domain names as <code>topics</code>.</li>
+  <li><code>frontend/lib/questionBank.ts</code>: add a bank array per section to
+  <code>BANK</code>. The type is <code>Record&lt;ExamId, Record&lt;SectionId, ...&gt;&gt;</code>, so
+  TypeScript will refuse to compile until you do. Include all three difficulties so both paces
+  have something left after filtering.</li>
+  <li><code>frontend/app/mock/page.tsx</code>: <code>MODULE_QUESTIONS</code> and
+  <code>SCORE_RANGE</code> are also keyed by <code>ExamId</code>. The rounding step and the source
+  blurb test <code>exam === 'sat'</code>.</li>
+  <li><code>frontend/lib/profile.ts</code>: <code>SCORE_RANGES</code>, and the copy in
+  <code>frontend/components/profile/ProfileFields.tsx</code>.</li>
+  <li><code>backend/src/services/question_sources.py</code>: add the entry to <code>EXAMS</code>
+  with names suitable for search and an <code>option_count</code>.</li>
+  <li><code>backend/src/api/questions.py</code> and <code>backend/src/api/materials.py</code>:
+  widen the <code>Literal</code> types. <code>backend/src/api/learn.py</code>: widen the regex.
+  <code>backend/src/models/schemas.py</code>: widen <code>Profile.exam</code> and its target-score
+  validator.</li>
+  <li>SQL: the <code>CHECK</code> constraints in <code>add_materials.sql</code>,
+  <code>add_profiles.sql</code> and <code>reset.sql</code> need a new migration that drops and
+  recreates them.</li>
+  <li><code>backend/src/services/agent.py</code>: only SAT has an official source
+  (<code>if exam == "sat"</code>). A new exam gets web and AI questions only, so it needs
+  <code>OPENROUTER_API_KEY</code> set, or it falls through to the offline bank.</li>
+</ol>
+
+<div class="note"><b>Check with grep.</b> Before opening a pull request, search both trees for
+<code>'sat'</code>, <code>"gre"</code>, <code>Record&lt;ExamId</code> and <code>Literal["sat"</code>.
+Every hit is a place that enumerates exams.</div>
+
+<h3 id="s6-8"><span class="num">6.8</span><span>Edge cases and tests</span></h3>
+
+<ul>
+  <li><b>Private windows.</b> If <code>localStorage</code> throws, the getter returns defaults and
+  the setter is a no-op, so the setup screen works but forgets every change.</li>
+  <li><b>Stale values.</b> A stored count of 15 from an older version falls back to 10 without
+  touching the stored exam or section.</li>
+  <li><b>Two tabs.</b> There is no <code>storage</code> event listener. A tab that is already open
+  keeps the preferences it read on mount.</li>
+  <li><b>Name drift.</b> The frontend says "Reading &amp; Writing" and "Quantitative"; the backend
+  says "Reading and Writing" and "Quantitative Reasoning". This is harmless but it means a
+  label from one side should never be compared to the other.</li>
+  <li><b>Profile versus practice.</b> A user whose profile says GRE can practise SAT. Nothing
+  reconciles the two.</li>
+</ul>
+
+<p>
+  There are no automated tests for this code. The frontend <code>package.json</code> has no test
+  script and the backend has no test directory. The validation in <code>getExamPrefs</code> and
+  the hand-kept parity between <code>SATQuestion</code> and <code>Question</code> are the first
+  things worth pinning.
+</p>
+
+<h3 id="s6-9"><span class="num">6.9</span><span>Study notes</span></h3>
+<div class="study">
+<h4>Read in this order</h4>
+<ol>
+  <li><code>frontend/lib/exam.ts</code>, all 79 lines.</li>
+  <li><code>frontend/lib/courses.ts</code>.</li>
+  <li><code>frontend/app/games/[gameId]/select/page.tsx</code>, <code>updatePrefs</code> first.</li>
+  <li><code>frontend/lib/api/questions.ts</code>, the <code>SATQuestion</code> interface.</li>
+  <li><code>backend/src/models/schemas.py</code>, <code>Question</code> and <code>QuestionResponse</code>.</li>
+  <li><code>backend/src/services/question_sources.py</code>, the top 56 lines.</li>
+  <li><code>frontend/components/SquidGameContainer.tsx</code>, the two effects, to see preferences become game config.</li>
+</ol>
+<h4>Check yourself</h4>
+<p class="q">Where does the backend learn which exam a player is practising?</p>
+<p class="a">From the <code>exam</code> and <code>section</code> query parameters on each
+<code>GET /api/questions</code> call, which <code>fetchAIQuestions</code> fills from
+<code>localStorage</code>. Nothing is stored server side.</p>
+<p class="q">Why does the select page render a placeholder before showing the options?</p>
+<p class="a">The preferences are only readable in the browser. Loading them in an effect keeps
+the server render and the first client render identical.</p>
+<p class="q">A quick game and the deep game both run GRE Quant. How long does each give per question?</p>
+<p class="a">The quick game gives <code>QUICK_SECONDS_PER_QUESTION</code>, 35 seconds. Squid Game
+gives the section's <code>secondsPerQuestion</code>, 105 seconds.</p>
+<p class="q">Why can SAT topic statistics be matched to course topics without a mapping?</p>
+<p class="a">Official questions take their <code>topic</code> from the College Board's domain
+description, and <code>COURSES</code> uses those same domain names.</p>
+<p class="q">You add a third section. Which frontend function silently drops it if you forget it?</p>
+<p class="a"><code>getExamPrefs</code>, which only accepts <code>'verbal'</code> or
+<code>'quant'</code> and otherwise returns the default section.</p>
+</div>
+</section>

@@ -1,0 +1,415 @@
+<section class="chapter" id="ch05" data-hue="auth">
+<p class="chapter-kicker">Chapter five</p>
+<h2><span class="num">5</span><span>Accounts and profiles</span></h2>
+
+<p class="lede">
+  An account in SATistics is two things: a Supabase Auth user, which owns the email and password,
+  and a row in <code>profiles</code>, which holds the name, the exam and the goal that every other
+  screen reads. The browser never talks to Supabase directly. It talks to the FastAPI backend, which
+  signs people up and in through Supabase, hands back the access token, and later reads the user id
+  out of that token on every request. This chapter follows that path end to end and is candid about
+  where it is thinner than it looks.
+</p>
+
+<h3 id="s5-1"><span class="num">5.1</span><span>Intent</span></h3>
+
+<p>
+  Signup should feel like setting up a game, not filling in a form. So it is three short steps
+  (account, profile, goal) and the profile is created in the same flow, which means the dashboard
+  can greet someone by name and aim their first game at their exam the moment they arrive.
+</p>
+
+<p>
+  The second intent is that a broken step never loses work. If the account is created but the
+  profile save fails, signup does not fail; it sends the person to the profile page with a notice.
+  If Supabase requires email confirmation, there is no session yet to save the profile with, so the
+  profile waits in localStorage and is saved on the first login.
+</p>
+
+<p>
+  The third is that validation is the same on both sides. The form checks the profile before it
+  sends it, using rules that mirror the backend's Pydantic model, so most errors show inline without
+  a round trip, and the backend still enforces them.
+</p>
+
+<figure>
+<svg class="diagram" viewBox="0 0 860 300" role="img" aria-label="The signup page calls POST /api/auth/signup on FastAPI, which calls Supabase sign_up. If a session comes back, the client stores the token and calls PUT /api/profile, which upserts into profiles. If no session comes back, the profile goes into localStorage as pending_profile and the login page saves it after POST /api/auth/login. Every later request carries the bearer token, which get_current_user decodes.">
+  <defs>
+    <marker id="ch05a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head" points="0,0 10,5 0,10"/></marker>
+    <marker id="ch05b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head-hot" points="0,0 10,5 0,10"/></marker>
+  </defs>
+  <text class="lbl-sm" x="20" y="24">BROWSER</text>
+  <text class="lbl-sm" x="320" y="24">FASTAPI</text>
+  <text class="lbl-sm" x="640" y="24">SUPABASE</text>
+
+  <rect class="box" x="20" y="40" width="200" height="40" rx="8"/><text class="lbl" x="120" y="65" text-anchor="middle">signup/page.tsx</text>
+  <rect class="box" x="20" y="130" width="200" height="40" rx="8"/><text class="lbl" x="120" y="155" text-anchor="middle">login/page.tsx</text>
+  <rect class="box-alt" x="20" y="220" width="200" height="56" rx="8"/><text class="lbl" x="120" y="243" text-anchor="middle">localStorage</text><text class="lbl-sm" x="120" y="263" text-anchor="middle">auth_token, pending_profile</text>
+
+  <rect class="box" x="320" y="40" width="220" height="40" rx="8"/><text class="lbl" x="430" y="65" text-anchor="middle">POST /api/auth/signup</text>
+  <rect class="box" x="320" y="130" width="220" height="40" rx="8"/><text class="lbl" x="430" y="155" text-anchor="middle">POST /api/auth/login</text>
+  <rect class="box-hot" x="320" y="220" width="220" height="56" rx="8"/><text class="lbl" x="430" y="243" text-anchor="middle">PUT /api/profile</text><text class="lbl-hot" x="430" y="263" text-anchor="middle">get_current_user</text>
+
+  <rect class="box" x="640" y="70" width="200" height="70" rx="10"/><text class="lbl" x="740" y="100" text-anchor="middle">auth.users</text><text class="lbl-sm" x="740" y="120" text-anchor="middle">sign_up, sign_in</text>
+  <rect class="box" x="640" y="220" width="200" height="56" rx="10"/><text class="lbl" x="740" y="253" text-anchor="middle">profiles</text>
+
+  <path class="flow" d="M220 60 L 314 60" marker-end="url(#ch05a)"/>
+  <path class="flow" d="M220 150 L 314 150" marker-end="url(#ch05a)"/>
+  <path class="flow" d="M540 60 L 590 60 L 590 95 L 634 95" marker-end="url(#ch05a)"/>
+  <path class="flow" d="M540 150 L 590 150 L 590 115 L 634 115" marker-end="url(#ch05a)"/>
+  <path class="flow-dash" d="M100 80 L 100 214" marker-end="url(#ch05a)"/>
+  <text class="lbl-sm" x="108" y="110">no session</text>
+  <path class="flow-dash" d="M140 214 L 140 176" marker-end="url(#ch05a)"/>
+  <path class="flow-hot" d="M220 250 L 314 250" marker-end="url(#ch05b)"/>
+  <path class="flow-hot" d="M540 250 L 634 250" marker-end="url(#ch05b)"/>
+</svg>
+<figcaption>
+  Signup and login both go through FastAPI to Supabase Auth. The profile is a separate
+  authenticated call, made right after signup when a session exists, or after the first login when
+  it does not.
+</figcaption>
+</figure>
+
+<h3 id="s5-2"><span class="num">5.2</span><span>Files and folders</span></h3>
+
+<pre class="tree">frontend/app/signup/page.tsx               three-step signup, awaiting-confirmation screen
+frontend/app/login/page.tsx                login, saves a pending profile, honors ?redirect=
+frontend/app/profile/page.tsx              edit profile, first-run setup (?setup=1&amp;notice=)
+frontend/components/auth/AuthShell.tsx     signed-out layout, Field, FormError
+frontend/components/profile/ProfileFields.tsx  Avatar, IdentityFields, GoalFields, validateProfile
+frontend/lib/profile.ts                    Profile type, constants, pending-profile storage
+frontend/lib/useAccount.ts                 shared account cache and hook
+frontend/lib/api/client.ts                 ApiClient: token storage, auth and profile calls
+frontend/middleware.ts                     redirects based on the auth_token cookie
+
+backend/src/api/auth.py                    /api/auth routes and get_current_user
+backend/src/services/auth_service.py       AuthService: Supabase sign_up, sign_in, token decode
+backend/src/api/profile.py                 GET and PUT /api/profile
+backend/src/models/schemas.py              UserSignup, UserLogin, TokenResponse, Profile
+backend/src/utils/database.py              the shared Supabase client
+backend/database/add_profiles.sql          the profiles table and its policies</pre>
+
+<h3 id="s5-3"><span class="num">5.3</span><span>Model</span></h3>
+
+<p>
+  <code>backend/database/add_profiles.sql</code> creates <code>profiles</code> with
+  <code>user_id</code> as the primary key, referencing <code>auth.users(id)</code> with
+  <code>ON DELETE CASCADE</code>. One user has at most one profile, and deleting the auth user
+  removes it.
+</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Column</th><th>Type</th><th>Rule</th></tr></thead>
+<tbody>
+<tr><td><code>display_name</code></td><td>text, not null</td><td>1 to 60 characters (Pydantic)</td></tr>
+<tr><td><code>username</code></td><td>text, not null, unique</td><td><code>^[a-z0-9_]{3,24}$</code></td></tr>
+<tr><td><code>exam</code></td><td>text, default <code>'sat'</code></td><td>check constraint: <code>sat</code> or <code>gre</code></td></tr>
+<tr><td><code>target_score</code></td><td>integer, nullable</td><td>400 to 1600 for SAT, 260 to 340 for GRE</td></tr>
+<tr><td><code>test_date</code></td><td>date, nullable</td><td>ISO date</td></tr>
+<tr><td><code>daily_minutes</code></td><td>integer, default 20</td><td>5 to 240 on the server; the UI offers 10, 20, 30, 45</td></tr>
+<tr><td><code>avatar_color</code></td><td>text, default <code>'#3A33E8'</code></td><td>any six-digit hex on the server; five swatches in the UI</td></tr>
+<tr><td><code>created_at</code>, <code>updated_at</code></td><td>timestamptz</td><td>the API sets <code>updated_at</code> on each save</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  Row level security is on, with select, insert and update policies keyed on
+  <code>auth.uid() = user_id</code>. There is no delete policy. In practice the backend usually
+  connects with the service role key (section 5.4), which bypasses these policies, so the
+  <code>.eq("user_id", ...)</code> filters in <code>profile.py</code> are what actually scope the
+  queries.
+</p>
+
+<p>
+  On the client, <code>frontend/lib/profile.ts</code> declares the matching <code>Profile</code>
+  interface, <code>EMPTY_PROFILE</code> (SAT, 20 minutes, cobalt avatar),
+  <code>AVATAR_COLORS</code> (cobalt, lime, coral, pink, ink), <code>DAILY_MINUTES</code> and
+  <code>SCORE_RANGES</code>, which carries each exam's min, max, step and label. It also has small
+  helpers: <code>initials</code>, <code>daysUntil</code> (a whole-day count to a
+  <code>yyyy-mm-dd</code> date at local midnight, or <code>null</code>) and
+  <code>avatarTextColor</code>.
+</p>
+
+<h3 id="s5-4"><span class="num">5.4</span><span>The server side</span></h3>
+
+<p>
+  <b>Routes.</b> <code>backend/src/api/auth.py</code> is mounted at <code>/api/auth</code> and
+  defines <code>POST /signup</code>, <code>POST /login</code>, <code>POST /logout</code> and
+  <code>GET /me</code>, plus explicit <code>OPTIONS</code> handlers for signup and login.
+  <code>backend/src/api/profile.py</code> is mounted at <code>/api/profile</code> with
+  <code>GET</code> and <code>PUT</code> on the empty path.
+</p>
+
+<p>
+  <b>Signup.</b> The body is <code>UserSignup</code> (an <code>EmailStr</code> and a password
+  string). <code>AuthService.signup</code> calls <code>db.auth.sign_up</code>. If Supabase returns a
+  user, the result has <code>success</code>, the user's id and email, and, only when Supabase also
+  returned a session (email confirmation off), an <code>access_token</code>. Known Supabase errors
+  are rewritten into friendlier text ("An account with this email already exists", "Too many signup
+  attempts. Please try again later.") and the route turns an unsuccessful result into a 400. Any
+  other exception becomes a 500 whose detail includes the exception text.
+</p>
+
+<p>
+  <b>Login.</b> <code>AuthService.login</code> calls <code>sign_in_with_password</code> and returns
+  the access token, a refresh token and the user. The route wraps this in
+  <code>TokenResponse</code>, which has <code>access_token</code>, <code>token_type</code> and
+  <code>user</code>, so the refresh token is dropped. Failures are 401 with "Invalid email or
+  password" or the raw message.
+</p>
+
+<p>
+  <b>Logout.</b> <code>AuthService.logout</code> does nothing but return success. Its comments are
+  explicit: the token is not revoked, it simply expires, and the client is trusted to forget it.
+</p>
+
+<p>
+  <b>Who is calling.</b> Every protected route depends on <code>get_current_user</code>. It reads
+  the bearer token through <code>HTTPBearer(auto_error=False)</code>, returns 401 "Missing
+  authorization token" if there is none, and otherwise calls <code>AuthService.get_user</code>. That
+  method decodes the JWT with <code>jwt.decode(token, options={"verify_signature": False})</code>,
+  rejects it if <code>exp</code> is in the past, and returns <code>{"id": sub, "email": email}</code>.
+  A <code>None</code> result becomes 401 "Invalid or expired token". <code>GET /me</code> returns
+  exactly that dictionary.
+</p>
+
+<div class="note blocked"><b>Security caveat: tokens are not verified.</b> Because the signature is
+never checked, anyone can construct a JWT with any <code>sub</code> and a future <code>exp</code>,
+and the backend will treat them as that user. Every route that uses
+<code>get_current_user</code> (profiles, sessions, stats, materials, videos) inherits this. The fix
+is to verify the token, either with the project's JWT secret (<code>jwt.decode</code> with the
+key, <code>algorithms=["HS256"]</code> and <code>audience="authenticated"</code>) or by calling
+<code>db.auth.get_user(token)</code>, which asks Supabase. Note that <code>PyJWT</code>, which
+provides the <code>jwt</code> module here, is not listed in <code>backend/requirements.txt</code>;
+it arrives as a dependency of the Supabase package. <code>python-jose</code> is listed but not
+used by this code.</div>
+
+<p>
+  <b>The database client.</b> <code>get_db</code> returns one process-wide client from
+  <code>Database.get_client()</code>, built with <code>SUPABASE_SERVICE_ROLE_KEY</code> if set, then
+  <code>SUPABASE_SERVICE_KEY</code>, then <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>. The same client
+  is used for <code>auth.sign_up</code> and <code>auth.sign_in_with_password</code>. The
+  supabase-py 2.x client listens for its own auth events, and on <code>SIGNED_IN</code> it replaces
+  its <code>Authorization</code> header with the new session's access token. On a shared
+  server-side client that means table queries after a login run as the last person who logged in,
+  not with the service key, until the process restarts. If you see RLS errors or empty results on a
+  long-lived backend process, look here first; the safe pattern is a separate client for auth
+  calls. <code>Database.get_auth_client()</code>, which builds a separate client with the
+  anon key, exists but nothing calls it.
+</p>
+
+<p>
+  <b>Profiles.</b> <code>GET /api/profile</code> selects the seven profile fields for the caller and
+  returns <code>{"profile": ...}</code> or <code>{"profile": null}</code>. <code>PUT</code> takes a
+  <code>Profile</code> body, which Pydantic validates: the field constraints in the table above
+  plus <code>check_target_score</code>, a model validator that applies the per-exam score range.
+  The handler first looks for another user with the same username and returns 409 "The username
+  @name is taken. Try another one." if there is one. Then it adds <code>user_id</code> and
+  <code>updated_at</code> and upserts on <code>user_id</code>, returning the saved row.
+</p>
+
+<h3 id="s5-5"><span class="num">5.5</span><span>The client</span></h3>
+
+<p>
+  <b>Token storage.</b> <code>ApiClient</code> in <code>frontend/lib/api/client.ts</code> is a
+  singleton, <code>apiClient</code>. On construction in the browser it reads
+  <code>auth_token</code> from localStorage, or, failing that, from <code>document.cookie</code>
+  and copies it back. <code>setToken(token)</code> writes both: localStorage, and a cookie
+  <code>auth_token=...; path=/; max-age=604800; SameSite=Lax</code>, which is seven days.
+  <code>setToken(null)</code> removes both. The cookie exists only so the Next.js middleware can see
+  it; API calls send the token as an <code>Authorization: Bearer</code> header from memory.
+  <code>signup</code> and <code>login</code> call <code>setToken</code> when a token comes back, and
+  <code>logout</code> clears it in a <code>finally</code> so a failed request still logs you out
+  locally.
+</p>
+
+<p>
+  Errors from <code>request</code> become <code>Error(detail)</code>, using the JSON
+  <code>detail</code> field from FastAPI. That is why the 409 username message can be shown
+  verbatim in the form.
+</p>
+
+<p>
+  <b>Route protection.</b> <code>frontend/middleware.ts</code> runs on every path except static
+  assets, image files and anything under <code>api</code>. If the path starts with one of
+  <code>/dashboard</code>, <code>/games</code>, <code>/learn</code>, <code>/materials</code>,
+  <code>/mock</code>, <code>/profile</code> or <code>/stats</code> and there is no
+  <code>auth_token</code> cookie (or <code>Authorization</code> header), it redirects to
+  <code>/login?redirect=&lt;path&gt;</code>. If the path is <code>/login</code> or
+  <code>/signup</code> and there is a token, it redirects to <code>/dashboard</code>. It checks only
+  that a token is present, not that it is valid.
+</p>
+
+<p>
+  <b>The account cache.</b> <code>frontend/lib/useAccount.ts</code> keeps one module-level
+  <code>cached</code> account, one <code>inflight</code> promise and a set of listeners.
+  <code>useAccount()</code> subscribes the component, starts <code>loadAccount()</code> if nothing
+  is cached (sharing the in-flight promise if one exists), and returns
+  <code>{ account, loading, updateProfile }</code>. <code>loadAccount</code> calls
+  <code>getCurrentUser()</code> and, if that succeeds, <code>getProfile()</code>; either failing
+  yields <code>null</code> rather than an error. <code>setCachedProfile</code> (exposed as
+  <code>updateProfile</code>) patches the cached profile and notifies every listener, so the
+  sidebar updates the moment the profile page saves. <code>clearAccountCache()</code> is called on
+  signup, login and logout so the next page loads fresh.
+</p>
+
+<p>
+  <b>Shared fields.</b> <code>frontend/components/profile/ProfileFields.tsx</code> is used by both
+  signup and the profile page. <code>IdentityFields</code> renders the <code>Avatar</code> preview,
+  five color swatches, the name and the username. While the username still equals
+  <code>slugifyUsername</code> of the current name, typing a name keeps suggesting a matching
+  username; once the person edits the username themselves, it stops following. The username input
+  lowercases as you type. <code>GoalFields</code> renders the exam choice (switching exam clears
+  the target score, since the ranges differ), a number input whose min, max and step come from
+  <code>SCORE_RANGES</code>, an optional date, and the daily minutes chips.
+  <code>validateProfile</code> returns the first problem as a sentence, or <code>null</code>.
+</p>
+
+<h3 id="s5-6"><span class="num">5.6</span><span>How it works</span></h3>
+
+<p>
+  <b>Signup.</b> <code>frontend/app/signup/page.tsx</code> holds <code>step</code> (0, 1 or 2 over
+  <code>STEPS = ['Account', 'Profile', 'Goal']</code>), the email, two passwords and a
+  <code>Profile</code> draft seeded from <code>EMPTY_PROFILE</code>, with the exam taken from
+  <code>?exam=gre</code> if present. A progress bar of three segments marks the current one with
+  <code>aria-current="step"</code>. Each submit runs <code>checkStep</code>: step 0 needs a password
+  of at least 6 characters and a matching confirmation; steps 1 and 2 run
+  <code>validateProfile</code> on the whole draft. Browser validation applies on step 0 (so the email
+  must look like one) and is turned off with <code>noValidate</code> after that. The back button
+  clears the error and steps back.
+</p>
+
+<p>
+  On the last step, <code>createAccount</code> calls <code>apiClient.signup</code>, clears the account
+  cache and stores the chosen exam in the practice preferences with <code>setExamPrefs</code>. Then
+  it branches:
+</p>
+
+<ul>
+  <li><b>No access token</b> (confirmation is on): <code>savePendingProfile(email, profile)</code>
+  and switch to the "Check your inbox" screen, which links to login.</li>
+  <li><b>Token, profile saves</b>: push to <code>/dashboard</code>.</li>
+  <li><b>Token, profile fails</b> (for example a taken username): push to
+  <code>/profile?setup=1&amp;notice=&lt;message&gt;</code>. The account exists; only the profile is
+  left to do.</li>
+</ul>
+
+<p>
+  <b>The pending profile.</b> <code>savePendingProfile</code> writes
+  <code>{ email, profile }</code> to localStorage under <code>pending_profile</code>, with the email
+  lowercased. <code>takePendingProfile(email)</code> returns it only if the emails match, deletes it
+  as it reads, and merges it over <code>EMPTY_PROFILE</code> so a profile saved by an older version
+  still has every field. Both swallow storage errors. Because the data lives in one browser, someone
+  who confirms on their phone and logs in on a laptop starts without it and is sent to set up a
+  profile.
+</p>
+
+<p>
+  <b>Login.</b> <code>frontend/app/login/page.tsx</code> calls <code>apiClient.login</code>, throws if
+  no token came back, clears the cache, and then calls <code>takePendingProfile</code>. If a pending
+  profile exists it is saved; a failure there goes to the setup page with a notice, as signup does.
+  Finally it pushes to <code>?redirect</code> if it is a same-site path (it must start with one
+  <code>/</code> and not <code>//</code> or <code>/\</code>), else <code>/dashboard</code>, and refreshes
+  the router so server components and middleware see the new cookie.
+</p>
+
+<p>
+  <b>The profile page.</b> <code>frontend/app/profile/page.tsx</code> renders inside
+  <code>DashboardLayout</code>. When the account arrives it seeds a draft from the saved profile or,
+  if there is none, from the email's local part (as the name and, slugified, the username). A
+  cobalt header card previews the avatar, name, exam, target and test-day countdown live as you edit.
+  Saving validates locally, calls <code>saveProfile</code>, pushes the result into the account cache
+  with <code>updateProfile</code>, and syncs the exam preference. In setup mode
+  (<code>?setup=1</code>) the page shows a lime banner with any <code>notice</code>, the button
+  reads "Save and start", and success goes to the dashboard; otherwise "Profile saved" appears in a
+  polite live region. Below the form, the strongest and weakest topics from
+  <code>getUserStats()</code> are listed as chips.
+</p>
+
+<p>
+  <b>Logout.</b> The sidebar's "Log out" in <code>DashboardLayout</code> calls
+  <code>apiClient.logout()</code>, then clears the cache and pushes to <code>/login</code> in a
+  <code>finally</code>.
+</p>
+
+<h3 id="s5-7"><span class="num">5.7</span><span>Edge cases and tests</span></h3>
+
+<p>
+  There are no automated tests for this area, in either the frontend or the backend. These are the
+  behaviors worth knowing before you change anything.
+</p>
+
+<ul>
+  <li><b>Expired sessions.</b> Supabase access tokens are short-lived, but the cookie lasts seven
+  days and no refresh token is kept. After expiry the middleware still lets the person in, every API
+  call returns 401, and nothing in the client redirects on 401. <code>useAccount</code> resolves to
+  no user, so the sidebar shows an empty name; pages that read stats show empty states. Logging out
+  and in again fixes it.</li>
+  <li><b>Validation drift.</b> The backend accepts a <code>display_name</code> of a single space
+  (only <code>min_length=1</code>), any <code>daily_minutes</code> from 5 to 240 and any hex color.
+  The client is stricter: it trims the name and offers only the listed values. If you add a client
+  option, check the server range.</li>
+  <li><b>Pydantic errors read badly.</b> A 422 from FastAPI has a list in <code>detail</code>, and
+  <code>request</code> passes it to <code>new Error</code>, which stringifies it. The client-side
+  checks catch the common cases first, which is why this is rarely seen.</li>
+  <li><b>Username race.</b> The 409 check and the upsert are two queries. Two people claiming the
+  same name at once both pass the check; the unique constraint rejects the second, which surfaces
+  as a 500 with the database message.</li>
+  <li><b>Redirect parameter.</b> Login follows <code>?redirect</code> only when it is a same-site
+  path, so a crafted link cannot send someone to another site after they sign in.</li>
+  <li><b>Token exposure.</b> The token is in localStorage and in a cookie set from JavaScript, so it
+  is not <code>HttpOnly</code>; any script running on the page can read it.</li>
+  <li><b>Preflight handlers.</b> The explicit <code>OPTIONS</code> routes for signup and login echo
+  back whatever <code>Origin</code> they receive with credentials allowed, which is looser than the
+  <code>ALLOWED_ORIGINS</code> list given to <code>CORSMiddleware</code> in
+  <code>backend/src/main.py</code>.</li>
+</ul>
+
+<p>
+  To test by hand, run Supabase with email confirmation both on and off. With it off, signup should
+  land on the dashboard with the name in the sidebar. With it on, signup should show "Check your
+  inbox", <code>pending_profile</code> should appear in localStorage, and the first login should
+  remove it and land on the dashboard with the profile in place. Try a taken username in both
+  modes; you should arrive at <code>/profile?setup=1</code> with the 409 message in the banner.
+</p>
+
+<h3 id="s5-8"><span class="num">5.8</span><span>Study notes</span></h3>
+
+<div class="study">
+<h4>Read in this order</h4>
+<ol>
+  <li><code>backend/database/add_profiles.sql</code>, the table and its policies.</li>
+  <li><code>backend/src/models/schemas.py</code>, the <code>Profile</code> model and its validator.</li>
+  <li><code>backend/src/services/auth_service.py</code>, especially <code>get_user</code>.</li>
+  <li><code>backend/src/api/auth.py</code>, then <code>backend/src/api/profile.py</code>.</li>
+  <li><code>frontend/lib/api/client.ts</code>, the constructor, <code>setToken</code> and <code>request</code>.</li>
+  <li><code>frontend/middleware.ts</code>.</li>
+  <li><code>frontend/lib/profile.ts</code> and <code>frontend/lib/useAccount.ts</code>.</li>
+  <li><code>frontend/app/signup/page.tsx</code>, then <code>login/page.tsx</code>, then <code>profile/page.tsx</code>.</li>
+  <li><code>frontend/components/profile/ProfileFields.tsx</code>.</li>
+</ol>
+<h4>Check yourself</h4>
+<p class="q">Why does the token live in both localStorage and a cookie?</p>
+<p class="a">The API client sends it as a bearer header, which needs it in JavaScript, and the
+middleware runs on the edge before any JavaScript, where only cookies are visible. The cookie is
+there purely so <code>middleware.ts</code> can decide whether to redirect.</p>
+<p class="q">Signup succeeds but no token comes back. What happens to the profile the person just filled in?</p>
+<p class="a">It is written to localStorage under <code>pending_profile</code> with the lowercased
+email. On the next login with the same email, <code>takePendingProfile</code> returns and deletes
+it, and the login page saves it with <code>PUT /api/profile</code>.</p>
+<p class="q">How does the backend know who is calling, and what does it not check?</p>
+<p class="a"><code>get_current_user</code> decodes the bearer JWT and takes <code>sub</code> as the
+user id after checking <code>exp</code>. It does not verify the signature, so a forged token is
+accepted.</p>
+<p class="q">Why does the sidebar show the new name immediately after saving the profile?</p>
+<p class="a">The profile page calls <code>updateProfile</code>, which is
+<code>setCachedProfile</code>: it replaces the profile in the module-level cache and calls every
+subscribed <code>useAccount</code> listener, including the one in <code>DashboardLayout</code>.</p>
+<p class="q">Why does changing the exam clear the target score?</p>
+<p class="a">The ranges do not overlap: 400 to 1600 for the SAT and 260 to 340 for the GRE. Keeping
+the old number would make the draft invalid on both sides.</p>
+<p class="q">Signup with a taken username: does the account get created?</p>
+<p class="a">Yes. The auth user is created first; the profile save then fails with 409, and signup
+routes to <code>/profile?setup=1</code> with the message as the notice instead of failing.</p>
+</div>
+</section>

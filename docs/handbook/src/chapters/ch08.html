@@ -1,0 +1,565 @@
+<section class="chapter" id="ch08" data-hue="games">
+<p class="chapter-kicker">Chapter eight</p>
+<h2><span class="num">8</span><span>The game framework</span></h2>
+
+<p class="lede">
+  SATistics teaches through games, and every game is the same machine wearing a different costume:
+  questions go in, a player answers them by doing something in a 3D scene, and an analytics object
+  comes out. This chapter describes that machine. It covers how a game is registered, the three
+  routes a player passes through, the container component that owns each game, the shared exam UI
+  that every container borrows from, and how questions arrive and results leave. The one idea that
+  shaped it is that the engine never touches React and React never touches the scene: they talk
+  through a handful of callbacks and imperative methods.
+</p>
+
+<p>
+  This chapter describes the code on <code>main</code> at commit <code>9b9abf0</code>. There is no
+  plugin system and no game interface file. A "framework" here is a set of conventions that six
+  games happen to follow, plus a few shared components in <code>frontend/components/exam/</code>
+  and <code>frontend/components/arcade/</code>. Where the games disagree with each other, this
+  chapter says so, because the disagreements are where new contributors get caught.
+</p>
+
+<h3 id="s8-1"><span class="num">8.1</span><span>Intent</span></h3>
+
+<p>
+  The first intent is that a game is practice, not a reward for practice. Answering is the
+  gameplay: the player shoots the zombie wearing the answer, runs through the gate of the answer,
+  stands on the pad of the answer. A question is never a modal that interrupts the game; it is the
+  reason the game is moving.
+</p>
+
+<p>
+  The second intent is that every game uses the same questions and reports the same numbers. All of
+  them fetch from one backend endpoint through <code>lib/api/questions.ts</code>, all of them fall
+  back to the same offline bank, and all of them hand a <code>GameAnalytics</code> object to
+  <code>apiClient.saveScore</code>. That is what lets the statistics pages and the "Your games"
+  panel treat a Pac-Man round and a Squid Game round as rows in one table.
+</p>
+
+<p>
+  The third intent is that the exam stays visible. The newer games render the full question,
+  passage and choices in a shared <code>QuestionCard</code> beside the action, pace themselves from
+  the real exam's seconds per question, offer hints that rule out choices, and refuse to show the
+  answer after a first miss so the question can come back later.
+</p>
+
+<h3 id="s8-2"><span class="num">8.2</span><span>Files and folders</span></h3>
+
+<pre class="tree">frontend/lib/games.ts                     the registry: id, name, description, status
+frontend/lib/gameMeta.ts                  GAME_META: catalogue title, genre, answerBy; gameTitle()
+frontend/lib/arcade.ts                    pixel font, getHighScore, recordHighScore (localStorage)
+frontend/lib/exam.ts                      ExamPrefs, EXAMS pacing, QUESTION_COUNTS, gamePace
+frontend/lib/api/questions.ts             SATQuestion, fetchAIQuestions, fetchQuestionsWithCache
+frontend/lib/api/client.ts                apiClient.getAIQuestions, apiClient.saveScore
+frontend/lib/hints.ts                     strategyHint, eliminationHint, insightFor
+frontend/lib/questionBank.ts              offline questions when the backend is unreachable
+
+frontend/app/games/page.tsx               the catalogue (Explore)
+frontend/app/games/[gameId]/select/page.tsx   setup: exam, section, question count
+frontend/app/games/[gameId]/page.tsx      play: full screen, renders GameContainer
+frontend/app/games/[gameId]/layout.tsx    a pass-through layout
+
+frontend/components/GameContainer.tsx     dispatches a game id to its container
+frontend/components/*GameContainer.tsx    one React container per game (six files)
+frontend/components/GameOverModal.tsx     results screen, takes GameAnalytics
+frontend/components/QuestionContent.tsx   renders sanitized question HTML or plain text
+frontend/components/brand/GameCover.tsx   SVG cover art, keyed by game id
+
+frontend/components/exam/                 shared exam UI (see 8.6)
+frontend/components/arcade/ArcadeFrame.tsx   neon cabinet, used by Zombie
+frontend/components/arcade/GameHud.tsx       GameTopBar, HUD_PANEL, Pips
+
+frontend/games/BaseGame.ts                abstract base: width, height, canvas, state, pause
+frontend/games/GameRenderer.ts            generic canvas loop; only knows 'mario'
+frontend/games/&lt;id&gt;/                       one engine per game, plus its types
+
+frontend/public/games/subway-surfers/     glTF map served at runtime
+frontend/public/games/squid-game/         FBX characters, glTF models, textures, audio
+frontend/public/*.fbx, *.mp3              Subway Surfers character and sound</pre>
+
+<p>
+  The split to remember is <code>components/</code> versus <code>games/</code>. A file in
+  <code>frontend/games/</code> is an engine: plain TypeScript that owns a Three.js scene and knows
+  nothing about React. A file in <code>frontend/components/</code> is the React side: it fetches
+  questions, constructs the engine, runs the animation frame loop and draws every piece of text on
+  top of the canvas.
+</p>
+
+<h3 id="s8-3"><span class="num">8.3</span><span>Model</span></h3>
+
+<h4>The registry</h4>
+
+<p>
+  <code>lib/games.ts</code> exports <code>games: Game[]</code>. The <code>Game</code> interface
+  lives, for historical reasons, in <code>frontend/games/subway-surfers/types/game.ts</code>: an
+  <code>id</code>, a <code>name</code>, a <code>description</code> and a <code>status</code> of
+  <code>'coming-soon'</code> or <code>'available'</code>. All six entries are
+  <code>'available'</code>, and nothing in the app reads <code>status</code>. The array order is the
+  catalogue order.
+</p>
+
+<p>
+  <code>lib/gameMeta.ts</code> holds what the catalogue actually shows. Its header comment says it
+  is kept apart so the engine's <code>Game</code> type stays unchanged. Each entry in
+  <code>GAME_META</code> has a display <code>title</code>, a <code>genre</code> (one of
+  <code>'Action' | 'Arcade' | 'Runner' | 'Survival'</code>, listed in <code>GENRES</code> for the
+  filter chips) and an <code>answerBy</code> sentence. <code>gameTitle(id, fallback)</code> resolves
+  an id to a title and special-cases <code>'mock-exam'</code>, which is not a game but saves
+  sessions under that id.
+</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>id</th><th>GAME_META title</th><th>genre</th><th>container</th><th>engine class</th></tr></thead>
+<tbody>
+<tr><td><code>zombie</code></td><td>Zombie Apocalypse</td><td>Action</td><td><code>ZombieGameContainer</code> (default export)</td><td><code>ZombieGame</code></td></tr>
+<tr><td><code>whackamole</code></td><td>Whack-A-Mole</td><td>Arcade</td><td><code>WhackAMoleGameContainer</code></td><td><code>WhackAMoleGame</code></td></tr>
+<tr><td><code>carnival</code></td><td>Balloon Pop</td><td>Arcade</td><td><code>CarnivalGameContainer</code></td><td><code>CarnivalGame</code></td></tr>
+<tr><td><code>subway-surfers</code></td><td>Subway Surfers</td><td>Runner</td><td><code>SubwaySurfersGameContainer</code></td><td><code>SubwaySurfersGame</code></td></tr>
+<tr><td><code>squid-game</code></td><td>Squid Game</td><td>Survival</td><td><code>SquidGameContainer</code></td><td><code>SquidGameGame</code></td></tr>
+<tr><td><code>pac-man</code></td><td>Pac-Man</td><td>Arcade</td><td><code>PacManGameContainer</code></td><td><code>PacManGame</code></td></tr>
+</tbody>
+</table></div>
+
+<h4>Exam preferences</h4>
+
+<p>
+  <code>lib/exam.ts</code> defines <code>ExamPrefs</code>: <code>exam</code> (<code>'sat' | 'gre'</code>),
+  <code>section</code> (<code>'quant' | 'verbal'</code>) and <code>questionCount</code>, which must
+  be one of <code>QUESTION_COUNTS = [6, 10, 20]</code>. They live in <code>localStorage</code> under
+  <code>exam_prefs</code>; <code>getExamPrefs()</code> validates every field and falls back to
+  <code>{ exam: 'sat', section: 'quant', questionCount: 10 }</code>. <code>EXAMS</code> carries the
+  real pacing per section, from 71 seconds per question for SAT Reading and Writing to 105 for GRE
+  Quantitative. <code>QUICK_SECONDS_PER_QUESTION</code> is 35, the budget for the quick-fire games.
+  <code>gamePace(id)</code> returns <code>'deep'</code> for ids in <code>DEEP_GAMES</code>, which is
+  only <code>['squid-game']</code>, and <code>'quick'</code> for everything else; the backend uses it
+  to choose short questions or passage questions.
+</p>
+
+<h4>Questions and results</h4>
+
+<p>
+  A question is <code>SATQuestion</code> from <code>lib/api/questions.ts</code>: an
+  <code>id</code>, <code>question</code>, <code>options</code>, a zero-based
+  <code>correctAnswer</code>, <code>topic</code>, <code>difficulty</code> and
+  <code>explanation</code>, plus optional <code>passage</code>, <code>stem</code>,
+  <code>skill</code>, sanitized HTML variants and source fields. Whack-A-Mole and Balloon Pop
+  import an older, narrower <code>SATQuestion</code> from their own <code>types.ts</code>; it is
+  structurally compatible, and their containers cast to the full type when they need the HTML
+  fields.
+</p>
+
+<p>
+  A result is <code>GameAnalytics</code>, which is defined in
+  <code>frontend/games/whackamole/types.ts</code> and imported from there by every other game:
+  <code>gameId</code>, <code>score</code>, <code>accuracy</code> (a percentage),
+  <code>correctAnswers</code>, <code>wrongAnswers</code>, <code>questionAttempts</code> (one
+  <code>QuestionAttempt</code> per answer, with <code>timeSpent</code> in milliseconds),
+  <code>topicPerformance</code>, <code>streakInfo.maxStreak</code> and
+  <code>averageResponseTime</code>. The backend mirrors it as a Pydantic model in
+  <code>backend/src/models/schemas.py</code>. The newer games also return a review list
+  (<code>ZombieReviewItem</code>, <code>RunnerReviewItem</code>, <code>SquidReviewItem</code>,
+  <code>PacManReviewItem</code>), all the same shape: <code>question</code>,
+  <code>selected</code> (null on a timeout), <code>isCorrect</code>, <code>timeSpent</code>.
+</p>
+
+<h3 id="s8-4"><span class="num">8.4</span><span>Routes</span></h3>
+
+<p>
+  A player passes through three pages. <code>app/games/page.tsx</code> is the catalogue. It filters
+  <code>games</code> by a search box and a genre chip, matching against the <code>GAME_META</code>
+  title and <code>answerBy</code>, draws each card with <code>GameCover</code>, and links to
+  <code>/games/[id]/select</code>. Its side panel, <code>YourGames</code>, calls
+  <code>useRecentSessions(50)</code> from <code>lib/sessions.ts</code> and groups saved sessions by
+  <code>game_id</code> to show plays and best score.
+</p>
+
+<p>
+  <code>app/games/[gameId]/select/page.tsx</code> is setup. It loads <code>getExamPrefs()</code>
+  after mount, offers buttons for exam, section and question count, writes each change straight
+  back with <code>setExamPrefs</code>, lists the section's topics from <code>courseFor</code>, and
+  shows the real exam pace. The "Start game" button is a plain link to <code>/games/[id]</code>.
+  Nothing is passed in the URL: the play page reads the same <code>localStorage</code> key.
+</p>
+
+<p>
+  <code>app/games/[gameId]/page.tsx</code> is a server component. It exports
+  <code>generateStaticParams</code> over <code>games</code>, calls <code>notFound()</code> for any
+  id not in the registry, and otherwise renders a fixed, black, full-screen div containing
+  <code>&lt;GameContainer game={game} /&gt;</code>. Everything below that is a client component.
+</p>
+
+<h3 id="s8-5"><span class="num">8.5</span><span>How it works</span></h3>
+
+<figure>
+<svg class="diagram" viewBox="0 0 860 420" role="img" aria-label="Game lifecycle. The select page writes ExamPrefs to localStorage. The play page renders GameContainer, which picks the game's container. The container reads prefs and fetches questions, then dynamically imports and constructs the engine. A requestAnimationFrame loop calls update and render. In the question phase the player answers through the scene; the engine resolves the answer, emits feedback, and either moves on or queues a retry. When the queue is empty or lives run out the engine calls onGameOver with analytics and a review list; the container shows GameOverModal with ReviewList, records the local high score and posts to /api/games/save-score.">
+  <defs>
+    <marker id="ch08-a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head" points="0,0 10,5 0,10"/></marker>
+    <marker id="ch08-b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head-hot" points="0,0 10,5 0,10"/></marker>
+  </defs>
+  <text class="lbl-sm" x="20" y="24">SETUP</text>
+  <text class="lbl-sm" x="230" y="24">LOAD</text>
+  <text class="lbl-sm" x="450" y="24">PLAY LOOP</text>
+  <text class="lbl-sm" x="680" y="24">END</text>
+
+  <rect class="box" x="20" y="40" width="180" height="56" rx="8"/>
+  <text class="lbl" x="110" y="64" text-anchor="middle">select page</text>
+  <text class="lbl-sm" x="110" y="84" text-anchor="middle">setExamPrefs (localStorage)</text>
+
+  <rect class="box" x="20" y="130" width="180" height="56" rx="8"/>
+  <text class="lbl" x="110" y="154" text-anchor="middle">/games/[gameId]</text>
+  <text class="lbl-sm" x="110" y="174" text-anchor="middle">GameContainer dispatch</text>
+
+  <rect class="box" x="230" y="40" width="190" height="56" rx="8"/>
+  <text class="lbl" x="325" y="64" text-anchor="middle">getExamPrefs</text>
+  <text class="lbl-sm" x="325" y="84" text-anchor="middle">fetchAIQuestions / bank</text>
+
+  <rect class="box" x="230" y="130" width="190" height="56" rx="8"/>
+  <text class="lbl" x="325" y="154" text-anchor="middle">import() engine</text>
+  <text class="lbl-sm" x="325" y="174" text-anchor="middle">new Game(w, h, canvas, qs)</text>
+
+  <rect class="box-alt" x="230" y="220" width="190" height="56" rx="8"/>
+  <text class="lbl" x="325" y="244" text-anchor="middle">intro / start screen</text>
+  <text class="lbl-sm" x="325" y="264" text-anchor="middle">GameIntro, ArcadeStartScreen</text>
+
+  <rect class="box-hot" x="450" y="40" width="200" height="56" rx="10"/>
+  <text class="lbl" x="550" y="64" text-anchor="middle">rAF: update(dt), render()</text>
+  <text class="lbl-hot" x="550" y="84" text-anchor="middle">dt capped at 50 ms</text>
+
+  <rect class="box" x="450" y="130" width="200" height="56" rx="8"/>
+  <text class="lbl" x="550" y="154" text-anchor="middle">question phase</text>
+  <text class="lbl-sm" x="550" y="174" text-anchor="middle">onQuestionChange, QuestionCard</text>
+
+  <rect class="box-hot" x="450" y="220" width="200" height="56" rx="10"/>
+  <text class="lbl" x="550" y="244" text-anchor="middle">answer in the scene</text>
+  <text class="lbl-hot" x="550" y="264" text-anchor="middle">shoot, run, stand, eat</text>
+
+  <rect class="box" x="450" y="310" width="200" height="56" rx="8"/>
+  <text class="lbl" x="550" y="334" text-anchor="middle">feedback</text>
+  <text class="lbl-sm" x="550" y="354" text-anchor="middle">onFeedback, retry queue</text>
+
+  <rect class="box" x="680" y="130" width="160" height="56" rx="8"/>
+  <text class="lbl" x="760" y="154" text-anchor="middle">onGameOver</text>
+  <text class="lbl-sm" x="760" y="174" text-anchor="middle">analytics, review</text>
+
+  <rect class="box-alt" x="680" y="220" width="160" height="56" rx="8"/>
+  <text class="lbl" x="760" y="244" text-anchor="middle">GameOverModal</text>
+  <text class="lbl-sm" x="760" y="264" text-anchor="middle">ReviewList, high score</text>
+
+  <rect class="box" x="680" y="310" width="160" height="56" rx="8"/>
+  <text class="lbl" x="760" y="334" text-anchor="middle">saveScore</text>
+  <text class="lbl-sm" x="760" y="354" text-anchor="middle">POST /api/games/save-score</text>
+
+  <path class="flow" d="M110 96 L 110 124" marker-end="url(#ch08-a)"/>
+  <path class="flow" d="M200 158 L 215 158 L 215 68 L 224 68" marker-end="url(#ch08-a)"/>
+  <path class="flow" d="M325 96 L 325 124" marker-end="url(#ch08-a)"/>
+  <path class="flow" d="M325 186 L 325 214" marker-end="url(#ch08-a)"/>
+  <path class="flow-hot" d="M420 248 L 435 248 L 435 68 L 444 68" marker-end="url(#ch08-b)"/>
+  <path class="flow" d="M550 96 L 550 124" marker-end="url(#ch08-a)"/>
+  <path class="flow-hot" d="M550 186 L 550 214" marker-end="url(#ch08-b)"/>
+  <path class="flow" d="M550 276 L 550 304" marker-end="url(#ch08-a)"/>
+  <path class="flow-dash" d="M450 338 L 432 338 L 432 158 L 444 158" marker-end="url(#ch08-a)"/>
+  <text class="lbl-sm" x="300" y="345">next question or retry</text>
+  <path class="flow" d="M650 338 L 665 338 L 665 158 L 674 158" marker-end="url(#ch08-a)"/>
+  <text class="lbl-sm" x="668" y="118">queue empty or no lives</text>
+  <path class="flow" d="M760 186 L 760 214" marker-end="url(#ch08-a)"/>
+  <path class="flow" d="M760 276 L 760 304" marker-end="url(#ch08-a)"/>
+  <text class="lbl-sm" x="20" y="400">The engine owns the scene and the rules; the container owns the DOM, the loop and the network.</text>
+</svg>
+<figcaption>
+  The life of one round. Setup writes preferences to the browser, the container reads them back,
+  loads questions and the engine, then runs the loop until the engine reports the game is over.
+</figcaption>
+</figure>
+
+<h4>Dispatch</h4>
+
+<p>
+  <code>GameContainer</code> holds a constant <code>OWN_CONTAINER_GAMES</code> listing all six ids,
+  then a chain of <code>if (game.id === ...)</code> early returns that render each game's own
+  container. The early returns come after a <code>useEffect</code>, because React requires hooks to
+  run in the same order on every render; the comment in the file says so. Only when the id matches
+  none of them does the component render a bare full-screen <code>&lt;canvas&gt;</code>, and the
+  effect constructs a <code>GameRenderer</code> on it.
+</p>
+
+<p>
+  <code>GameRenderer</code> and <code>BaseGame</code> are the original design: an abstract class with
+  <code>init</code>, <code>update(deltaTime)</code>, <code>render(ctx)</code> and
+  <code>handleInput(key)</code>, driven by a generic loop that also forwards keyboard events and
+  draws on a 2D overlay canvas. Its <code>init()</code> switch knows exactly one id,
+  <code>'mario'</code>, and <code>'mario'</code> is not in <code>games</code>, so the play page
+  returns 404 before <code>GameContainer</code> ever sees it. In practice the canvas branch is
+  unreachable. Every live game takes the container path.
+</p>
+
+<h4>The container pattern</h4>
+
+<p>
+  <code>ZombieGameContainer</code> is the cleanest example, and the newer containers follow it
+  closely. In order:
+</p>
+
+<ol>
+  <li>A mount effect calls <code>getExamPrefs()</code>, reads the local high score with
+  <code>getHighScore</code>, and calls <code>fetchAIQuestions(count, undefined, gamePace(GAME_ID))</code>.
+  A <code>cancelled</code> flag guards the <code>setQuestions</code> in case the page unmounts first.</li>
+  <li>A second effect waits for both the canvas ref and the questions, then dynamically imports the
+  engine module with <code>await import('@/games/zombie/ZombieGame')</code>. The type import at the
+  top of the file is <code>import type</code>, so Three.js and the engine stay out of the page's
+  initial bundle.</li>
+  <li>It constructs the engine with the window size, the canvas, the questions and a config of
+  <code>{ questionCount, secondsPerQuestion }</code>, stores it in a ref, and assigns the callbacks:
+  <code>onHudChange</code>, <code>onQuestionChange</code>, <code>onFeedback</code> and
+  <code>onGameOver</code>. Most are passed React state setters directly.</li>
+  <li>It adds <code>resize</code> and <code>keydown</code> listeners and starts a
+  <code>requestAnimationFrame</code> loop that computes <code>deltaTime</code>, caps it at 50 ms
+  so a background tab does not cause a jump, and calls <code>game.update(deltaTime)</code> then
+  <code>game.render()</code>.</li>
+  <li>The effect's cleanup sets <code>cancelled</code>, cancels the frame, removes the listeners and
+  calls <code>game.cleanup()</code>, which disposes geometries, materials and the renderer.</li>
+</ol>
+
+<p>
+  Everything the player reads is DOM, not canvas: the score bar, the question card, the hint
+  button, the calculator, the pause menu and the results modal. The engine pushes a snapshot of its
+  state through <code>onHudChange</code>, throttled to one call per
+  <code>HUD_UPDATE_INTERVAL_MS</code> (100 ms) in Zombie, Subway Surfers and Squid Game, and the
+  container renders from that snapshot. Controls flow the other way through public methods on the
+  engine held in <code>gameRef</code>: <code>start()</code>, <code>setPaused()</code>,
+  <code>setMuted()</code>, <code>skipFeedback()</code>, and per-game verbs such as
+  <code>shootAt</code>, <code>moveLane</code> or <code>lockIn</code>.
+</p>
+
+<div class="note"><b>A constructor that reports too early.</b> The newer engines call
+<code>emitHud(true)</code> from their constructor, before the container has assigned
+<code>onHudChange</code>. <code>ZombieGameContainer</code> works around it by calling
+<code>game.setMuted(false)</code> straight after wiring the callbacks, which re-emits the HUD. The
+engines that load assets asynchronously (Subway Surfers, Squid Game) emit again when loading
+finishes, so they do not need the trick.</div>
+
+<h4>Getting questions</h4>
+
+<p>
+  <code>fetchAIQuestions(limit, fallbackQuestions, pace)</code> reads the exam and section from
+  <code>getExamPrefs()</code> and calls <code>apiClient.getAIQuestions</code>, which issues
+  <code>GET /api/questions/</code> with <code>use_agent=true</code>, <code>limit</code>,
+  <code>use_web_search=true</code>, <code>exam</code>, <code>section</code> and, when given,
+  <code>pace</code>. If the call throws or returns no questions, it falls back to
+  <code>getBankQuestions(exam, section, pace)</code> from <code>lib/questionBank.ts</code>, then to
+  <code>fallbackQuestions</code>. A game therefore always gets a list, though it may be short.
+</p>
+
+<p>
+  <code>fetchQuestionsWithCache(gameId, limit, fallback)</code> wraps that with a five-minute
+  <code>sessionStorage</code> cache keyed <code>ai_questions_${gameId}_${exam}_${section}</code>.
+  Only Whack-A-Mole and Balloon Pop use it, and both ask for 50 questions regardless of the chosen
+  question count. The other four call <code>fetchAIQuestions</code> directly with a count derived
+  from the preference: Zombie asks for <code>questionCount</code>, Subway Surfers and Squid Game ask
+  for twice that so difficulty can adapt, and Pac-Man asks for a fixed 20.
+</p>
+
+<h4>Timing and pacing</h4>
+
+<p>
+  Every engine that has a clock receives it from the container. Zombie and Subway Surfers get
+  <code>QUICK_SECONDS_PER_QUESTION</code>; Pac-Man gets it through
+  <code>setQuestions(questions, QUICK_SECONDS_PER_QUESTION)</code>; Whack-A-Mole imports the same
+  constant inside the engine for its <code>popDuration</code>. Squid Game, the one deep game, gets
+  <code>EXAMS[exam].sections[section].secondsPerQuestion</code>, the real exam's pace. Balloon Pop
+  has no clock at all. Engines measure time from the <code>deltaTime</code> the loop gives them, so
+  a paused game's clock stops; the exception is the 2-second <code>setTimeout</code> that
+  Whack-A-Mole and Balloon Pop use between questions.
+</p>
+
+<h4>Saving results</h4>
+
+<p>
+  When an engine calls <code>onGameOver</code>, the container stores the result in state, which
+  renders <code>GameOverModal</code>, and records the local high score with
+  <code>recordHighScore(gameId, score)</code> (Zombie, Whack-A-Mole, Balloon Pop and Pac-Man do;
+  Subway Surfers and Squid Game do not). It then imports <code>apiClient</code> lazily and calls
+  <code>apiClient.saveScore(gameId, analytics)</code>, which posts
+  <code>{ gameId, analytics }</code> to <code>/api/games/save-score</code>. The endpoint depends
+  on <code>get_current_user</code>, so a signed-out player's save fails; every container catches
+  the error and logs it, and the modal is unaffected.
+</p>
+
+<h3 id="s8-6"><span class="num">8.6</span><span>Shared exam UI</span></h3>
+
+<div class="tablewrap"><table>
+<thead><tr><th>file</th><th>exports</th><th>used by</th></tr></thead>
+<tbody>
+<tr><td><code>exam/GameIntro.tsx</code></td><td><code>GameIntro</code>, <code>GameLoading</code></td><td>all but Zombie</td></tr>
+<tr><td><code>exam/QuestionCard.tsx</code></td><td><code>QuestionCard</code>, <code>sourceLabel</code>, <code>AnswerFeedback</code></td><td>Zombie, Subway Surfers, Squid Game, Pac-Man</td></tr>
+<tr><td><code>exam/LaneChip.tsx</code></td><td><code>LaneChip</code></td><td>QuestionCard, ReviewList, Balloon Pop</td></tr>
+<tr><td><code>exam/PauseMenu.tsx</code></td><td><code>PauseMenu</code></td><td>all six</td></tr>
+<tr><td><code>exam/Calculator.tsx</code></td><td><code>Calculator</code>, <code>evaluate</code></td><td>Zombie, Subway Surfers, Squid Game, the mock exam</td></tr>
+<tr><td><code>exam/HintButton.tsx</code></td><td><code>HintButton</code></td><td>Zombie, Subway Surfers, Squid Game, Pac-Man</td></tr>
+<tr><td><code>exam/ReviewList.tsx</code></td><td><code>ReviewList</code></td><td>Zombie, Subway Surfers, Squid Game, Pac-Man</td></tr>
+<tr><td><code>exam/useQuestionHints.ts</code></td><td><code>useQuestionHints</code></td><td>Zombie, Subway Surfers, Squid Game, Pac-Man</td></tr>
+<tr><td><code>exam/useViewShift.ts</code></td><td><code>useViewShift</code>, <code>SIDE_PANEL_MIN_WIDTH</code></td><td>Zombie, Subway Surfers, Squid Game, Pac-Man</td></tr>
+<tr><td><code>arcade/ArcadeFrame.tsx</code></td><td><code>ArcadeFrame</code>, <code>ArcadeTopBar</code>, <code>ArcadeStartScreen</code></td><td>Zombie</td></tr>
+<tr><td><code>arcade/GameHud.tsx</code></td><td><code>GameTopBar</code>, <code>HUD_PANEL</code>, <code>Pips</code></td><td>Whack-A-Mole, Balloon Pop, Pac-Man</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  <code>GameIntro</code> is the pre-game card: cover art, a kicker, a two-part title, a summary, a
+  list of <code>{ label, text }</code> steps, a start button and a link back to
+  <code>/games</code>. <code>GameLoading</code> shows the cover and a progress bar; pass
+  <code>progress={null}</code> for an indeterminate pulse. Zombie uses the arcade equivalents
+  instead: <code>ArcadeFrame</code> wraps the screen in the <code>Press_Start_2P</code> pixel font
+  from <code>lib/arcade.ts</code>, sets <code>--arcade-color</code> and lays a CRT overlay on top;
+  <code>ArcadeStartScreen</code> is the attract screen with "INSERT COIN".
+</p>
+
+<p>
+  <code>QuestionCard</code> renders the header (question number, skill, difficulty), the passage,
+  the stem and the choices through <code>QuestionContent</code>, which sanitizes question HTML
+  against an allowlist of tags including MathML. Choices are buttons only when
+  <code>onPick</code> is passed; none of the current games passes it, because the answer is always
+  picked in the scene. <code>activeOption</code> and <code>activeLabel</code> highlight a tentative
+  pick (Subway Surfers passes the current lane and <code>"YOUR LANE"</code>). After an answer,
+  <code>feedback</code> colours the choices, and if <code>insight</code> is set the card hides which
+  choice was right and shows the nudge from <code>insightFor</code> instead, because the question
+  will come back.
+</p>
+
+<p>
+  <code>useQuestionHints(question)</code> resets when the question changes. The first
+  <code>requestHint()</code> adds a <code>strategyHint</code> and returns null; each later one adds
+  an <code>eliminationHint</code> and returns the option it ruled out, which the container passes to
+  the engine (<code>eliminateZombie</code>, <code>eliminateLane</code>, <code>eliminatePad</code>,
+  <code>eliminateAnswer</code>) so the scene drops that target. <code>eliminationHint</code> always
+  leaves the right answer and one other choice standing.
+</p>
+
+<p>
+  <code>useViewShift(panelRef, isActive, setViewShift)</code> measures the question panel and tells
+  the engine how far to offset its camera so the action stays centred in the uncovered part of the
+  screen: half the panel's width beside it at <code>SIDE_PANEL_MIN_WIDTH</code> (1024 px) and wider,
+  half its height below it otherwise. A <code>ResizeObserver</code> re-measures as the panel grows
+  with each question.
+</p>
+
+<p>
+  <code>PauseMenu</code> offers Resume, Restart (a full <code>window.location.reload()</code>),
+  "Change exam or section" (back to the select page) and "Exit to games".
+  <code>ReviewList</code> renders each review item in a <code>&lt;details&gt;</code>; for a missed
+  question it shows the insight and a button to reveal the answer, so the review doubles as a
+  second try. <code>GameOverModal</code> takes <code>analytics</code>, <code>onRestart</code>,
+  optional <code>title</code> and <code>subtitle</code>, and <code>children</code> rendered above
+  its buttons, which is where containers put <code>ReviewList</code>. It accepts an
+  <code>emoji</code> prop it no longer shows, kept so old callers compile.
+</p>
+
+<h3 id="s8-7"><span class="num">8.7</span><span>Input and assets</span></h3>
+
+<h4>Keyboard and touch</h4>
+
+<p>
+  Input is wired by the container, not by a shared layer. Keyboard listeners go on
+  <code>window</code> and ignore <code>e.repeat</code>; Space and the arrow keys call
+  <code>preventDefault()</code> so the page does not scroll. P and Escape pause in the four games
+  that listen for keys; Whack-A-Mole and Balloon Pop have no keyboard input and pause only from the
+  menu button. Number keys 1 to 5
+  pick an answer in Zombie and Subway Surfers. Touch uses pointer events, never touch events: Zombie
+  aims on <code>onPointerMove</code> and fires on <code>onPointerDown</code>; Subway Surfers and
+  Pac-Man treat a pointer drag longer than <code>SWIPE_MIN_DISTANCE</code> (30 and 24 px) as a
+  swipe; Squid Game and Pac-Man draw on-screen buttons, and Squid's <code>holdKey</code> helper
+  maps pointer down and up to <code>handleInput</code> and <code>handleKeyRelease</code>, so a held
+  button behaves like a held key. Whack-A-Mole and Balloon Pop listen for <code>click</code> on the
+  canvas inside the engine and raycast against their meshes, which works for taps too. Canvases that
+  take gestures carry <code>touch-none</code>.
+</p>
+
+<h4>Assets</h4>
+
+<p>
+  Whack-A-Mole, Balloon Pop, Zombie and Pac-Man build their scenes entirely from Three.js primitives
+  and <code>CanvasTexture</code> labels; they load no files. Subway Surfers loads a glTF map from
+  <code>/games/subway-surfers/assets/subway_surfers_maps/scene.gltf</code>, the FBX character from
+  <code>/Flying.fbx</code> with <code>/Falling.fbx</code> and <code>/Falling Flat Impact.fbx</code>,
+  and three MP3s from the <code>public/</code> root. Squid Game loads three FBX animations and three
+  glTF models from <code>/games/squid-game/assets</code>, two textures from its
+  <code>squid-textures</code> folder, and audio from <code>/games/squid-game/audio</code>. Anything
+  under <code>frontend/public/</code> is served from the site root; anything elsewhere is not.
+</p>
+
+<h3 id="s8-8"><span class="num">8.8</span><span>Performance</span></h3>
+
+<p>
+  The heavy cost is download, not frame time. <code>frontend/public/games</code> is about 129 MB,
+  of which Squid Game is 124 MB: the <code>red_guy</code> guard model alone is 43 MB, and the
+  <code>squid-textures</code> folder is 72 MB although the engine reads only two images from it.
+  Engines are imported dynamically so none of this, nor Three.js, lands in the catalogue's bundle.
+</p>
+
+<p>
+  On the frame side, the newer engines are frame-rate independent: they scale motion by
+  <code>dt</code> and smooth with an exponential <code>damp(rate, dt)</code>. Zombie, Subway Surfers and Squid Game cap
+  the renderer's pixel ratio at 2; Pac-Man passes <code>window.devicePixelRatio</code> uncapped. HUD callbacks are throttled to 10 per second, because each one is a React state
+  update. The older code does not follow these rules: Pac-Man moves Pac-Man and the ghosts by a fixed
+  step per frame and calls <code>onHudChange</code> on every frame; Balloon Pop moves balloons per
+  frame and runs its pop and particle animations in their own
+  <code>requestAnimationFrame</code> chains, outside the game loop and outside pause.
+</p>
+
+<h3 id="s8-9"><span class="num">8.9</span><span>Edge cases</span></h3>
+
+<ul>
+  <li><b>No backend.</b> <code>fetchAIQuestions</code> falls back to the offline bank, so every game
+  still starts. Saving then fails and is logged.</li>
+  <li><b>Signed out.</b> The game plays normally; <code>save-score</code> requires a user, so the
+  session is not stored and does not appear in "Your games". The local high score still updates.</li>
+  <li><b>Restart.</b> Every restart is <code>window.location.reload()</code>. For the two cached
+  games, a reload within five minutes reuses the same questions from <code>sessionStorage</code>.</li>
+  <li><b>Background tab.</b> The capped <code>deltaTime</code> stops a returning tab from skipping
+  time, except in Whack-A-Mole, whose loop does not cap it, so one long frame can expire the
+  question.</li>
+  <li><b>Five choices.</b> <code>LANE_COLORS</code> and <code>LANE_LETTERS</code> have five entries
+  and the newer engines build one target per option. Whack-A-Mole and Balloon Pop always build four,
+  so a fifth choice cannot be picked.</li>
+  <li><b>Fractional averages.</b> The backend's <code>GameAnalytics.averageResponseTime</code> is an
+  <code>int</code> under Pydantic 2. Whack-A-Mole and Balloon Pop send an unrounded mean, which can
+  fail validation; the other four round it.</li>
+</ul>
+
+<p>
+  There are no automated tests for the games or the shared exam components.
+</p>
+
+<h3 id="s8-10"><span class="num">8.10</span><span>Study notes</span></h3>
+<div class="study">
+<h4>Read in this order</h4>
+<ol>
+  <li><code>frontend/lib/games.ts</code> and <code>frontend/lib/gameMeta.ts</code>, the registry.</li>
+  <li><code>frontend/lib/exam.ts</code>, preferences and pacing.</li>
+  <li><code>frontend/app/games/[gameId]/select/page.tsx</code> and <code>page.tsx</code>, the two routes.</li>
+  <li><code>frontend/components/GameContainer.tsx</code>, the dispatch.</li>
+  <li><code>frontend/components/ZombieGameContainer.tsx</code>, the reference container.</li>
+  <li><code>frontend/lib/api/questions.ts</code>, questions in.</li>
+  <li><code>frontend/components/exam/QuestionCard.tsx</code> and <code>useQuestionHints.ts</code>, the exam UI.</li>
+  <li><code>frontend/components/GameOverModal.tsx</code>, results out.</li>
+</ol>
+<h4>Check yourself</h4>
+<p class="q">Why does the "Start game" link carry no query string?</p>
+<p class="a">The setup page writes every choice to <code>localStorage</code> through
+<code>setExamPrefs</code> as it is made, and the container reads it back with
+<code>getExamPrefs()</code>. The URL only names the game.</p>
+<p class="q">Can <code>GameRenderer</code> run the Mario placeholder today?</p>
+<p class="a">No. <code>'mario'</code> is not in <code>games</code>, so <code>/games/mario</code>
+calls <code>notFound()</code> before <code>GameContainer</code> renders.</p>
+<p class="q">Why do containers import the engine with <code>import()</code> inside an effect?</p>
+<p class="a">To keep Three.js and the engine out of the page bundle and off the server. The top of
+the file uses <code>import type</code>, which is erased at compile time.</p>
+<p class="q">Where does a hint's elimination become visible in the scene?</p>
+<p class="a"><code>requestHint()</code> returns the ruled-out option and the container passes it to
+an engine method such as <code>eliminateLane</code>, which hides that gate. The hook only manages
+text and the list of eliminated options.</p>
+<p class="q">Why would a game's session be missing from the stats page after a good round?</p>
+<p class="a">The player was signed out, the backend was down, or the analytics failed
+validation; all three are caught and only logged in the console.</p>
+</div>
+</section>

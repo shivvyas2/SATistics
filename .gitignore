@@ -70,3 +70,13 @@ backend/env/
 backend/__pycache__/
 backend/**/__pycache__/
 
+
+# Example env files are documentation and must be committed
+!.env.example
+!**/.env.example
+
+# Local AI-assistant and browser-tool files, never committed
+.claude/
+.playwright-mcp/
+CLAUDE.md
+CLAUDE.local.md

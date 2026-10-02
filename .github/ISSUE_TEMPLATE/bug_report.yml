@@ -1,0 +1,38 @@
+name: Bug report
+description: Something is broken or behaves unexpectedly
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Go to /games/zombie/select
+        2. Choose GRE Quant, 10 questions
+        3. Start the game and ...
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options: [A game, Questions, Learn and videos, Dashboard and stats, Mock exams, My material, Accounts and profiles, Backend or API, Docs, Other]
+    validations:
+      required: true
+  - type: input
+    id: env
+    attributes:
+      label: Browser and device
+      placeholder: Chrome 140 on macOS, Safari on iPhone 15
+  - type: textarea
+    id: extra
+    attributes:
+      label: Screenshots, console errors or logs
+      description: Remove any tokens or keys before pasting.

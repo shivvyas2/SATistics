@@ -1,0 +1,450 @@
+<section class="chapter" id="ch02" data-hue="system">
+<p class="chapter-kicker">Chapter two</p>
+<h2><span class="num">2</span><span>Architecture</span></h2>
+
+<p class="lede">
+  SATistics is three pieces: a Next.js 14 frontend that runs the pages and the games in the
+  browser, a FastAPI backend that owns every decision touching data or an outside service, and a
+  Supabase project that holds identity and every table. The browser never talks to Supabase. It
+  talks to the backend with a bearer token, and the backend talks to Supabase with the
+  service-role key. Everything else in this chapter follows from that one boundary.
+</p>
+
+<p>
+  This chapter is the map. It names the pieces and the outside services, lays out the repository,
+  follows one request from a click to a database row and back, shows how the login token travels,
+  lists where each kind of state lives, and marks the code in the tree that nothing runs, so you
+  can ignore it. Where the code and this handbook disagree, the code is right.
+</p>
+
+<h3 id="s2-1"><span class="num">2.1</span><span>The three pieces</span></h3>
+
+<p>
+  <b>The frontend</b> is <code>frontend/</code>: Next.js 14 with the App Router, React 18,
+  TypeScript, Tailwind CSS, and Three.js for the 3D games. Almost every page is a client component
+  (<code>'use client'</code>), and all data comes from the backend through one class,
+  <code>ApiClient</code> in <code>frontend/lib/api/client.ts</code>, exported as the singleton
+  <code>apiClient</code>. The only server-side code the frontend runs is
+  <code>frontend/middleware.ts</code>, which checks for a cookie, plus metadata routes
+  (<code>app/robots.ts</code>, <code>app/sitemap.ts</code>). There are no Next.js API routes.
+</p>
+
+<p>
+  <b>The backend</b> is <code>backend/</code>: FastAPI on Python, built in
+  <code>backend/src/main.py</code>. It mounts eight routers, each in <code>backend/src/api/</code>,
+  and most of them hand off to a service in <code>backend/src/services/</code>.
+</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Prefix</th><th>Router</th><th>What it serves</th><th>Main service</th></tr></thead>
+<tbody>
+<tr><td><code>/api/health</code></td><td><code>health.py</code></td><td>Liveness, and <code>/supabase</code> to test the database</td><td>none</td></tr>
+<tr><td><code>/api/auth</code></td><td><code>auth.py</code></td><td>signup, login, logout, me</td><td><code>auth_service.py</code></td></tr>
+<tr><td><code>/api/games</code></td><td><code>games.py</code></td><td><code>POST /save-score</code></td><td><code>game_service.py</code></td></tr>
+<tr><td><code>/api/stats</code></td><td><code>stats.py</code></td><td><code>/user</code>, <code>/sessions</code></td><td>queries inline</td></tr>
+<tr><td><code>/api/questions</code></td><td><code>questions.py</code></td><td>the question set for a game, <code>/topics</code></td><td><code>agent.py</code>, <code>custom_questions.py</code></td></tr>
+<tr><td><code>/api/profile</code></td><td><code>profile.py</code></td><td>GET and PUT the caller's profile</td><td>queries inline</td></tr>
+<tr><td><code>/api/learn</code></td><td><code>learn.py</code></td><td><code>/videos</code> for a topic</td><td><code>videos.py</code></td></tr>
+<tr><td><code>/api/materials</code></td><td><code>materials.py</code></td><td>upload, list, review, approve, delete</td><td><code>material_parser.py</code></td></tr>
+</tbody>
+</table></div>
+
+<p>
+  <b>Supabase</b> provides two things: Auth (email and password users in <code>auth.users</code>)
+  and Postgres. The schema is plain SQL in <code>backend/database/</code>, pasted into the Supabase
+  SQL editor by hand; there is no migration runner. <code>schema.sql</code> creates
+  <code>game_sessions</code>, <code>question_attempts</code> and <code>user_stats</code>;
+  <code>add_profiles.sql</code> adds <code>profiles</code>; <code>add_materials.sql</code> adds
+  <code>materials</code> and <code>custom_questions</code>; <code>reset.sql</code> drops and
+  recreates the first four. Every table has row level security enabled with owner-only policies,
+  but the backend connects with the service-role key, which bypasses those policies. The backend
+  enforces ownership itself, by filtering every query on the caller's <code>user_id</code>.
+</p>
+
+<h3 id="s2-2"><span class="num">2.2</span><span>Outside services</span></h3>
+
+<p>
+  Only the backend talks to the outside world. Each service is optional except Supabase, and each
+  has a fallback, so the site keeps working with nothing but a database configured.
+</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Service</th><th>Used by</th><th>For</th><th>Configured by</th><th>Without it</th></tr></thead>
+<tbody>
+<tr><td>Supabase</td><td><code>utils/database.py</code>, <code>auth_service.py</code></td><td>Auth and all tables</td><td><code>SUPABASE_URL</code>, <code>SUPABASE_SERVICE_ROLE_KEY</code></td><td>The backend raises on first use.</td></tr>
+<tr><td>College Board question bank</td><td><code>CollegeBoardSource</code></td><td>Official SAT questions</td><td>none (public API)</td><td>SAT falls through to the LLM.</td></tr>
+<tr><td>OpenRouter</td><td><code>agent.py</code>, <code>material_parser.py</code></td><td>Writing and extracting questions</td><td><code>OPENROUTER_API_KEY</code>, optional <code>OPENROUTER_MODEL</code></td><td>No LLM questions; the browser uses the offline bank.</td></tr>
+<tr><td>DuckDuckGo (<code>ddgs</code>)</td><td><code>WebQuestionSource</code>, <code>videos.py</code></td><td>Finding practice pages, last-resort video search</td><td>none</td><td>Rate limited; retried with backoff.</td></tr>
+<tr><td>YouTube Data API</td><td><code>videos.py</code></td><td>Lesson videos, first choice</td><td><code>YOUTUBE_API_KEY</code></td><td>Skipped; Serper is tried.</td></tr>
+<tr><td>Serper</td><td><code>videos.py</code></td><td>Lesson videos, second choice</td><td><code>SERPER_API_KEY</code></td><td>Skipped; DuckDuckGo is tried.</td></tr>
+<tr><td>Vercel</td><td>both apps</td><td>Hosting</td><td><code>backend/vercel.json</code>, <code>frontend/vercel.json</code></td><td>Run locally with <code>start_local.sh</code>.</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  The LLM is reached through the <code>openai</code> Python client pointed at
+  <code>https://openrouter.ai/api/v1</code>. <code>LLM_MODEL</code> in
+  <code>backend/src/services/agent.py</code> defaults to <code>anthropic/claude-haiku-4.5</code>.
+  <code>get_llm_client</code> returns <code>None</code> when no key is set, and every caller checks
+  for that.
+</p>
+
+<figure>
+<svg class="diagram" viewBox="0 0 860 400" role="img" aria-label="The browser on the left runs the Next.js pages, middleware and lib/api/client.ts, keeping auth_token in localStorage and a cookie. It calls the FastAPI backend in the middle with a Bearer token. The backend's routers call services, which reach Supabase Auth and Postgres with the service-role key, OpenRouter for the LLM, the College Board question bank, and YouTube, Serper and DuckDuckGo for search. Both apps are hosted on Vercel.">
+  <defs>
+    <marker id="ch02a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head" points="0,0 10,5 0,10"/></marker>
+    <marker id="ch02b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head-hot" points="0,0 10,5 0,10"/></marker>
+  </defs>
+  <text class="lbl-sm" x="20" y="24">BROWSER (www.satistic.tech)</text>
+  <text class="lbl-sm" x="320" y="24">BACKEND (api.satistic.tech)</text>
+  <text class="lbl-sm" x="640" y="24">SERVICES</text>
+
+  <rect class="box" x="20" y="40" width="230" height="44" rx="8"/>
+  <text class="lbl" x="135" y="67" text-anchor="middle">Next.js pages and games</text>
+  <rect class="box-alt" x="20" y="104" width="230" height="44" rx="8"/>
+  <text class="lbl" x="135" y="131" text-anchor="middle">middleware.ts (cookie check)</text>
+  <rect class="box-hot" x="20" y="168" width="230" height="56" rx="8"/>
+  <text class="lbl" x="135" y="192" text-anchor="middle">lib/api/client.ts</text>
+  <text class="lbl-hot" x="135" y="212" text-anchor="middle">Authorization: Bearer token</text>
+  <rect class="box-alt" x="20" y="244" width="230" height="56" rx="8"/>
+  <text class="lbl" x="135" y="268" text-anchor="middle">localStorage, cookie</text>
+  <text class="lbl-sm" x="135" y="288" text-anchor="middle">auth_token, exam_prefs, ...</text>
+
+  <rect class="box" x="320" y="40" width="250" height="56" rx="10"/>
+  <text class="lbl" x="445" y="64" text-anchor="middle">FastAPI routers</text>
+  <text class="lbl-sm" x="445" y="84" text-anchor="middle">src/api/*.py, CORS, get_current_user</text>
+  <rect class="box" x="320" y="136" width="250" height="56" rx="10"/>
+  <text class="lbl" x="445" y="160" text-anchor="middle">Services</text>
+  <text class="lbl-sm" x="445" y="180" text-anchor="middle">agent, videos, game_service, parser</text>
+  <rect class="box-alt" x="320" y="232" width="250" height="44" rx="8"/>
+  <text class="lbl" x="445" y="259" text-anchor="middle">Database.get_client (service role)</text>
+
+  <rect class="box" x="640" y="40" width="200" height="56" rx="10"/>
+  <text class="lbl" x="740" y="64" text-anchor="middle">Supabase</text>
+  <text class="lbl-sm" x="740" y="84" text-anchor="middle">Auth, Postgres</text>
+  <rect class="box" x="640" y="116" width="200" height="36" rx="8"/>
+  <text class="lbl" x="740" y="139" text-anchor="middle">OpenRouter LLM</text>
+  <rect class="box" x="640" y="168" width="200" height="36" rx="8"/>
+  <text class="lbl" x="740" y="191" text-anchor="middle">College Board qbank</text>
+  <rect class="box" x="640" y="220" width="200" height="56" rx="8"/>
+  <text class="lbl" x="740" y="244" text-anchor="middle">YouTube, Serper</text>
+  <text class="lbl-sm" x="740" y="264" text-anchor="middle">DuckDuckGo (ddgs)</text>
+
+  <path class="flow" d="M135 84 L 135 98" marker-end="url(#ch02a)"/>
+  <path class="flow" d="M135 148 L 135 162" marker-end="url(#ch02a)"/>
+  <path class="flow-dash" d="M135 224 L 135 238" marker-end="url(#ch02a)"/>
+  <path class="flow-hot" d="M250 190 L 285 190 L 285 68 L 314 68" marker-end="url(#ch02b)"/>
+  <text class="lbl-sm" x="262" y="122">HTTPS</text>
+  <path class="flow" d="M445 96 L 445 130" marker-end="url(#ch02a)"/>
+  <path class="flow" d="M445 192 L 445 226" marker-end="url(#ch02a)"/>
+  <path class="flow" d="M570 254 L 605 254 L 605 68 L 634 68" marker-end="url(#ch02a)"/>
+  <path class="flow" d="M570 150 L 620 150 L 620 134 L 634 134" marker-end="url(#ch02a)"/>
+  <path class="flow" d="M570 170 L 620 170 L 620 186 L 634 186" marker-end="url(#ch02a)"/>
+  <path class="flow" d="M570 182 L 612 182 L 612 248 L 634 248" marker-end="url(#ch02a)"/>
+
+  <line class="wall" x1="20" y1="330" x2="840" y2="330"/>
+  <text class="lbl-sm" x="430" y="356" text-anchor="middle">Vercel hosts both: the Next.js app, and the backend as a Python function (backend/api/index.py)</text>
+</svg>
+<figcaption>
+  The system. The browser holds a token and nothing else secret. Every secret, the service-role
+  key and the API keys, lives on the backend side of the red arrow.
+</figcaption>
+</figure>
+
+<h3 id="s2-3"><span class="num">2.3</span><span>The repository</span></h3>
+
+<pre class="tree">README.md                    what it is, quick start
+CONTRIBUTING.md              how to send a change
+CODE_OF_CONDUCT.md, SECURITY.md, CHANGELOG.md, LICENSE (MIT)
+start_local.sh               runs backend (port 8000) and frontend (port 3000)
+package.json                 root: only "three"; not a workspace
+.github/
+  workflows/ci.yml           frontend lint, typecheck, build; backend install and import
+  ISSUE_TEMPLATE/            bug report, feature request, new game
+  PULL_REQUEST_TEMPLATE.md
+docs/
+  handbook/                  this book
+  images/                    screenshots
+backend/
+  .env.example               every backend env var, by name
+  requirements.txt           fastapi, supabase, openai, ddgs, httpx, pypdf, ...
+  vercel.json                rewrites every path to /api/index
+  api/index.py               Vercel entry point: imports src.main.app
+  run.sh, setup.sh, start.sh local helpers
+  database/
+    schema.sql               game_sessions, question_attempts, user_stats
+    add_profiles.sql         profiles
+    add_materials.sql        materials, custom_questions
+    add_user_id_to_attempts.sql
+    reset.sql                drop and recreate (not materials)
+  src/
+    main.py                  the FastAPI app, CORS, routers
+    config.py                OPENROUTER_API_KEY and Supabase names
+    api/                     one router per prefix
+    services/                agent, question_sources, videos, game_service,
+                             auth_service, material_parser, custom_questions,
+                             supabase_agent_ops
+    models/schemas.py        Pydantic request and response models
+    utils/database.py        the Supabase client singleton
+    utils/html_utils.py      html_to_text, sanitize_html, has_figure
+frontend/
+  .env.example               NEXT_PUBLIC_API_URL
+  middleware.ts              route protection
+  next.config.js, tailwind.config.js, vercel.json
+  app/                       one folder per route (chapter 1 has the list)
+  components/
+    *GameContainer.tsx       one React wrapper per game
+    exam/                    QuestionCard, HintButton, ReviewList, Calculator, ...
+    learn/                   Videos, QuickCheck
+    brand/                   Logo, Icons, GameCover (SVG covers)
+    DashboardLayout.tsx      the signed-in shell
+  games/                     the game engines (Three.js), one folder each
+  lib/
+    api/client.ts            ApiClient, the only door to the backend
+    api/questions.ts         fetchAIQuestions, fetchQuestionsWithCache
+    exam.ts, courses.ts      exams, sections, topics, saved prefs
+    lessons.ts               the fifteen lessons
+    questionBank.ts          the offline question bank
+    profile.ts, useAccount.ts, learnProgress.ts, sessions.ts, hints.ts
+  public/                    models, textures, audio for the games</pre>
+
+<p>
+  The split to remember: <code>frontend/lib/</code> is shared logic and static content,
+  <code>frontend/components/</code> is React, and <code>frontend/games/</code> is plain TypeScript
+  classes that drive a canvas. On the backend, routers in <code>src/api/</code> do auth and shape
+  checking, and services in <code>src/services/</code> do the work.
+</p>
+
+<h3 id="s2-4"><span class="num">2.4</span><span>A request, end to end</span></h3>
+
+<p>
+  Follow one click: a signed-in student on <code>/games/zombie/select</code> presses play.
+</p>
+
+<ol>
+  <li><b>The page.</b> The select page has already written the student's choice of exam, section
+  and question count with <code>setExamPrefs</code>. It navigates to <code>/games/zombie</code>.
+  <code>middleware.ts</code> sees the <code>auth_token</code> cookie and lets it through.</li>
+  <li><b>The game container.</b> <code>app/games/[gameId]/page.tsx</code> renders
+  <code>GameContainer</code>, which hands <code>zombie</code> to
+  <code>ZombieGameContainer</code>. That component calls
+  <code>fetchAIQuestions(examPrefs.questionCount, undefined, gamePace(GAME_ID))</code>.</li>
+  <li><b>The client.</b> <code>fetchAIQuestions</code> reads the prefs and calls
+  <code>apiClient.getAIQuestions</code>, which builds
+  <code>GET /api/questions/?use_agent=true&amp;limit=10&amp;use_web_search=true&amp;exam=sat&amp;section=quant&amp;pace=quick</code>.
+  The private <code>request</code> method prefixes <code>NEXT_PUBLIC_API_URL</code>, adds
+  <code>Authorization: Bearer &lt;token&gt;</code>, and turns any non-2xx into an
+  <code>Error</code> carrying the response's <code>detail</code>.</li>
+  <li><b>The router.</b> <code>get_questions</code> in <code>src/api/questions.py</code> resolves
+  the caller with <code>get_current_user_optional</code>, so the route also works signed out (as
+  a guest with an all-zero user id). It loads up to half the set from the student's approved
+  material with <code>load_custom_questions</code>, then asks an
+  <code>ExamLearningAgent</code> for the rest.</li>
+  <li><b>The service.</b> <code>generate_questions</code> reads the student's weak topics from
+  <code>user_stats</code> and <code>question_attempts</code> through
+  <code>SupabaseAgentOps</code>. For the SAT it calls <code>CollegeBoardSource.fetch</code>; any
+  shortfall, and all GRE, goes to <code>_questions_from_llm</code>, which may first search the
+  web for practice pages. Every question carries a <code>source</code> of <code>official</code>,
+  <code>web</code> or <code>ai</code>.</li>
+  <li><b>The response.</b> The router validates each question against the <code>Question</code>
+  model, shuffles, and returns <code>{ questions, total }</code>. If the agent throws, the router
+  returns just the custom questions.</li>
+  <li><b>The fallback.</b> Back in the browser, an error or an empty list makes
+  <code>fetchAIQuestions</code> return <code>getBankQuestions(exam, section, pace)</code> from the
+  offline bank. The game always starts.</li>
+</ol>
+
+<p>
+  When the game ends, the reverse trip is shorter. The container builds a
+  <code>GameAnalytics</code> object and calls <code>apiClient.saveScore</code>.
+  <code>POST /api/games/save-score</code> requires a user (<code>get_current_user</code>), and
+  <code>GameService.save_game_session</code> inserts one <code>game_sessions</code> row, one
+  <code>question_attempts</code> row per question, and updates <code>user_stats</code>.
+</p>
+
+<p>
+  Two requests skip <code>request</code>. <code>uploadMaterial</code> calls <code>fetch</code>
+  directly so the browser can set the multipart boundary, adding the bearer header itself. And
+  the backend's <code>/api/auth/signup</code> and <code>/api/auth/login</code> have explicit
+  <code>OPTIONS</code> handlers in addition to the CORS middleware, which allows the origins in
+  <code>ALLOWED_ORIGINS</code> plus localhost on ports 3000 and 3001.
+</p>
+
+<h3 id="s2-5"><span class="num">2.5</span><span>How the login token travels</span></h3>
+
+<p>
+  There is one credential: the Supabase access token, a JWT. It is issued by Supabase, passed
+  through the backend to the browser, kept in two places there, and sent back on every call.
+</p>
+
+<ol>
+  <li><b>Issued.</b> <code>AuthService.login</code> calls
+  <code>sign_in_with_password</code> on the backend's Supabase client and returns
+  <code>session.access_token</code>. <code>AuthService.signup</code> returns one only when email
+  confirmation is off. The refresh token is returned by the service but dropped by
+  <code>TokenResponse</code>; nothing refreshes a session.</li>
+  <li><b>Stored.</b> <code>ApiClient.setToken</code> writes the token to localStorage under
+  <code>auth_token</code> and to a cookie of the same name with <code>path=/</code>,
+  <code>max-age=604800</code> (seven days) and <code>SameSite=Lax</code>. On construction the
+  client reads localStorage first and falls back to the cookie, syncing it back.</li>
+  <li><b>Checked by Next.js.</b> <code>middleware.ts</code> only checks that the cookie exists. It
+  does not decode or validate it. Its matcher skips <code>_next</code> assets, images and
+  <code>api</code> paths.</li>
+  <li><b>Sent to the backend.</b> Every call carries <code>Authorization: Bearer</code>.
+  FastAPI's <code>HTTPBearer(auto_error=False)</code> extracts it, and
+  <code>get_current_user</code> answers 401 with "Missing authorization token" or "Invalid or
+  expired token".</li>
+  <li><b>Decoded.</b> <code>AuthService.get_user</code> decodes the JWT with
+  <code>jwt.decode(token, options={"verify_signature": False})</code>, rejects it if
+  <code>exp</code> has passed, and returns <code>{ id: sub, email }</code>.</li>
+  <li><b>Cleared.</b> <code>logout</code> posts to <code>/api/auth/logout</code>, which only
+  acknowledges, and then always calls <code>setToken(null)</code>, removing the key and expiring
+  the cookie. <code>DashboardLayout</code> also calls <code>clearAccountCache</code>.</li>
+</ol>
+
+<div class="note caution"><b>The signature is not checked</b>
+<code>get_user</code> trusts the payload of any well-formed, unexpired JWT. Because the backend
+then queries with the service-role key, a forged token with another user's <code>sub</code> would
+read and write that user's rows. Verifying the token (with the project's JWT secret, or by calling
+Supabase Auth) is the fix; see <a href="#chB">Appendix B</a>.</div>
+
+<p>
+  Expiry shows up as a 401 on the next call. The middleware cannot see it, because the cookie
+  outlives the token. <code>useAccount</code> turns a failed <code>/api/auth/me</code> into a
+  signed-out account, but no code sends the student back to <code>/login</code> on a 401.
+</p>
+
+<h3 id="s2-6"><span class="num">2.6</span><span>Where state lives</span></h3>
+
+<h4>In Supabase</h4>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Table</th><th>Written by</th><th>Read by</th><th>One row is</th></tr></thead>
+<tbody>
+<tr><td><code>profiles</code></td><td><code>PUT /api/profile</code></td><td><code>GET /api/profile</code></td><td>One user's profile; <code>user_id</code> primary key, <code>username</code> unique</td></tr>
+<tr><td><code>game_sessions</code></td><td><code>save_game_session</code></td><td><code>/api/stats/sessions</code></td><td>One finished game or mock exam</td></tr>
+<tr><td><code>question_attempts</code></td><td><code>save_game_session</code></td><td><code>SupabaseAgentOps.get_topic_performance</code></td><td>One answered question</td></tr>
+<tr><td><code>user_stats</code></td><td><code>_update_user_stats</code></td><td><code>/api/stats/user</code>, the agent</td><td>Running totals and weak and strong topics</td></tr>
+<tr><td><code>materials</code></td><td><code>POST /api/materials</code></td><td><code>GET /api/materials</code></td><td>One upload</td></tr>
+<tr><td><code>custom_questions</code></td><td>upload, review routes</td><td><code>load_custom_questions</code></td><td>One question from an upload, <code>pending</code> or <code>approved</code></td></tr>
+</tbody>
+</table></div>
+
+<h4>In the browser</h4>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Key</th><th>Store</th><th>Owner</th><th>Holds</th></tr></thead>
+<tbody>
+<tr><td><code>auth_token</code></td><td>localStorage and cookie</td><td><code>lib/api/client.ts</code></td><td>The Supabase access token</td></tr>
+<tr><td><code>exam_prefs</code></td><td>localStorage</td><td><code>lib/exam.ts</code></td><td>Exam, section, question count</td></tr>
+<tr><td><code>pending_profile</code></td><td>localStorage</td><td><code>lib/profile.ts</code></td><td>A profile waiting for email confirmation</td></tr>
+<tr><td><code>learned_lessons</code></td><td>localStorage</td><td><code>lib/learnProgress.ts</code></td><td>Ids like <code>sat:Algebra</code></td></tr>
+<tr><td><code>lesson_video_wide</code></td><td>localStorage</td><td>lesson page</td><td>Whether the video column is wide</td></tr>
+<tr><td><code>arcade_hi_&lt;gameId&gt;</code></td><td>localStorage</td><td><code>lib/arcade.ts</code></td><td>The high score per game</td></tr>
+<tr><td><code>ai_questions_&lt;game&gt;_&lt;exam&gt;_&lt;section&gt;</code></td><td>sessionStorage</td><td><code>lib/api/questions.ts</code></td><td>Questions for five minutes (Whack-A-Mole, Balloon Pop)</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  Every localStorage access sits in a <code>try</code>, and each one says what happens when
+  storage is unavailable: progress lasts for the visit, prefs fall back to the defaults.
+</p>
+
+<h4>In memory</h4>
+
+<p>
+  Three caches live in process memory and vanish on restart: on the backend,
+  <code>CollegeBoardSource._index_cache</code> (the question index, six hours) and
+  <code>_cache</code> in <code>videos.py</code> (video results, one day); in the browser, the
+  module-level <code>cached</code> account in <code>lib/useAccount.ts</code>, shared across pages
+  so navigation does not refetch the profile. On Vercel each function instance has its own
+  backend caches.
+</p>
+
+<h3 id="s2-7"><span class="num">2.7</span><span>Deployment shape</span></h3>
+
+<p>
+  Both apps deploy to Vercel as separate projects. The backend's <code>vercel.json</code> rewrites
+  every path to <code>/api/index</code>, and <code>backend/api/index.py</code> adds the backend
+  folder to <code>sys.path</code> and imports <code>app</code> from <code>src.main</code>, which
+  Vercel's Python runtime serves as ASGI. <code>backend/.vercelignore</code> keeps
+  <code>.env</code>, the shell scripts, <code>database/</code> and the other hosts' configs out of
+  the upload. The frontend learns where the backend is from <code>NEXT_PUBLIC_API_URL</code>,
+  baked in at build time by <code>next.config.js</code>, defaulting to
+  <code>http://localhost:8000</code>. The backend must list the frontend's origin in
+  <code>ALLOWED_ORIGINS</code>. Locally, <code>start_local.sh</code> runs both.
+</p>
+
+<h3 id="s2-8"><span class="num">2.8</span><span>Code that nothing runs</span></h3>
+
+<p>
+  The repo grew out of a hackathon project and still carries pieces of earlier designs. None of
+  the following is reached from a page or a route. Do not extend them, and do not be misled by
+  them when reading.
+</p>
+
+<ul>
+  <li><b>TypeScript under <code>backend/src/</code></b>, such as <code>index.ts</code>,
+  <code>api/games.ts</code>, <code>config/supabase.ts</code> and
+  <code>services/gameScoreService.ts</code>. They describe a Node backend that was never built;
+  there is no <code>package.json</code> in <code>backend/</code> to compile them. The live
+  equivalents are the <code>.py</code> files beside them.</li>
+  <li><b>Other hosts' configs</b>: <code>backend/Dockerfile</code>, <code>fly.toml</code>,
+  <code>railway.json</code>, <code>render.yaml</code>. Production is Vercel.</li>
+  <li><b>The rewrite in <code>frontend/vercel.json</code></b> to a placeholder Railway URL. The
+  client calls the backend by absolute URL, so <code>/api/*</code> on the frontend is never
+  requested.</li>
+  <li><b><code>frontend/games/GameRenderer.ts</code> and <code>frontend/games/mario/</code></b>.
+  <code>GameContainer</code> only uses the renderer for games without their own container, and
+  the only such game, <code>mario</code>, is not in <code>lib/games.ts</code>.</li>
+  <li><b>Unused components</b>: <code>components/AuthButton.tsx</code> and
+  <code>components/GameCard.tsx</code> are imported nowhere.</li>
+  <li><b>Unused dependencies</b>: <code>@supabase/ssr</code> and <code>@supabase/supabase-js</code>
+  in <code>frontend/package.json</code>. The frontend never talks to Supabase.</li>
+  <li><b>Unused backend methods</b>: <code>ExamLearningAgent.update_performance</code> and
+  <code>get_learning_insights</code>, and the <code>save_*</code> and
+  <code>update_user_stats</code> methods of <code>SupabaseAgentOps</code> they call. Scores are
+  saved by <code>GameService</code>. <code>GET /api/questions/topics</code> and
+  <code>apiClient.getQuestions</code> and <code>getTopics</code> have no caller, and
+  <code>GET /api/questions/</code> without <code>use_agent=true</code> returns an empty list.</li>
+</ul>
+
+<p>
+  The older architecture notes and test script that once sat at the repo root have been removed;
+  this handbook replaces them.
+</p>
+
+<h3 id="s2-9"><span class="num">2.9</span><span>Study notes</span></h3>
+<div class="study">
+<h4>Read in this order</h4>
+<ol>
+  <li><code>backend/src/main.py</code>, the app, CORS and the eight routers.</li>
+  <li><code>frontend/lib/api/client.ts</code>, every call the frontend can make.</li>
+  <li><code>frontend/middleware.ts</code>, what the cookie protects.</li>
+  <li><code>backend/src/api/auth.py</code> and <code>backend/src/services/auth_service.py</code>, the token's life.</li>
+  <li><code>backend/src/utils/database.py</code>, which key the backend uses and why RLS does not apply to it.</li>
+  <li><code>backend/src/api/questions.py</code>, then <code>backend/src/services/agent.py</code>, the main request path.</li>
+  <li><code>frontend/lib/api/questions.ts</code>, the fallback to the offline bank.</li>
+  <li><code>backend/database/schema.sql</code>, <code>add_profiles.sql</code>, <code>add_materials.sql</code>.</li>
+  <li><code>backend/vercel.json</code> and <code>backend/api/index.py</code>, how it is hosted.</li>
+</ol>
+<h4>Check yourself</h4>
+<p class="q">The RLS policies say users can only see their own rows. Why does that not protect the
+backend's queries?</p>
+<p class="a"><code>Database.get_client</code> prefers <code>SUPABASE_SERVICE_ROLE_KEY</code>, and the
+service role bypasses RLS. The backend's own <code>.eq("user_id", ...)</code> filters are what keep
+users apart, so a new query that forgets the filter leaks data.</p>
+<p class="q">A token expires while the student is on the dashboard. What do they see?</p>
+<p class="a">The middleware still passes them, since the cookie lasts seven days. Backend calls
+return 401; <code>getUserStats</code> and <code>getRecentSessions</code> swallow the error and
+return empty values, so the dashboard looks empty rather than signed out.</p>
+<p class="q">OpenRouter is down. Does a GRE game still start?</p>
+<p class="a">Yes. <code>_questions_from_llm</code> returns an empty list, the router returns only
+custom questions (possibly none), and <code>fetchAIQuestions</code> falls back to
+<code>getBankQuestions</code>, which has nine GRE questions per section.</p>
+<p class="q">Why does <code>uploadMaterial</code> not use the shared <code>request</code> method?</p>
+<p class="a"><code>request</code> always sets <code>Content-Type: application/json</code>. A
+multipart upload needs the browser to set the content type with its boundary, so it calls
+<code>fetch</code> directly with only the bearer header.</p>
+</div>
+</section>

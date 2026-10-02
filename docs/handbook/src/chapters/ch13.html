@@ -1,0 +1,604 @@
+<section class="chapter" id="ch13" data-hue="data">
+<p class="chapter-kicker">Chapter thirteen</p>
+<h2><span class="num">13</span><span>Data model and security</span></h2>
+
+<p class="lede">
+  Six tables in Supabase Postgres, every one keyed to <code>auth.users</code> and every one with Row
+  Level Security switched on. None of that RLS is what protects the data in practice: the browser never
+  talks to Supabase, and the FastAPI backend reaches the database with the service-role key, which
+  bypasses every policy. What protects a user's rows is the backend's own <code>user_id</code> filters
+  and the way it checks the bearer token. This chapter reads both honestly.
+</p>
+
+<p>
+  The first half is the schema: which SQL file is current, every column, index, trigger and policy,
+  and how the tables relate. The second half is the security model: who writes each table, how a JWT
+  becomes a user id in <code>auth_service.py</code>, what the browser keeps in storage, CORS, input
+  validation, HTML sanitizing, and a checklist for contributors. Several weaknesses turn up along the
+  way. They are stated plainly, because a contributor who does not know about them will build on them.
+</p>
+
+<h3 id="s13-1"><span class="num">13.1</span><span>Where the schema lives</span></h3>
+
+<pre class="tree">backend/database/
+├── reset.sql                     current: drops and recreates four tables, deletes auth users
+├── add_materials.sql             current: materials and custom_questions (not in reset.sql)
+├── schema.sql                    historical: the first three tables, 2025
+├── add_user_id_to_attempts.sql   historical: migration that reset.sql has absorbed
+└── add_profiles.sql              historical: profiles, now also in reset.sql
+
+backend/src/utils/database.py     the one Supabase client the backend uses
+backend/src/services/auth_service.py   signup, login, token decoding
+backend/src/models/schemas.py     Pydantic request and response models
+backend/src/utils/html_utils.py   allowlist sanitizer for exam question HTML</pre>
+
+<p>
+  There is no migration runner. The SQL files are pasted into the Supabase SQL editor by hand. The
+  documented setup, in the README and in <code>backend/README.md</code>, is to run
+  <code>backend/database/reset.sql</code> and then <code>backend/database/add_materials.sql</code> on a new
+  project; together they create every table, trigger and policy. <code>reset.sql</code> creates
+  <code>game_sessions</code>, <code>question_attempts</code>, <code>user_stats</code> and
+  <code>profiles</code>. <code>add_materials.sql</code> creates <code>materials</code> and
+  <code>custom_questions</code>, additively, with <code>CREATE TABLE IF NOT EXISTS</code>. The README's
+  file tree still describes <code>reset.sql</code> alone as creating "the full schema"; the setup step
+  below it is the accurate one.
+</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>File</th><th>Status</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>reset.sql</code></td><td>Current, run first</td><td>Drops <code>question_attempts</code>, <code>game_sessions</code>, <code>user_stats</code>, <code>profiles</code> and <code>set_updated_at()</code>, runs <code>DELETE FROM auth.users</code>, then recreates the four tables with indexes, two triggers and RLS. </td></tr>
+<tr><td><code>add_materials.sql</code></td><td>Current, run second</td><td>Creates <code>materials</code> and <code>custom_questions</code> with <code>IF NOT EXISTS</code>, three indexes and two <code>FOR ALL</code> policies. Added with the material uploads feature. Without it every <code>/api/materials</code> route fails.</td></tr>
+<tr><td><code>schema.sql</code></td><td>Historical</td><td>The original 2025 schema: the first three tables, without <code>question_attempts.user_id</code>, with an index on <code>question_attempts(topic)</code> and one on <code>user_stats(user_id)</code> that <code>reset.sql</code> does not create. Its <code>question_attempts</code> policies join through <code>game_sessions</code>. Only <code>QUICK_TEST.sh</code> still checks that it exists.</td></tr>
+<tr><td><code>add_user_id_to_attempts.sql</code></td><td>Historical</td><td>Upgraded a <code>schema.sql</code> database: added and backfilled <code>question_attempts.user_id</code>, added the two user indexes, and replaced the join policies with direct <code>auth.uid() = user_id</code> ones. <code>reset.sql</code> has all of that built in.</td></tr>
+<tr><td><code>add_profiles.sql</code></td><td>Historical</td><td>The <code>profiles</code> table and its three policies, identical to the copy in <code>reset.sql</code> except that it has no <code>updated_at</code> trigger.</td></tr>
+</tbody></table></div>
+
+<div class="note caution"><b>Two files, in this order, and only on a new project</b>
+Run <code>reset.sql</code>, then <code>add_materials.sql</code>. Skipping the second leaves every
+<code>/api/materials</code> route failing. <code>reset.sql</code> neither creates nor drops the two
+material tables. Its <code>DELETE FROM auth.users</code> does empty them, through their
+<code>ON DELETE CASCADE</code> foreign keys, so running it on an existing project leaves the material
+tables in place but empty. And never run <code>reset.sql</code> against a project with real users: its
+header says it "wipes all app data AND all auth users".</div>
+
+<h3 id="s13-2"><span class="num">13.2</span><span>The tables</span></h3>
+
+<p>
+  The first four tables below are created by <code>reset.sql</code>, the last two by
+  <code>add_materials.sql</code>. Every timestamp column defaults to <code>TIMEZONE('utc', NOW())</code>. Every <code>id</code> that is a
+  UUID defaults to <code>gen_random_uuid()</code>. Every foreign key cascades on delete.
+</p>
+
+<h4>game_sessions</h4>
+<p>One row per finished game or mock exam, written by <code>POST /api/games/save-score</code>.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Column</th><th>Type</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>id</code></td><td><code>UUID</code></td><td>Primary key</td></tr>
+<tr><td><code>user_id</code></td><td><code>UUID NOT NULL</code></td><td>References <code>auth.users(id)</code></td></tr>
+<tr><td><code>game_id</code></td><td><code>TEXT NOT NULL</code></td><td>A game id from <code>frontend/lib/games.ts</code> (<code>zombie</code>, <code>whackamole</code>, <code>carnival</code>, <code>subway-surfers</code>, <code>squid-game</code>, <code>pac-man</code>) or <code>mock-exam</code>. Not constrained.</td></tr>
+<tr><td><code>score</code></td><td><code>INTEGER NOT NULL</code></td><td>As reported by the client</td></tr>
+<tr><td><code>accuracy</code></td><td><code>DECIMAL(5,4) NOT NULL</code></td><td>0 to 1, recomputed by the server from the two counts below</td></tr>
+<tr><td><code>correct_answers</code>, <code>wrong_answers</code></td><td><code>INTEGER NOT NULL</code></td><td></td></tr>
+<tr><td><code>max_streak</code></td><td><code>INTEGER NOT NULL</code></td><td>From <code>analytics.streakInfo.maxStreak</code>, 0 if absent</td></tr>
+<tr><td><code>average_response_time</code></td><td><code>INTEGER NOT NULL</code></td><td>Milliseconds</td></tr>
+<tr><td><code>created_at</code></td><td><code>TIMESTAMPTZ NOT NULL</code></td><td></td></tr>
+</tbody></table></div>
+
+<h4>question_attempts</h4>
+<p>One row per question answered inside a session. <code>user_id</code> duplicates the session's owner so the agent can query a user's history without a join.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Column</th><th>Type</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>id</code></td><td><code>UUID</code></td><td>Primary key</td></tr>
+<tr><td><code>session_id</code></td><td><code>UUID NOT NULL</code></td><td>References <code>game_sessions(id)</code></td></tr>
+<tr><td><code>user_id</code></td><td><code>UUID NOT NULL</code></td><td>References <code>auth.users(id)</code></td></tr>
+<tr><td><code>question_id</code></td><td><code>INTEGER NOT NULL</code></td><td>Not a foreign key. Question ids come from many sources and are squeezed into 31 bits (<a href="#s13-6">13.6</a>).</td></tr>
+<tr><td><code>topic</code>, <code>difficulty</code></td><td><code>TEXT NOT NULL</code></td><td>Free text from the question</td></tr>
+<tr><td><code>is_correct</code></td><td><code>BOOLEAN NOT NULL</code></td><td></td></tr>
+<tr><td><code>time_spent</code></td><td><code>INTEGER NOT NULL</code></td><td>Milliseconds</td></tr>
+<tr><td><code>created_at</code></td><td><code>TIMESTAMPTZ NOT NULL</code></td><td></td></tr>
+</tbody></table></div>
+
+<h4>user_stats</h4>
+<p>One running summary per user, read by the dashboard, profile, stats and learn pages and by the question agent.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Column</th><th>Type</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>id</code></td><td><code>UUID</code></td><td>Primary key</td></tr>
+<tr><td><code>user_id</code></td><td><code>UUID NOT NULL UNIQUE</code></td><td>References <code>auth.users(id)</code></td></tr>
+<tr><td><code>total_games_played</code>, <code>total_score</code>, <code>total_questions_answered</code>, <code>total_correct</code>, <code>total_wrong</code></td><td><code>INTEGER DEFAULT 0</code></td><td>Running sums</td></tr>
+<tr><td><code>overall_accuracy</code></td><td><code>DECIMAL(5,4) DEFAULT 0</code></td><td><code>total_correct / total_questions_answered</code></td></tr>
+<tr><td><code>favorite_game</code></td><td><code>TEXT</code></td><td>Never written by any code. Always null.</td></tr>
+<tr><td><code>weak_topics</code>, <code>strong_topics</code></td><td><code>TEXT[]</code> default empty</td><td>Topics under 50% and at or over 80% in the latest session, merged with the earlier lists by <code>_update_user_stats</code></td></tr>
+<tr><td><code>updated_at</code></td><td><code>TIMESTAMPTZ NOT NULL</code></td><td>Kept current by trigger</td></tr>
+</tbody></table></div>
+
+<h4>profiles</h4>
+<p>One row per user, created at signup or first login. The primary key is the user id itself.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Column</th><th>Type</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>user_id</code></td><td><code>UUID</code></td><td>Primary key, references <code>auth.users(id)</code></td></tr>
+<tr><td><code>display_name</code></td><td><code>TEXT NOT NULL</code></td><td></td></tr>
+<tr><td><code>username</code></td><td><code>TEXT NOT NULL UNIQUE</code></td><td></td></tr>
+<tr><td><code>exam</code></td><td><code>TEXT NOT NULL DEFAULT 'sat'</code></td><td><code>CHECK (exam IN ('sat', 'gre'))</code></td></tr>
+<tr><td><code>target_score</code></td><td><code>INTEGER</code></td><td>Nullable</td></tr>
+<tr><td><code>test_date</code></td><td><code>DATE</code></td><td>Nullable</td></tr>
+<tr><td><code>daily_minutes</code></td><td><code>INTEGER NOT NULL DEFAULT 20</code></td><td></td></tr>
+<tr><td><code>avatar_color</code></td><td><code>TEXT NOT NULL DEFAULT '#3A33E8'</code></td><td></td></tr>
+<tr><td><code>created_at</code>, <code>updated_at</code></td><td><code>TIMESTAMPTZ NOT NULL</code></td><td><code>updated_at</code> kept current by trigger</td></tr>
+</tbody></table></div>
+
+<h4>materials</h4>
+<p>One row per uploaded file or pasted text. Created by <code>add_materials.sql</code>.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Column</th><th>Type</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>id</code></td><td><code>UUID</code></td><td>Primary key</td></tr>
+<tr><td><code>user_id</code></td><td><code>UUID NOT NULL</code></td><td>References <code>auth.users(id)</code></td></tr>
+<tr><td><code>name</code></td><td><code>TEXT NOT NULL</code></td><td>Defaults in code to the file name, then <code>Untitled material</code></td></tr>
+<tr><td><code>exam</code></td><td><code>TEXT NOT NULL</code></td><td><code>CHECK (exam IN ('sat', 'gre'))</code></td></tr>
+<tr><td><code>section</code></td><td><code>TEXT NOT NULL</code></td><td><code>CHECK (section IN ('quant', 'verbal'))</code></td></tr>
+<tr><td><code>created_at</code></td><td><code>TIMESTAMPTZ NOT NULL</code></td><td></td></tr>
+</tbody></table></div>
+
+<h4>custom_questions</h4>
+<p>Questions found in, or written from, a material. Only approved ones reach games. Created by <code>add_materials.sql</code>.</p>
+<div class="tablewrap"><table>
+<thead><tr><th>Column</th><th>Type</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>id</code></td><td><code>BIGSERIAL</code></td><td>Primary key. The only integer key in the schema.</td></tr>
+<tr><td><code>material_id</code></td><td><code>UUID NOT NULL</code></td><td>References <code>materials(id)</code></td></tr>
+<tr><td><code>user_id</code></td><td><code>UUID NOT NULL</code></td><td>References <code>auth.users(id)</code></td></tr>
+<tr><td><code>exam</code>, <code>section</code></td><td><code>TEXT NOT NULL</code></td><td>Copied from the material. No check constraint here.</td></tr>
+<tr><td><code>question</code></td><td><code>TEXT NOT NULL</code></td><td>The stem</td></tr>
+<tr><td><code>passage</code></td><td><code>TEXT NOT NULL DEFAULT ''</code></td><td></td></tr>
+<tr><td><code>options</code></td><td><code>JSONB NOT NULL</code></td><td>Array of strings, 2 to 5 of them by the parser's rule</td></tr>
+<tr><td><code>correct_answer</code></td><td><code>INTEGER</code></td><td>Index into <code>options</code>. Null until found in the material or set during review.</td></tr>
+<tr><td><code>topic</code></td><td><code>TEXT NOT NULL DEFAULT 'My material'</code></td><td></td></tr>
+<tr><td><code>difficulty</code></td><td><code>TEXT NOT NULL DEFAULT 'medium'</code></td><td></td></tr>
+<tr><td><code>explanation</code></td><td><code>TEXT NOT NULL DEFAULT ''</code></td><td></td></tr>
+<tr><td><code>origin</code></td><td><code>TEXT NOT NULL DEFAULT 'extracted'</code></td><td><code>CHECK (origin IN ('extracted', 'generated'))</code></td></tr>
+<tr><td><code>status</code></td><td><code>TEXT NOT NULL DEFAULT 'pending'</code></td><td><code>CHECK (status IN ('pending', 'approved'))</code></td></tr>
+<tr><td><code>created_at</code></td><td><code>TIMESTAMPTZ NOT NULL</code></td><td></td></tr>
+</tbody></table></div>
+
+<h3 id="s13-3"><span class="num">13.3</span><span>Indexes, triggers and functions</span></h3>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Index</th><th>On</th><th>Serves</th></tr></thead>
+<tbody>
+<tr><td><code>idx_game_sessions_user_id</code></td><td><code>game_sessions(user_id)</code></td><td><code>GET /api/stats/sessions</code></td></tr>
+<tr><td><code>idx_game_sessions_created_at</code></td><td><code>game_sessions(created_at DESC)</code></td><td>The newest-first ordering of the same route</td></tr>
+<tr><td><code>idx_question_attempts_session_id</code></td><td><code>question_attempts(session_id)</code></td><td>The cascade from <code>game_sessions</code></td></tr>
+<tr><td><code>idx_question_attempts_user_id</code></td><td><code>question_attempts(user_id)</code></td><td><code>SupabaseAgentOps.get_topic_performance</code></td></tr>
+<tr><td><code>idx_question_attempts_user_topic</code></td><td><code>question_attempts(user_id, topic)</code></td><td>Per-topic history for one user</td></tr>
+<tr><td><code>idx_materials_user_id</code></td><td><code>materials(user_id)</code></td><td><code>GET /api/materials</code></td></tr>
+<tr><td><code>idx_custom_questions_material_id</code></td><td><code>custom_questions(material_id)</code></td><td>A material's review list, and its cascade</td></tr>
+<tr><td><code>idx_custom_questions_user_section</code></td><td><code>custom_questions(user_id, exam, section, status)</code></td><td><code>load_custom_questions</code>, which filters on exactly those four columns</td></tr>
+</tbody></table></div>
+
+<p>
+  The unique constraints on <code>user_stats.user_id</code> and <code>profiles.username</code> create
+  their own indexes. The first five indexes in the table come from <code>reset.sql</code>, the last three
+  from <code>add_materials.sql</code>. <code>reset.sql</code> also defines one function and two triggers:
+</p>
+
+<pre><code>CREATE FUNCTION set_updated_at() RETURNS TRIGGER AS $$
+BEGIN
+  NEW.updated_at = NOW();
+  RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER profiles_updated_at BEFORE UPDATE ON profiles
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+CREATE TRIGGER user_stats_updated_at BEFORE UPDATE ON user_stats
+  FOR EACH ROW EXECUTE FUNCTION set_updated_at();</code></pre>
+
+<p>
+  The backend also sets <code>updated_at</code> itself in both places that update these tables
+  (<code>profile.py</code> and <code>game_service.py</code>), so the trigger is a backstop. There is no
+  trigger that creates a profile when an auth user is created: the profile is written by
+  <code>PUT /api/profile</code>, and a user who never completes the form has no row.
+  <code>profile.py</code>'s upsert is an insert on first save, which the trigger does not touch, so
+  <code>created_at</code> and <code>updated_at</code> start equal.
+</p>
+
+<h3 id="s13-4"><span class="num">13.4</span><span>How the tables relate</span></h3>
+
+<figure>
+<svg class="diagram" viewBox="0 0 860 360" role="img" aria-label="Entity relationship diagram. auth.users at the top. Beneath it, profiles and user_stats with one row per user, and game_sessions and materials with many rows per user. question_attempts hangs off game_sessions and custom_questions off materials; both also carry a direct user_id foreign key to auth.users, drawn dashed. Every foreign key cascades on delete.">
+  <defs>
+    <marker id="ch13-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head" points="0,0 10,5 0,10"/></marker>
+    <marker id="ch13-arrow-hot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head-hot" points="0,0 10,5 0,10"/></marker>
+  </defs>
+
+  <rect class="box-alt" x="330" y="16" width="200" height="48" rx="10"/>
+  <text class="lbl" x="430" y="37" text-anchor="middle">auth.users</text>
+  <text class="lbl-sm" x="430" y="54" text-anchor="middle">managed by Supabase Auth</text>
+
+  <path class="flow" d="M430 64 L 430 96 L 105 96 L 105 124" marker-end="url(#ch13-arrow)"/>
+  <path class="flow" d="M430 96 L 300 96 L 300 124" marker-end="url(#ch13-arrow)"/>
+  <path class="flow" d="M430 96 L 540 96 L 540 124" marker-end="url(#ch13-arrow)"/>
+  <path class="flow" d="M540 96 L 750 96 L 750 124" marker-end="url(#ch13-arrow)"/>
+
+  <rect class="box" x="20" y="130" width="170" height="48" rx="8"/>
+  <text class="lbl" x="105" y="151" text-anchor="middle">profiles</text>
+  <text class="lbl-sm" x="105" y="168" text-anchor="middle">1 per user, PK user_id</text>
+
+  <rect class="box" x="220" y="130" width="160" height="48" rx="8"/>
+  <text class="lbl" x="300" y="151" text-anchor="middle">user_stats</text>
+  <text class="lbl-sm" x="300" y="168" text-anchor="middle">1 per user, unique</text>
+
+  <rect class="box" x="450" y="130" width="180" height="48" rx="8"/>
+  <text class="lbl" x="540" y="151" text-anchor="middle">game_sessions</text>
+  <text class="lbl-sm" x="540" y="168" text-anchor="middle">many per user</text>
+
+  <rect class="box-hot" x="660" y="130" width="180" height="48" rx="8"/>
+  <text class="lbl" x="750" y="151" text-anchor="middle">materials</text>
+  <text class="lbl-hot" x="750" y="168" text-anchor="middle">add_materials.sql</text>
+
+  <path class="flow" d="M540 178 L 540 244" marker-end="url(#ch13-arrow)"/>
+  <path class="flow-hot" d="M750 178 L 750 244" marker-end="url(#ch13-arrow-hot)"/>
+  <text class="lbl-sm" x="548" y="215">session_id</text>
+  <text class="lbl-sm" x="758" y="215">material_id</text>
+
+  <rect class="box" x="450" y="250" width="180" height="48" rx="8"/>
+  <text class="lbl" x="540" y="271" text-anchor="middle">question_attempts</text>
+  <text class="lbl-sm" x="540" y="288" text-anchor="middle">many per session</text>
+
+  <rect class="box-hot" x="660" y="250" width="180" height="48" rx="8"/>
+  <text class="lbl" x="750" y="271" text-anchor="middle">custom_questions</text>
+  <text class="lbl-hot" x="750" y="288" text-anchor="middle">pending or approved</text>
+
+  <path class="flow-dash" d="M410 64 L 410 274 L 444 274" marker-end="url(#ch13-arrow)"/>
+  <path class="flow-dash" d="M530 40 L 852 40 L 852 274 L 846 274" marker-end="url(#ch13-arrow)"/>
+
+  <text class="lbl-sm" x="20" y="330">Solid: foreign key, ON DELETE CASCADE. Dashed: the denormalized user_id, also a cascading foreign key.</text>
+  <text class="lbl-sm" x="20" y="348">Deleting an auth user removes every row in all six tables.</text>
+</svg>
+<figcaption>The six tables. Arrows run from the referenced row to the rows that reference it.</figcaption>
+</figure>
+
+<p>
+  Two tables carry a <code>user_id</code> they could have reached through a parent:
+  <code>question_attempts</code> through <code>game_sessions</code>, and <code>custom_questions</code>
+  through <code>materials</code>. The duplication is deliberate. It lets the agent and the game question
+  loader filter by user with one indexed column, and it lets the policies in <a href="#s13-5">13.5</a>
+  be one comparison instead of a subquery. The cost is that nothing in the schema forces the copy to
+  match the parent's owner. The backend always writes both from the same <code>current_user["id"]</code>,
+  so they agree today.
+</p>
+
+<h3 id="s13-5"><span class="num">13.5</span><span>Row Level Security, and why it does not apply</span></h3>
+
+<p>RLS is enabled on all six tables. These are every policy that exists. The first four rows come from <code>reset.sql</code>, the last two from <code>add_materials.sql</code>:</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Table</th><th>SELECT</th><th>INSERT</th><th>UPDATE</th><th>DELETE</th></tr></thead>
+<tbody>
+<tr><td><code>game_sessions</code></td><td>own rows</td><td>own rows</td><td>none</td><td>none</td></tr>
+<tr><td><code>question_attempts</code></td><td>own rows</td><td>own rows</td><td>none</td><td>none</td></tr>
+<tr><td><code>user_stats</code></td><td>own row</td><td>own row</td><td>own row (no <code>WITH CHECK</code>)</td><td>none</td></tr>
+<tr><td><code>profiles</code></td><td>own row</td><td>own row</td><td>own row (no <code>WITH CHECK</code>)</td><td>none</td></tr>
+<tr><td><code>materials</code></td><td colspan="4"><code>FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id)</code></td></tr>
+<tr><td><code>custom_questions</code></td><td colspan="4"><code>FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id)</code></td></tr>
+</tbody></table></div>
+
+<p>
+  "Own" is <code>auth.uid() = user_id</code> in every case. An <code>UPDATE</code> policy without
+  <code>WITH CHECK</code> reuses its <code>USING</code> expression for the new row, so a user could not
+  move their stats or profile to another user id even through it.
+</p>
+
+<p>
+  Now the part that matters. <code>Database.get_client()</code> in <code>backend/src/utils/database.py</code>
+  builds one process-wide client from <code>SUPABASE_URL</code> (or <code>NEXT_PUBLIC_SUPABASE_URL</code>)
+  and the first key it finds among <code>SUPABASE_SERVICE_ROLE_KEY</code>, <code>SUPABASE_SERVICE_KEY</code>
+  and <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>. With a service-role key, Postgres sees the
+  <code>service_role</code> role, which bypasses RLS entirely. Every route uses this client through
+  <code>get_db()</code>. The frontend has <code>@supabase/supabase-js</code> and <code>@supabase/ssr</code>
+  in <code>package.json</code> but never imports them; no browser code talks to Supabase. So in normal
+  operation <b>no policy is ever evaluated</b>. The policies are a second line that only comes into play
+  if someone reaches the database with the anon key and a user JWT, which this codebase never does.
+</p>
+
+<p>
+  Authorization therefore lives in Python. Every query on user data must carry
+  <code>.eq("user_id", current_user["id"])</code> or check ownership first, as
+  <code>_own_material()</code> in <code>materials.py</code> does. A route that forgets is a cross-user
+  leak, and RLS will not catch it. One already exists: <code>GET /api/questions/topics</code> selects
+  <code>topic</code> from all of <code>question_attempts</code> with no user filter and returns every
+  topic any user has practised. It is low sensitivity, but it is the pattern to avoid.
+</p>
+
+<div class="note caution"><b>If the service-role key is missing, the backend silently runs as anon</b>
+<code>get_client()</code> falls back to <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>. With the anon key and
+no user session, <code>auth.uid()</code> is null, every policy fails, reads return empty lists and
+writes are rejected. The symptom is "stats are always zero" and "save-score returns 500", not a
+startup error.</div>
+
+<div class="note caution"><b>Signing in on the shared client may change who the client is</b>
+<code>AuthService.signup</code> and <code>login</code> call <code>auth.sign_up</code> and
+<code>auth.sign_in_with_password</code> on the same singleton client every route uses for data. In
+supabase-py 2.x the client listens for its own auth events, and on <code>SIGNED_IN</code> it replaces
+the <code>Authorization</code> header it sends to PostgREST with the new session's access token. If
+that is the behaviour of the installed version, then after the first login in a process every later
+query runs as that user, under RLS, instead of as the service role. A single developer testing with
+one account would never notice, because their own rows pass their own policies. A second user would
+see empty reads and failed writes, and everyone would fail once the first user's token expires.
+<code>Database.get_auth_client()</code> creates a separate client for auth and looks meant for this,
+but nothing calls it, and it too prefers the anon key and falls back to the service-role key. Doing
+auth calls on a fresh, separate client is the fix to make and test.</div>
+
+<h3 id="s13-6"><span class="num">13.6</span><span>Who writes each table</span></h3>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Table</th><th>Written by</th><th>Read by</th></tr></thead>
+<tbody>
+<tr><td><code>game_sessions</code></td><td><code>GameService.save_game_session</code> (insert)</td><td><code>GET /api/stats/sessions</code>; <code>GET /api/health/supabase</code> (one id, as a probe)</td></tr>
+<tr><td><code>question_attempts</code></td><td><code>GameService.save_game_session</code> (bulk insert)</td><td><code>SupabaseAgentOps.get_topic_performance</code>; <code>GET /api/questions/topics</code></td></tr>
+<tr><td><code>user_stats</code></td><td><code>GameService._update_user_stats</code> (select then insert or update)</td><td><code>GET /api/stats/user</code>; <code>SupabaseAgentOps.get_user_performance</code></td></tr>
+<tr><td><code>profiles</code></td><td><code>PUT /api/profile</code> (upsert on <code>user_id</code>)</td><td><code>GET /api/profile</code>; the username check in <code>PUT</code></td></tr>
+<tr><td><code>materials</code></td><td><code>POST /api/materials</code> (insert); <code>DELETE /api/materials/{id}</code></td><td><code>GET /api/materials</code>; <code>_own_material</code>; <code>load_custom_questions</code></td></tr>
+<tr><td><code>custom_questions</code></td><td><code>POST /api/materials</code> (bulk insert); <code>PATCH</code> and <code>DELETE /api/materials/questions/{id}</code>; <code>approve-all</code>; material delete</td><td>The material routes; <code>load_custom_questions</code> in <code>services/custom_questions.py</code></td></tr>
+</tbody></table></div>
+
+<p>
+  Every writer is the backend with the client from <code>database.py</code>.
+  <code>SupabaseAgentOps</code> also has <code>save_game_session</code>,
+  <code>save_question_attempts</code> and <code>update_user_stats</code>, reached only through
+  <code>ExamLearningAgent.update_performance</code>, which nothing calls. They are dead code, and so is
+  the TypeScript in <code>backend/src</code> (<code>index.ts</code>, <code>api/games.ts</code>,
+  <code>services/gameScoreService.ts</code>, <code>config/supabase.ts</code>, <code>types/</code>): the
+  deployed backend is Python only.
+</p>
+
+<p>
+  <code>user_stats</code> is updated by read, compute, write with no transaction or row lock. Two games
+  saved at the same moment by one user can lose one of the increments. <code>save_game_session</code> is
+  also three separate requests (session, attempts, stats); if the second fails, the session row stays
+  and the route still reports failure.
+</p>
+
+<p>
+  <code>question_attempts.question_id</code> is <code>INTEGER</code>, so ids are kept below
+  2<sup>31</sup>: College Board questions use <code>int(questionId, 16) &amp; 0x7FFFFFFF</code>, web and
+  AI questions use <code>zlib.crc32(stem) &amp; 0x7FFFFFFF</code>, and custom questions use
+  <code>CUSTOM_ID_OFFSET + row["id"]</code> with an offset of <code>1_500_000_000</code>. These ranges can
+  collide in principle. The id is only used for analytics, so a collision mislabels an attempt rather
+  than breaking anything.
+</p>
+
+<h3 id="s13-7"><span class="num">13.7</span><span>How a token becomes a user</span></h3>
+
+<p>
+  Login goes through the backend. <code>POST /api/auth/login</code> calls Supabase's
+  <code>sign_in_with_password</code> and returns the session's <code>access_token</code>, a Supabase JWT.
+  The frontend sends it back as <code>Authorization: Bearer ...</code>. Protected routes depend on
+  <code>get_current_user</code> in <code>api/auth.py</code>, which uses <code>HTTPBearer(auto_error=False)</code>,
+  returns 401 <code>Missing authorization token</code> when there is no header, and otherwise calls
+  <code>AuthService.get_user(token)</code>:
+</p>
+
+<pre><code># backend/src/services/auth_service.py, get_user (abridged)
+decoded = jwt.decode(token, options={"verify_signature": False})
+if decoded and "sub" in decoded:
+    user_id = decoded["sub"]
+    user_email = decoded.get("email", "")
+    exp = decoded.get("exp", 0)
+    if exp and exp &lt; time.time():
+        return None
+    # For now, we'll trust the JWT payload since it's from Supabase
+    return {"id": user_id, "email": user_email}</code></pre>
+
+<div class="note caution"><b>The signature is never verified</b>
+<code>get_user</code> decodes the token with <code>verify_signature: False</code> and checks only that
+<code>sub</code> exists and that <code>exp</code>, if present, is in the future. Anyone can build a
+token by hand with another user's id in <code>sub</code> and no <code>exp</code>, send it, and be treated
+as that user. Because every query then runs with the service-role key (<a href="#s13-5">13.5</a>), that
+is full read and write access to the victim's profile, stats, sessions and materials. User ids are
+UUIDs and are not shown in the UI, which raises the bar but is not a control. The fix is to verify the
+token: either decode with the project's JWT secret or JWKS (HS256 or the project's asymmetric key, with
+<code>audience="authenticated"</code>), or call Supabase's <code>auth.get_user(token)</code> on a
+separate client. No JWT secret variable exists in the backend today, so this needs a new environment
+variable or a network call per request. <code>python-jose</code> is in <code>requirements.txt</code>
+but unused; <code>get_user</code> imports <code>jwt</code> (PyJWT), which <code>requirements.txt</code>
+does not list and which only arrives as a dependency of another package.</div>
+
+<p>
+  The other auth routes are thin. <code>POST /api/auth/logout</code> does nothing on the server; its
+  comment says the token "will expire naturally". Login returns no refresh token to the browser
+  (<code>TokenResponse</code> has no field for it, although <code>AuthService.login</code> reads one), so
+  a session ends when the access token expires, which is the Supabase project's JWT expiry setting.
+  <code>GET /api/questions/</code> uses <code>get_current_user_optional</code>, which returns
+  <code>None</code> on a missing or bad token instead of raising.
+</p>
+
+<h3 id="s13-8"><span class="num">13.8</span><span>What lives in the browser</span></h3>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Key</th><th>Storage</th><th>Written by</th><th>Holds</th></tr></thead>
+<tbody>
+<tr><td><code>auth_token</code></td><td><code>localStorage</code></td><td><code>ApiClient.setToken</code> in <code>lib/api/client.ts</code></td><td>The Supabase access token</td></tr>
+<tr><td><code>auth_token</code></td><td>cookie</td><td>Same</td><td>The same token, <code>path=/; max-age=604800; SameSite=Lax</code>. Not <code>HttpOnly</code> (set from JavaScript) and not <code>Secure</code>.</td></tr>
+<tr><td><code>pending_profile</code></td><td><code>localStorage</code></td><td><code>savePendingProfile</code> in <code>lib/profile.ts</code></td><td>Email (lower-cased) and the signup form's profile, waiting for a first login when email confirmation is on</td></tr>
+<tr><td><code>exam_prefs</code></td><td><code>localStorage</code></td><td><code>setExamPrefs</code> in <code>lib/exam.ts</code></td><td><code>exam</code>, <code>section</code>, <code>questionCount</code></td></tr>
+<tr><td><code>learned_lessons</code></td><td><code>localStorage</code></td><td><code>useLearned</code> in <code>lib/learnProgress.ts</code></td><td>Lesson ids marked as learned</td></tr>
+<tr><td><code>lesson_video_wide</code></td><td><code>localStorage</code></td><td><code>app/learn/[exam]/[topic]/page.tsx</code></td><td><code>'1'</code> or <code>'0'</code></td></tr>
+<tr><td><code>arcade_hi_{gameId}</code></td><td><code>localStorage</code></td><td><code>recordHighScore</code> in <code>lib/arcade.ts</code></td><td>Best score per game on this device</td></tr>
+<tr><td><code>ai_questions_{gameId}_{exam}_{section}</code></td><td><code>sessionStorage</code></td><td><code>fetchQuestionsWithCache</code> in <code>lib/api/questions.ts</code></td><td>A question set and timestamp, reused for 5 minutes. Only Whack-A-Mole calls it.</td></tr>
+</tbody></table></div>
+
+<p>
+  The cookie exists for <code>frontend/middleware.ts</code>, which redirects to <code>/login</code> when
+  a protected path (<code>/dashboard</code>, <code>/games</code>, <code>/learn</code>,
+  <code>/materials</code>, <code>/mock</code>, <code>/profile</code>, <code>/stats</code>) is requested
+  without it. The middleware checks only that the cookie is present, not that it is valid, so it is a
+  navigation convenience and not a security boundary. <code>app/robots.ts</code> disallows the same
+  seven paths for crawlers. The cookie outlives the token: after the
+  access token expires, the middleware still lets the user in and the API answers 401.
+</p>
+
+<p>
+  Because the token is readable from JavaScript in two places, any XSS on the site can steal it. That
+  is why the HTML sanitizing in <a href="#s13-11">13.11</a> matters. On logout <code>setToken(null)</code>
+  removes the localStorage entry and expires the cookie.
+</p>
+
+<p>
+  <code>app/login/page.tsx</code> follows the <code>redirect</code> query parameter only when it is a
+  same-site path (one leading <code>/</code>, not <code>//</code> or <code>/\</code>), so a crafted link
+  cannot turn the login page into an open redirect.
+</p>
+
+<h3 id="s13-9"><span class="num">13.9</span><span>CORS</span></h3>
+
+<p>
+  <code>backend/src/main.py</code> adds Starlette's <code>CORSMiddleware</code> before any router. The
+  allowed origins are the comma-separated <code>ALLOWED_ORIGINS</code> variable plus four fixed
+  development origins: <code>http://localhost:3000</code>, <code>http://localhost:3001</code>,
+  <code>http://127.0.0.1:3000</code> and <code>http://127.0.0.1:3001</code>. The rest of the
+  configuration is permissive: <code>allow_credentials=True</code>, methods <code>GET POST PUT DELETE
+  OPTIONS PATCH HEAD</code>, <code>allow_headers=["*"]</code>, <code>expose_headers=["*"]</code>,
+  <code>max_age=3600</code>.
+</p>
+
+<p>
+  Since auth is a bearer header and not a cookie the backend reads, credentials mode adds nothing; the
+  client sets <code>credentials: 'include'</code> anyway. <code>auth.py</code> also defines explicit
+  <code>OPTIONS</code> handlers for <code>/signup</code> and <code>/login</code> that echo back any
+  <code>Origin</code> with credentials allowed. The middleware answers real preflights before they reach
+  a route, so these handlers only run for a bare <code>OPTIONS</code> request, but they reflect any
+  origin and should be deleted rather than copied.
+</p>
+
+<p>
+  The global <code>@app.exception_handler(Exception)</code> returns <code>{"detail": "Internal server
+  error"}</code> with status 500. In Starlette that handler runs in the outermost middleware, outside
+  CORS, so the 500 has no <code>Access-Control-Allow-Origin</code> header and the browser reports a
+  network failure rather than the error. Routes that raise <code>HTTPException</code> are not affected.
+</p>
+
+<h3 id="s13-10"><span class="num">13.10</span><span>Input validation</span></h3>
+
+<p>
+  FastAPI validates every body and query parameter against its type and returns 422 when it does not
+  fit. The constraints that go beyond types are few, and listed here.
+</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Model or parameter</th><th>Constraints</th></tr></thead>
+<tbody>
+<tr><td><code>UserSignup</code>, <code>UserLogin</code></td><td><code>email: EmailStr</code>. <code>password: str</code> with no length rule; Supabase enforces its own minimum.</td></tr>
+<tr><td><code>Profile</code></td><td><code>display_name</code> 1 to 60 chars; <code>username</code> matches <code>^[a-z0-9_]{3,24}$</code>; <code>exam</code> is <code>sat</code> or <code>gre</code>; <code>daily_minutes</code> 5 to 240; <code>avatar_color</code> matches <code>^#[0-9A-Fa-f]{6}$</code>; <code>test_date</code> a date; <code>target_score</code> 400 to 1600 for SAT, 260 to 340 for GRE, checked by <code>check_target_score</code></td></tr>
+<tr><td><code>SaveScoreRequest</code>, <code>GameAnalytics</code>, <code>QuestionAttempt</code></td><td>Types only. Scores, counts and times can be any integer, including negative. The server trusts what a game reports.</td></tr>
+<tr><td><code>QuestionUpdate</code> (in <code>materials.py</code>)</td><td><code>status</code> is <code>pending</code> or <code>approved</code>. The route also rejects a <code>correct_answer</code> outside <code>options</code> and approval without an answer.</td></tr>
+<tr><td><code>GET /api/questions/</code></td><td><code>limit</code> 1 to 100; <code>exam</code>, <code>section</code>, <code>pace</code> are literals</td></tr>
+<tr><td><code>GET /api/learn/videos</code></td><td><code>exam</code> and <code>section</code> by regex; <code>topic</code> 2 to 80 chars; <code>limit</code> 1 to 12</td></tr>
+<tr><td><code>POST /api/materials</code></td><td><code>exam</code>, <code>section</code> literals; file at most <code>MAX_UPLOAD_BYTES</code> (4 MB), checked after the whole file is read; extracted text at least 40 chars and cut at 400,000</td></tr>
+<tr><td><code>GET /api/stats/sessions</code></td><td><code>limit: int = 10</code>, no bounds</td></tr>
+</tbody></table></div>
+
+<p>
+  The <code>username</code> uniqueness check in <code>PUT /api/profile</code> is a select before the
+  upsert; two simultaneous saves of the same new name will make one of them hit the database's unique
+  constraint and return a 500 rather than the friendly 409.
+</p>
+
+<h3 id="s13-11"><span class="num">13.11</span><span>HTML sanitizing</span></h3>
+
+<p>
+  Official SAT questions arrive as HTML with MathML. <code>CollegeBoardSource._normalize</code> in
+  <code>question_sources.py</code> stores two forms: plain text from <code>html_to_text</code> for games
+  that draw text themselves, and <code>questionHtml</code>, <code>passageHtml</code>,
+  <code>optionsHtml</code> and <code>explanationHtml</code> from <code>sanitize_html</code> for rich
+  display. No other source produces HTML; web, AI, custom and built-in questions are text only.
+</p>
+
+<p>
+  <code>sanitize_html</code> in <code>backend/src/utils/html_utils.py</code> parses with the standard
+  library's <code>HTMLParser</code> into its own tree and re-renders it from allowlists:
+</p>
+
+<ul>
+  <li><code>DROPPED_TAGS</code> (<code>script</code>, <code>style</code>, <code>svg</code>,
+  <code>img</code>, <code>iframe</code>, <code>object</code>, <code>embed</code>, <code>form</code>,
+  <code>button</code> and others) are removed with everything inside them, as is any element whose class
+  contains <code>sr-only</code>.</li>
+  <li><code>HTML_TAGS</code> (paragraphs, inline formatting, lists, tables) and <code>MATH_TAGS</code>
+  (the MathML presentation elements) are kept.</li>
+  <li>Any other tag is unwrapped: the tag goes, its children stay.</li>
+  <li>Only attributes in <code>KEPT_ATTRS</code> survive: <code>alttext</code>, <code>display</code>,
+  <code>mathvariant</code>, <code>colspan</code>, <code>rowspan</code>, <code>columnalign</code>,
+  <code>linethickness</code>, all HTML-escaped. No <code>href</code>, <code>src</code>,
+  <code>style</code> or event handler can pass.</li>
+  <li>Text is escaped. <code>mfenced</code> becomes an <code>mrow</code> with explicit <code>mo</code>
+  brackets; a span with <code>underline</code> in its style becomes <code>u</code>.</li>
+</ul>
+
+<p>
+  The frontend does not trust this alone. <code>QuestionContent</code> in
+  <code>frontend/components/QuestionContent.tsx</code> runs a second allowlist, with the same tags and
+  attributes, through <code>DOMParser</code> before <code>dangerouslySetInnerHTML</code>. It removes
+  disallowed elements outright, contents included. That component and the two JSON-LD
+  <code>script</code> tags in <code>app/layout.tsx</code> and <code>app/developer/page.tsx</code> are
+  the only uses of <code>dangerouslySetInnerHTML</code> in the app.
+</p>
+
+<h3 id="s13-12"><span class="num">13.12</span><span>A security checklist for contributors</span></h3>
+
+<ol>
+  <li>Every new route that touches user data depends on <code>get_current_user</code> and filters by
+  <code>current_user["id"]</code>. RLS will not save you; the backend is the service role.</li>
+  <li>When you take an id from the path, prove ownership before acting on it, the way
+  <code>_own_material</code> and the <code>.eq("user_id", ...)</code> on question updates do.</li>
+  <li>Never trust a JWT you have not verified. Until <code>get_user</code> verifies signatures, treat
+  every user id as attacker-chosen when you judge the impact of a change.</li>
+  <li>Keep auth calls off the shared data client. Do not add another <code>db.auth.*</code> call to it.</li>
+  <li>New tables go in a new SQL file and in <code>reset.sql</code>, with RLS enabled and owner
+  policies, even though the backend bypasses them. Update the README's setup step.</li>
+  <li>Constrain new inputs in the Pydantic model or with <code>Query(...)</code>: lengths, ranges,
+  literals. Do not rely on the frontend.</li>
+  <li>Any HTML that reaches the DOM goes through <code>sanitize_html</code> on the server and
+  <code>QuestionContent</code> on the client. Do not add a new <code>dangerouslySetInnerHTML</code>.</li>
+  <li>Do not return <code>str(e)</code> in a <code>detail</code>. Several routes do today
+  (<code>signup</code>, profile, stats, questions, <code>/api/health/supabase</code>), which leaks
+  database and library messages.</li>
+  <li>Never add a secret to a <code>NEXT_PUBLIC_</code> variable or to frontend code. The service-role key
+  belongs only in the backend's environment as <code>SUPABASE_SERVICE_ROLE_KEY</code>.</li>
+  <li>Add a production origin to <code>ALLOWED_ORIGINS</code>; never widen CORS to <code>*</code> with
+  credentials.</li>
+</ol>
+
+<h3 id="s13-13"><span class="num">13.13</span><span>Study notes</span></h3>
+<div class="study">
+<h4>Read in this order</h4>
+<ol>
+  <li><code>backend/database/reset.sql</code>, four of the six tables in 115 lines.</li>
+  <li><code>backend/database/add_materials.sql</code>, the two tables <code>reset.sql</code> leaves out.</li>
+  <li><code>backend/src/utils/database.py</code>, which key the backend uses and the fallback.</li>
+  <li><code>backend/src/services/auth_service.py</code>, <code>get_user</code> in particular.</li>
+  <li><code>backend/src/api/auth.py</code>, <code>get_current_user</code> and the OPTIONS handlers.</li>
+  <li><code>backend/src/api/materials.py</code>, the clearest example of ownership checks.</li>
+  <li><code>frontend/lib/api/client.ts</code> and <code>frontend/middleware.ts</code>, the token's life in the browser.</li>
+  <li><code>backend/src/utils/html_utils.py</code> and <code>frontend/components/QuestionContent.tsx</code>.</li>
+</ol>
+<h4>Check yourself</h4>
+<p class="q">A new contributor adds <code>GET /api/materials/{id}</code> that selects the material by id only. RLS is on for <code>materials</code>. Is it safe?</p>
+<p class="a">No. The backend uses the service-role key, which bypasses RLS, so any signed-in user who knows the id can read it. It needs <code>_own_material(db, current_user["id"], material_id)</code> or an <code>.eq("user_id", ...)</code>.</p>
+<p class="q">You run <code>reset.sql</code> on a fresh project and uploads return 500. Why?</p>
+<p class="a"><code>reset.sql</code> does not create <code>materials</code> or <code>custom_questions</code>; <code>add_materials.sql</code> does, and the documented setup runs it second.</p>
+<p class="q">What does an attacker need to act as another user today?</p>
+<p class="a">That user's id. <code>get_user</code> does not verify the JWT signature, so a hand-made token with that id in <code>sub</code> and no <code>exp</code> is accepted.</p>
+<p class="q">The dashboard loads (no redirect to login) but every stat is empty and the console shows 401s. What happened?</p>
+<p class="a">The access token expired. The <code>auth_token</code> cookie lasts 7 days and the middleware only checks that it exists; the backend rejects the expired token and there is no refresh token to renew it.</p>
+<p class="q">Why does <code>question_attempts</code> carry a <code>user_id</code> when <code>session_id</code> already leads to one?</p>
+<p class="a">So the agent's per-user queries and the owner policy are one indexed comparison instead of a join. <code>add_user_id_to_attempts.sql</code> added it; <code>reset.sql</code> builds it in.</p>
+<p class="q">Which column in the schema is never written?</p>
+<p class="a"><code>user_stats.favorite_game</code>.</p>
+</div>
+</section>

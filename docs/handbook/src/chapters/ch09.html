@@ -1,0 +1,385 @@
+<section class="chapter" id="ch09" data-hue="games">
+<p class="chapter-kicker">Chapter nine</p>
+<h2><span class="num">9</span><span>The games, and adding one</span></h2>
+
+<p class="lede">
+  Six games are registered in <code>frontend/lib/games.ts</code>. They were written at different
+  times and it shows: Zombie, Subway Surfers and Squid Game share a modern shape with phases,
+  feedback, retries and a review list; Pac-Man sits in between; Whack-A-Mole and Balloon Pop are the
+  originals and do the least. This chapter walks through each one as it is today, then gives the
+  steps, the contract and a checklist for adding a seventh.
+</p>
+
+<p>
+  Read <a href="#ch08">Chapter 8</a> first. It describes the container pattern, the shared exam UI
+  and the question and save paths that every game here uses. This chapter only covers what each game
+  does differently. Every game renders with Three.js on a WebGL canvas; none of them uses the 2D
+  canvas path in <code>GameRenderer</code>.
+</p>
+
+<h3 id="s9-1"><span class="num">9.1</span><span>The six at a glance</span></h3>
+
+<div class="tablewrap"><table>
+<thead><tr><th>game</th><th>answer by</th><th>clock</th><th>questions fetched</th><th>ends when</th><th>review list</th></tr></thead>
+<tbody>
+<tr><td>Zombie</td><td>shoot a zombie</td><td>35 s quick</td><td class="num-cell">questionCount</td><td>queue empty or 4 hearts gone</td><td>yes</td></tr>
+<tr><td>Whack-A-Mole</td><td>click a mole</td><td>35 s quick</td><td class="num-cell">50, cached</td><td>every question asked</td><td>no</td></tr>
+<tr><td>Balloon Pop</td><td>shoot a balloon</td><td>none</td><td class="num-cell">50, cached</td><td>every question asked</td><td>no</td></tr>
+<tr><td>Subway Surfers</td><td>fly through a gate</td><td>35 s quick, section clock</td><td class="num-cell">questionCount x 2</td><td>both modules done</td><td>yes</td></tr>
+<tr><td>Squid Game</td><td>stand on a pad</td><td>real exam pace</td><td class="num-cell">questionCount x 2</td><td>finish line, no lives, or no questions</td><td>yes</td></tr>
+<tr><td>Pac-Man</td><td>eat a lettered pellet</td><td>35 s quick</td><td class="num-cell">20</td><td>lives reach 0</td><td>yes</td></tr>
+</tbody>
+</table></div>
+
+<h3 id="s9-2"><span class="num">9.2</span><span>Zombie Apocalypse</span></h3>
+
+<pre class="tree">frontend/games/zombie/ZombieGame.ts          engine, does not extend BaseGame
+frontend/games/zombie/types.ts               ZombieConfig, ZombieHudState, ZombieFeedback, ZombieReviewItem
+frontend/components/ZombieGameContainer.tsx  default export, arcade skin</pre>
+
+<p>
+  A first-person shooter in a graveyard. One zombie walks toward the player for each answer choice,
+  each carrying a sign texture with its letter in <code>LANE_COLORS</code>. The player aims with the
+  pointer and clicks or taps the zombie wearing the right answer; keys 1 to 5 shoot by letter
+  through <code>shootZombie(lane)</code>. <code>shootAt(x, y)</code> raycasts from the camera into
+  each walking zombie's <code>hitMeshes</code>.
+</p>
+
+<p>
+  The horde's speed is <code>(ARRIVE_Z - SPAWN_Z) / secondsPerQuestion</code>, so the zombies reach
+  the player exactly when the 35-second clock runs out, which resolves the question as a miss. A
+  wrong shot or a timeout costs one of <code>MAX_HEALTH</code> (4) hearts; a wrong zombie only
+  flinches and keeps walking. Points are <code>DIFFICULTY_POINTS</code> (100, 150 or 200) plus up to
+  50 for time left plus 10 per streak step up to 5, multiplied by <code>HINT_POINTS_FACTOR</code>
+  (0.6) for each zombie a hint removed. A first miss is pushed onto the back of the queue and
+  <code>totalQuestions</code> grows by one, as long as the player still has health. The run ends when
+  the queue is empty or health reaches zero, and <code>onGameOver</code> reports
+  <code>survived</code> as <code>health &gt; 0</code>.
+</p>
+
+<p>
+  This is the only game in the arcade skin: <code>ArcadeFrame</code>, <code>ArcadeTopBar</code> and
+  <code>ArcadeStartScreen</code>. Sounds are synthesized with an <code>AudioContext</code> created
+  in <code>start()</code>, so they begin after a user gesture. The scene is all primitives. Limits:
+  the gun and view follow the pointer, which a touch player only moves by tapping.
+</p>
+
+<h3 id="s9-3"><span class="num">9.3</span><span>Whack-A-Mole</span></h3>
+
+<pre class="tree">frontend/games/whackamole/WhackAMoleGame.ts    extends BaseGame
+frontend/games/whackamole/types.ts             SATQuestion (legacy), GameAnalytics, QuestionAttempt
+frontend/games/whackamole/questions.ts         satQuestions fallback set
+frontend/components/WhackAMoleGameContainer.tsx</pre>
+
+<p>
+  Four moles rise from a grass board, labelled A to D. The question and its four choices are shown
+  in DOM panels above and below the board, colour-matched to the moles through
+  <code>MOLE_COLORS</code>. The player clicks a mole; the engine raycasts in its own
+  <code>click</code> listener and calls <code>submitAnswer(index)</code>. If nobody is hit within
+  <code>popDuration</code> (<code>QUICK_SECONDS_PER_QUESTION * 1000</code>), it submits
+  <code>-1</code>. A right answer scores <code>100 + streak * 10</code>. After every answer a
+  2-second <code>setTimeout</code> shows the next question, and the game ends when all questions
+  have been asked.
+</p>
+
+<p>
+  Limits worth knowing. The game asks every question it was given, which is the 50 requested from
+  <code>fetchQuestionsWithCache</code>, not the player's chosen count. It always builds four moles,
+  so a fifth choice cannot be picked. There is no right-or-wrong feedback in the UI: the container
+  keeps <code>selectedAnswer</code> and <code>showResult</code> state that nothing renders. The loop
+  does not cap <code>deltaTime</code>. <code>cleanup()</code> removes listeners created with a fresh
+  <code>.bind(this)</code>, which never matches the ones added, so they are not actually removed.
+  The pending <code>setTimeout</code> is not cancelled on pause or unmount.
+</p>
+
+<h3 id="s9-4"><span class="num">9.4</span><span>Balloon Pop</span></h3>
+
+<pre class="tree">frontend/games/carnival/CarnivalGame.ts      extends BaseGame
+frontend/games/carnival/types.ts             CarnivalGameState with bulletsRemaining
+frontend/games/carnival/questions.ts         a near copy of whackamole/questions.ts
+frontend/components/CarnivalGameContainer.tsx</pre>
+
+<p>
+  The id is <code>carnival</code>; the catalogue calls it Balloon Pop. Four balloons bob in front of
+  the player, labelled A to D. Each click fires a visible bullet from the camera and spends one of
+  three darts; hitting a balloon pops it with a particle burst and submits that answer. Running out
+  of darts without a hit submits <code>-1</code>. Scoring, the 2-second gap and the end condition
+  are the same as Whack-A-Mole, and so are the four-choice limit, the 50-question fetch and the
+  listener leak. The container shows a single <code>strategyHint</code> behind a Hint button and
+  draws the dart count with <code>Pips</code>.
+</p>
+
+<p>
+  There is no clock, so a player can think as long as they like. Balloon motion and the pop and
+  particle animations advance per frame rather than per second, and the latter two run in their own
+  <code>requestAnimationFrame</code> chains that ignore pause.
+</p>
+
+<h3 id="s9-5"><span class="num">9.5</span><span>Subway Surfers</span></h3>
+
+<pre class="tree">frontend/games/subway-surfers/SubwaySurfersGame.ts   extends BaseGame, about 1,300 lines
+frontend/games/subway-surfers/types/game.ts          Game, LANE_COLORS, LANE_LETTERS, Runner* types
+frontend/components/SubwaySurfersGameContainer.tsx
+frontend/public/games/subway-surfers/assets/subway_surfers_maps/scene.gltf
+frontend/public/Flying.fbx, Falling.fbx, Falling Flat Impact.fbx
+frontend/public/bg-music.mp3, falling.mp3, dying.mp3</pre>
+
+<p>
+  A flying runner over an endless subway map. Each question spawns one gate per choice across the
+  lanes. The player steers with the arrow keys, A and D, number keys or a swipe; the gates close in
+  as the question's time runs out, and the answer is whatever lane the runner is in when it reaches
+  the gate. Pressing up, W, Space or Enter calls <code>dive()</code>, which speeds the runner to
+  <code>DIVE_SPEED</code> to commit early. Hints call <code>eliminateLane</code>, which hides that
+  gate and moves the runner off it; <code>moveLane</code> skips eliminated lanes.
+</p>
+
+<p>
+  The run is shaped like the digital SAT. The constructor shuffles the pool and splits
+  <code>questionCount</code> into two modules. Module 1 is an even mix of difficulties. If the player
+  got at least <code>HARDER_MODULE_ACCURACY</code> (60%) of it right, module 2 prefers hard
+  questions, otherwise easy ones, and <code>onModuleChange</code> tells the container which, so it
+  can explain during the 4-second break. Each module has a section clock of
+  <code>secondsPerQuestion</code> times its length; a single gate waits at most
+  <code>QUESTION_TIME_CAP</code> (1.5) times the per-question budget. When the section clock runs
+  out, the questions left are recorded as unanswered. A first miss is appended to the module and
+  adds 35 seconds to its clock. A wrong answer plays the falling and impact animations before the
+  next question.
+</p>
+
+<p>
+  The map is <code>MAP_TILE_COUNT</code> (3) copies of the glTF recycled ahead of the runner, with
+  obstacles randomized per tile and trains moving on some tracks. Every
+  <code>REBASE_DISTANCE</code> (3,000 units) the world is shifted back toward the origin to keep
+  floating-point precision. Limits: it does not record a local high score, and
+  <code>frontend/public/games/subway-surfers/jake_subway_surfers/</code> is shipped but not loaded
+  by any code.
+</p>
+
+<h3 id="s9-6"><span class="num">9.6</span><span>Squid Game</span></h3>
+
+<pre class="tree">frontend/games/squid-game/SquidGameGame.ts   extends BaseGame, about 1,150 lines
+frontend/games/squid-game/types.ts           SquidPhase, SquidOutcome, SquidHudState, ...
+frontend/games/squid-game/yuka.d.ts          type stub for the unused yuka package
+frontend/games/squid-game/questions.json     not imported anywhere
+frontend/games/squid-game/assets/            a 72 MB glTF room, not served, not loaded
+frontend/components/SquidGameContainer.tsx
+frontend/public/games/squid-game/assets/     FBX animations, glTF guard, doll, tree, textures
+frontend/public/games/squid-game/audio/      Cocoma.mp3, Redlight.mp3 (GreenLight.mp3 unused)</pre>
+
+<p>
+  Red Light, Green Light, and the only deep game: <code>gamePace</code> returns <code>'deep'</code>
+  for it, so the backend sends passage and multi-step questions, and the clock is the real exam's
+  <code>secondsPerQuestion</code>. The phases are <code>loading</code>, <code>ready</code>,
+  <code>green</code>, <code>turning</code>, <code>question</code>, <code>feedback</code> and
+  <code>done</code>. On green the player runs with W A S D or the arrows (on-screen buttons on
+  phones). When the doll turns, anyone moving faster than <code>CAUGHT_SPEED</code> is shot by the
+  guards; the player loses a life. Then a question appears and one answer pad per choice is laid on
+  the sand ahead. Standing on a pad for <code>PAD_LOCK_SECONDS</code> (2.5) locks it in, or the
+  player presses Space or the lock button for <code>lockIn()</code>.
+</p>
+
+<p>
+  A right answer earns a 4-second green light and steps difficulty up; a wrong one costs a life,
+  earns 1.5 seconds and steps difficulty down. <code>beginQuestion</code> picks the unused question
+  closest to the current difficulty, and returns a missed question after one other. The run speed
+  is computed in the constructor so a player at <code>EXPECTED_ACCURACY</code> (70%) reaches the
+  finish line about when the questions run out. Lives are
+  <code>Math.max(3, Math.ceil(totalQuestions / 3))</code>. Outcomes are <code>victory</code> (crossed
+  the finish, plus <code>FINISH_BONUS</code> 500 and 100 per life), <code>eliminated</code> and
+  <code>short</code> (out of questions first). Twenty-four <code>NPC_COUNT</code> contestants are
+  cloned skinned meshes that occasionally fail to stop. The calculator opens by default for quant.
+</p>
+
+<p>
+  Limits: the six models load in parallel through <code>track()</code>, and the 43 MB guard model
+  dominates first-load time. Every hint calls <code>registerHint()</code>, including the first
+  strategy tip, so Squid Game penalizes a tip that Zombie and Subway Surfers give for free.
+  <code>GAME_META</code> says "five misses and you're out", which is only true for some question
+  counts.
+</p>
+
+<h3 id="s9-7"><span class="num">9.7</span><span>Pac-Man</span></h3>
+
+<pre class="tree">frontend/games/pac-man/PacManGame.ts         extends BaseGame; exports PacManHudState, PacManReviewItem
+frontend/components/PacManGameContainer.tsx</pre>
+
+<p>
+  A 15 by 15 maze from a hard-coded grid in <code>generateMaze</code>, with dots, power pellets and
+  four ghosts, viewed from above. Every <code>DOTS_PER_QUESTION</code> (10) dots, outside a 5-second
+  cooldown, a question appears: the ghosts freeze, and one lettered answer pellet per choice drops
+  at least <code>MIN_ANSWER_DISTANCE</code> (6) from Pac-Man. Eating a pellet answers. A right answer
+  scores 100 and turns the ghosts blue for 5 seconds; a wrong answer or a timeout costs one of three
+  lives. Hints call <code>eliminateAnswer</code>. Clearing every dot calls <code>nextLevel</code>,
+  which refills the maze and speeds up the ghosts.
+</p>
+
+<p>
+  Questions come from <code>setQuestions</code> rather than the constructor and repeat in order once
+  the 20 fetched run out. The game only ends when lives reach zero, so the question count preference
+  is ignored. There is no feedback after an answer and no retry queue; <code>QuestionCard</code> is
+  given <code>feedback={null}</code> and <code>totalQuestions={0}</code>. Movement is a fixed
+  <code>moveSpeed</code> of 0.1 per frame, so Pac-Man runs twice as fast on a 120 Hz display, and
+  <code>emitHud()</code> fires every frame.
+</p>
+
+<h3 id="s9-8"><span class="num">9.8</span><span>Mario, the one that is not there</span></h3>
+
+<p>
+  <code>frontend/games/mario/MarioGame.ts</code> extends <code>BaseGame</code> and draws "Mario /
+  Coming Soon..." on a 2D context; its methods are TODO comments and its <code>assets/</code> folder
+  is empty. <code>GameRenderer</code> imports it and is the only thing that does. It is not in
+  <code>games</code>, has no <code>GAME_META</code> entry, no cover and no container, and
+  <code>/games/mario</code> returns 404. Treat <code>MarioGame</code>, <code>GameRenderer</code> and
+  the canvas branch of <code>GameContainer</code> as dead code. <code>components/GameCard.tsx</code>
+  is also unused.
+</p>
+
+<h3 id="s9-9"><span class="num">9.9</span><span>Adding a new game</span></h3>
+
+<p>
+  Copy the Zombie shape, not the Whack-A-Mole shape. The steps below use a hypothetical id
+  <code>comet</code>; substitute your own, in kebab case, because it becomes the URL, the analytics
+  <code>gameId</code>, the high score key <code>arcade_hi_comet</code> and the
+  <code>game_id</code> column of every saved session.
+</p>
+
+<h4>1. The engine</h4>
+
+<p>
+  Create <code>frontend/games/comet/types.ts</code> with a phase union, a config of
+  <code>{ questionCount, secondsPerQuestion }</code>, a HUD state, a feedback type and a review item
+  (reuse the shape of <code>ZombieReviewItem</code> so <code>ReviewList</code> accepts it). Then
+  create <code>frontend/games/comet/CometGame.ts</code>. Extending <code>BaseGame</code> is optional;
+  Zombie does not. The skeleton the containers expect is:
+</p>
+
+<pre>export class CometGame {
+  public onHudChange?: (state: CometHudState) =&gt; void
+  public onQuestionChange?: (question: SATQuestion | null) =&gt; void
+  public onFeedback?: (feedback: CometFeedback | null) =&gt; void
+  public onGameOver?: (analytics: GameAnalytics, review: CometReviewItem[]) =&gt; void
+
+  constructor(width: number, height: number, canvas: HTMLCanvasElement,
+              questions: SATQuestion[], private config: CometConfig) { }
+
+  start(): void { }                       // ready to first question
+  update(deltaTime: number): void { }     // milliseconds, already capped
+  render(): void { }
+  resize(width: number, height: number): void { }
+  setViewShift(x: number, y = 0): void { }
+  setPaused(paused: boolean): void { }
+  setMuted(muted: boolean): void { }
+  skipFeedback(): void { }
+  eliminateOption(option: number): void { }   // for hints
+  cleanup(): void { }                     // dispose geometry, materials, renderer, audio
+}</pre>
+
+<p>
+  Import <code>SATQuestion</code> from <code>@/lib/api/questions</code>, not from a game folder, and
+  <code>GameAnalytics</code> and <code>QuestionAttempt</code> from
+  <code>@/games/whackamole/types</code>. Use <code>LANE_COLORS</code> and <code>LANE_LETTERS</code>
+  so your targets match the chips in <code>QuestionCard</code>.
+</p>
+
+<h4>2. The container</h4>
+
+<p>
+  Create <code>frontend/components/CometGameContainer.tsx</code> as a named export. Follow
+  <code>ZombieGameContainer</code>: load prefs and questions on mount with a cancel flag;
+  <code>await import('@/games/comet/CometGame')</code> in a second effect; assign the callbacks;
+  run the loop with <code>Math.min(currentTime - lastTime, 50)</code>; clean up everything in the
+  effect's return. Render <code>GameLoading</code>, then <code>GameIntro</code>, then a HUD
+  (<code>GameTopBar</code> or <code>ArcadeTopBar</code>), a panel with <code>QuestionCard</code> and
+  <code>HintButton</code> measured by <code>useViewShift</code>, a <code>Calculator</code> when
+  <code>prefs.section === 'quant'</code>, <code>PauseMenu</code>, and finally
+  <code>GameOverModal</code> with <code>ReviewList</code> as its child. In
+  <code>onGameOver</code>, call <code>recordHighScore</code> and then
+  <code>apiClient.saveScore('comet', analytics)</code> inside a try and catch.
+</p>
+
+<h4>3. Registration</h4>
+
+<ul>
+  <li><code>frontend/lib/games.ts</code>: append <code>{ id: 'comet', name, description, status: 'available' }</code>.
+  This alone makes <code>/games/comet</code> resolve and adds the static param.</li>
+  <li><code>frontend/lib/gameMeta.ts</code>: add <code>comet: { title, genre, answerBy }</code>. The
+  genre must be a member of <code>Genre</code>; if you add a new genre, add it to
+  <code>GENRES</code> too or it gets no filter chip.</li>
+  <li><code>frontend/components/GameContainer.tsx</code>: import the container, add
+  <code>'comet'</code> to <code>OWN_CONTAINER_GAMES</code>, and add an
+  <code>if (game.id === 'comet')</code> return next to the others, after the hook.</li>
+  <li><code>frontend/components/brand/GameCover.tsx</code>: add a <code>comet</code> entry to
+  <code>COVERS</code> with a <code>bg</code> and SVG <code>art</code> drawn on a 300 by 400 viewBox
+  in the palette constants. Without it the catalogue shows the lime-circle <code>FALLBACK</code>.</li>
+  <li><code>frontend/lib/exam.ts</code>: add the id to <code>DEEP_GAMES</code> only if the game
+  gives the player time for passage questions; pass the matching seconds per question.</li>
+  <li><code>frontend/lib/arcade.ts</code> needs no edit; its functions take the id.</li>
+  <li>Assets go under <code>frontend/public/games/comet/</code> and are loaded by absolute path,
+  for example <code>/games/comet/model.gltf</code>, with loading progress reported through the HUD.</li>
+</ul>
+
+<p>
+  The backend needs nothing. <code>/api/games/save-score</code> accepts any <code>gameId</code>
+  string and the stats endpoints group by it.
+</p>
+
+<h4>The contract</h4>
+
+<div class="tablewrap"><table>
+<thead><tr><th>direction</th><th>what</th><th>rule</th></tr></thead>
+<tbody>
+<tr><td>in</td><td><code>SATQuestion[]</code></td><td>Build one target per <code>options</code> entry, two to five. Never assume four.</td></tr>
+<tr><td>in</td><td>config</td><td><code>questionCount</code> from prefs; <code>secondsPerQuestion</code> from <code>QUICK_SECONDS_PER_QUESTION</code> or <code>EXAMS</code>.</td></tr>
+<tr><td>in</td><td><code>deltaTime</code></td><td>Milliseconds. Scale all motion and clocks by it; no <code>setTimeout</code> for game time.</td></tr>
+<tr><td>out</td><td><code>onQuestionChange</code></td><td>The question on screen, or null between questions.</td></tr>
+<tr><td>out</td><td><code>onFeedback</code></td><td><code>{ isCorrect, selected, correctAnswer, points, willRetry }</code>; null to clear.</td></tr>
+<tr><td>out</td><td><code>onHudChange</code></td><td>A fresh object, throttled to about 10 per second unless forced.</td></tr>
+<tr><td>out</td><td><code>onGameOver</code></td><td>Called once. <code>gameId</code> equals the registry id; <code>averageResponseTime</code> and every <code>timeSpent</code> are integers.</td></tr>
+</tbody>
+</table></div>
+
+<div class="note caution"><b>Integers only.</b> The backend's <code>GameAnalytics</code> declares
+<code>timeSpent</code> and <code>averageResponseTime</code> as <code>int</code>. Wrap both in
+<code>Math.round</code>, as Zombie does, or the save can be rejected.</div>
+
+<h4>Checklist</h4>
+
+<ol>
+  <li>Engine in <code>frontend/games/&lt;id&gt;/</code>, no React imports, a <code>cleanup()</code> that disposes everything.</li>
+  <li>Container in <code>frontend/components/</code>, engine imported dynamically.</li>
+  <li>Entry in <code>games.ts</code>, <code>gameMeta.ts</code>, <code>GameContainer.tsx</code> (both the list and the return) and <code>GameCover.tsx</code>.</li>
+  <li>Variable option count handled, including five.</li>
+  <li>Keyboard and pointer input both work; canvas has <code>touch-none</code> if it takes gestures.</li>
+  <li>Pause stops every clock; P and Escape open <code>PauseMenu</code>.</li>
+  <li>Hints remove a target in the scene; a first miss returns later with <code>willRetry</code>.</li>
+  <li><code>onGameOver</code> fires once, the review list is passed to <code>ReviewList</code>, the high score is recorded and <code>saveScore</code> is called.</li>
+  <li>Assets in <code>frontend/public/games/&lt;id&gt;/</code>, sized with the 129 MB already there in mind.</li>
+  <li>Played once signed in, then checked on the catalogue's "Your games" panel.</li>
+</ol>
+
+<h3 id="s9-10"><span class="num">9.10</span><span>Study notes</span></h3>
+<div class="study">
+<h4>Read in this order</h4>
+<ol>
+  <li><code>frontend/games/zombie/ZombieGame.ts</code>, the smallest modern engine.</li>
+  <li><code>frontend/components/ZombieGameContainer.tsx</code>, its container.</li>
+  <li><code>frontend/games/subway-surfers/SubwaySurfersGame.ts</code>, <code>beginModule</code> to <code>resolveAnswer</code>.</li>
+  <li><code>frontend/games/squid-game/SquidGameGame.ts</code>, <code>beginQuestion</code> and <code>updatePads</code>.</li>
+  <li><code>frontend/games/whackamole/WhackAMoleGame.ts</code>, to see what not to copy.</li>
+</ol>
+<h4>Check yourself</h4>
+<p class="q">Why does Subway Surfers fetch twice the question count?</p>
+<p class="a">Module 2 picks harder or easier questions depending on module 1, so the pool must hold
+more than the run will use. Squid Game does the same so its difficulty can step up and down.</p>
+<p class="q">A GRE question has five choices. Which games can a player answer it in?</p>
+<p class="a">Zombie, Subway Surfers, Squid Game and Pac-Man, which build one target per option.
+Whack-A-Mole and Balloon Pop always build four.</p>
+<p class="q">You registered a game in <code>games.ts</code> and <code>gameMeta.ts</code> only. What does the player see?</p>
+<p class="a">A fallback cover in the catalogue, a working setup page, and on play a blank black
+screen: <code>GameContainer</code> falls through to the canvas branch and
+<code>GameRenderer</code> logs "Unknown game".</p>
+<p class="q">Why does a missed question not show its answer straight away?</p>
+<p class="a">It is queued to come back. The feedback carries <code>willRetry</code>, the container
+passes an <code>insight</code> to <code>QuestionCard</code>, and the card hides the right choice.</p>
+</div>
+</section>

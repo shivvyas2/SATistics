@@ -1,0 +1,374 @@
+<section class="chapter" id="ch10" data-hue="learn">
+<p class="chapter-kicker">Chapter ten</p>
+<h2><span class="num">10</span><span>Learn: lessons and videos</span></h2>
+
+<p class="lede">
+  The games test what you know; Learn teaches it. Every course topic on both exams has a short
+  lesson: a summary, the key ideas, a worked example revealed one step at a time, the traps that
+  cost points, and one quick check question. Beside it sits a column of YouTube lessons that the
+  backend finds and ranks on demand. The lesson text is static TypeScript shipped with the
+  frontend; the videos are the only part that touches the server.
+</p>
+
+<h3 id="s10-1"><span class="num">10.1</span><span>Intent</span></h3>
+
+<p>
+  A student who misses three Advanced Math questions in a game should be one click from the idea
+  they are missing. Learn is built for that. The hub opens on the exam from the student's profile,
+  puts their weakest topic first, and marks each card "Needs work" or "Strong" from the same
+  <code>user_stats</code> lists the dashboard uses. A lesson ends with "Practice in a game", which
+  sets the exam and section and drops the student into the games list.
+</p>
+
+<p>
+  Lessons are written content, not data. Keeping them in <code>frontend/lib/lessons.ts</code> means
+  they are reviewed like code, typed, versioned and rendered without a request. Videos are the
+  opposite: they change, there are thousands, and a good one for "Standard English Conventions" is
+  a search away. So the backend searches, ranks toward lesson-length videos from established prep
+  channels, and caches the result for a day.
+</p>
+
+<h3 id="s10-2"><span class="num">10.2</span><span>Files and folders</span></h3>
+
+<pre class="tree">frontend/app/learn/page.tsx                  the hub: exam toggle, progress, featured lesson, course grids
+frontend/app/learn/[exam]/[topic]/page.tsx   one lesson: LessonPage, LessonView, VideoPanel
+frontend/lib/lessons.ts                      Lesson type, LESSONS, topicSlug, lessonHref, findLesson
+frontend/lib/courses.ts                      Course type, COURSES, courseFor
+frontend/lib/learnProgress.ts                useLearned, lessonId (localStorage)
+frontend/components/learn/QuickCheck.tsx     the one-question check
+frontend/components/learn/Videos.tsx         useTopicVideos, VideoPlayer, VideoMeta, VideoRow, VideosUnavailable
+frontend/lib/api/client.ts                   getTopicVideos, the Video type
+
+backend/src/api/learn.py                     GET /api/learn/videos
+backend/src/services/videos.py               provider chain, ranking, cache
+backend/src/models/schemas.py                Video, VideoResponse</pre>
+
+<h3 id="s10-3"><span class="num">10.3</span><span>Model</span></h3>
+
+<p>
+  <b>Courses.</b> <code>frontend/lib/courses.ts</code> defines a <code>Course</code> as an
+  <code>exam</code>, a <code>section</code> (<code>quant</code> or <code>verbal</code>), a title, a
+  summary and a list of <code>topics</code>. The comment on <code>topics</code> matters: they are the
+  official content domains and must match the topic names the question bank uses, because that is
+  how weak topics from games line up with lessons. There are four courses:
+</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Course</th><th>exam:section</th><th>Topics</th></tr></thead>
+<tbody>
+<tr><td>SAT Math</td><td><code>sat:quant</code></td><td>Algebra; Advanced Math; Problem-Solving and Data Analysis; Geometry and Trigonometry</td></tr>
+<tr><td>SAT Reading &amp; Writing</td><td><code>sat:verbal</code></td><td>Information and Ideas; Craft and Structure; Expression of Ideas; Standard English Conventions</td></tr>
+<tr><td>GRE Quant</td><td><code>gre:quant</code></td><td>Arithmetic; Algebra; Geometry; Data Analysis</td></tr>
+<tr><td>GRE Verbal</td><td><code>gre:verbal</code></td><td>Text Completion; Sentence Equivalence; Reading Comprehension</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  <code>courseFor(exam, section)</code> finds one, falling back to the first course.
+</p>
+
+<p>
+  <b>Lessons.</b> <code>frontend/lib/lessons.ts</code> defines the <code>Lesson</code> interface:
+</p>
+
+<pre>export interface Lesson {
+  exam: ExamId
+  section: SectionId
+  topic: string
+  summary: string
+  ideas: { title: string; body: string }[]
+  example: { prompt: string; steps: string[]; answer: string }
+  traps: string[]
+  check: { question: string; options: string[]; correctAnswer: number; explanation: string }
+}</pre>
+
+<p>
+  Content is written as <code>LessonContent</code>, which is <code>Lesson</code> without
+  <code>exam</code> and <code>section</code>, in four arrays: <code>SAT_MATH</code>,
+  <code>SAT_RW</code>, <code>GRE_QUANT</code> and <code>GRE_VERBAL</code>. <code>BY_COURSE</code>
+  maps <code>'sat:quant'</code> and so on to those arrays, and <code>LESSONS</code> is built by
+  walking <code>COURSES</code> in order and stamping each piece of content with its course's exam
+  and section. The result is 15 lessons, one per topic, in course order. Each has three or four
+  key ideas, two to four example steps, two or three traps, and a check with four options on the SAT
+  and five on the GRE, matching each exam's <code>option_count</code> in the backend.
+  <code>correctAnswer</code> is a zero-based index.
+</p>
+
+<p>
+  <b>Slugs.</b> <code>topicSlug</code> lowercases a topic and turns every run of non-alphanumerics
+  into one hyphen, so "Problem-Solving and Data Analysis" becomes
+  <code>problem-solving-and-data-analysis</code>. <code>lessonHref(exam, topic)</code> builds
+  <code>/learn/&lt;exam&gt;/&lt;slug&gt;</code>, and <code>findLesson(exam, slug)</code> reverses it
+  by slugging every lesson's topic and comparing. "Algebra" exists on both exams; the exam segment
+  keeps them apart.
+</p>
+
+<p>
+  <b>Progress.</b> <code>frontend/lib/learnProgress.ts</code> stores the set of learned lessons as a
+  JSON array under the localStorage key <code>learned_lessons</code>. Ids come from
+  <code>lessonId(exam, topic)</code>, which is <code>"exam:topic"</code>, for example
+  <code>"sat:Algebra"</code>. This progress is per browser, not per account; nothing is sent to the
+  backend.
+</p>
+
+<p>
+  <b>Videos.</b> The <code>Video</code> shape is the same in <code>schemas.py</code> and
+  <code>client.ts</code>: <code>id</code>, <code>title</code>, <code>channel</code>,
+  <code>duration</code> (a clock string such as "12:04"), <code>url</code>,
+  <code>thumbnail</code>, <code>published</code> (a date) and <code>trusted</code>. Nothing about
+  videos is stored in the database.
+</p>
+
+<h3 id="s10-4"><span class="num">10.4</span><span>The server side</span></h3>
+
+<p>
+  <code>backend/src/api/learn.py</code> is mounted at <code>/api/learn</code> and has one route,
+  <code>GET /videos</code>. It requires a signed-in user through <code>get_current_user</code> and
+  validates its query: <code>exam</code> must match <code>^(sat|gre)$</code>, <code>section</code>
+  must match <code>^(quant|verbal)$</code>, <code>topic</code> is 2 to 80 characters and
+  <code>limit</code> is 1 to 12 (default 6). It awaits <code>find_topic_videos</code> and returns
+  <code>VideoResponse</code>; any exception becomes a 502 "Video search failed: ...".
+</p>
+
+<p>
+  <code>backend/src/services/videos.py</code> does the work in four stages.
+</p>
+
+<p>
+  <b>1. Cache.</b> The key is <code>exam:section:topic</code> with the topic lowercased.
+  <code>_cache</code> is a module-level dict of <code>(timestamp, ranked list)</code>; a hit younger
+  than <code>CACHE_TTL_SECONDS</code> (24 hours) is sliced to <code>limit</code> and returned. The
+  limit is not part of the key, so the dashboard's request for three and the lesson page's request
+  for six share one search.
+</p>
+
+<p>
+  <b>2. Queries.</b> The exam and section display names come from <code>EXAMS</code> in
+  <code>question_sources.py</code>. First comes a dedicated GregMat search,
+  <code>"GregMat GRE &lt;topic&gt;"</code> for the GRE or <code>"GregMat &lt;topic&gt;"</code> for the
+  SAT; only results whose channel is GregMat and whose title mentions the topic are kept. Then up to
+  three general queries run in order: <code>"&lt;exam&gt; &lt;topic&gt; lesson"</code>; for the SAT
+  <code>"Khan Academy SAT &lt;topic&gt;"</code>, for the GRE <code>"GRE &lt;topic&gt; strategy"</code>;
+  and <code>"&lt;exam&gt; &lt;section&gt; &lt;topic&gt; explained"</code>. The loop stops early once 15
+  non-GregMat videos are collected. Queries run one at a time on purpose, because parallel queries
+  get rate limited. Results are deduplicated by video id.
+</p>
+
+<p>
+  <b>3. Providers.</b> <code>_search</code> builds a chain and returns the first provider's
+  non-empty result:
+</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Order</th><th>Provider</th><th>Enabled by</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td class="num-cell">1</td><td>YouTube Data API</td><td><code>YOUTUBE_API_KEY</code></td><td><code>search</code> with <code>videoEmbeddable=true</code>, 15 results, then one <code>videos</code> call for durations and view counts. ISO durations become clock strings with <code>_iso_to_clock</code>.</td></tr>
+<tr><td class="num-cell">2</td><td>Serper</td><td><code>SERPER_API_KEY</code></td><td><code>POST https://google.serper.dev/videos</code>, 15 results. No view counts, so views are 0.</td></tr>
+<tr><td class="num-cell">3</td><td>DuckDuckGo</td><td>always</td><td><code>DDGS().videos</code> through the <code>ddgs</code> package, run in a thread with <code>asyncio.to_thread</code>. Up to 2 attempts with a 2 second backoff, since rate limiting shows up as an error rather than a status.</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  An <code>httpx.HTTPError</code> from YouTube or Serper is logged and the chain moves on. Every
+  result passes through <code>_video</code>, which keeps only URLs that match the YouTube id pattern
+  (so every result can be embedded), builds the canonical watch URL and the
+  <code>hqdefault.jpg</code> thumbnail, parses the duration into minutes and marks the video
+  <code>trusted</code> if its channel matches <code>TRUSTED_CHANNELS</code>: Khan Academy, College
+  Board, ETS, Official GRE, GregMat, Magoosh, Scalar Learning, Princeton Review, Kaplan,
+  PrepScholar, Supertutor, 1600.io and Target Test Prep. Single-word names must match a whole word
+  of the channel; multi-word names match as substrings.
+</p>
+
+<p>
+  <b>4. Ranking.</b> <code>_score</code> adds:
+</p>
+
+<ul>
+  <li>3 for a trusted channel;</li>
+  <li>2 for a length of 3 to 25 minutes (fits in a study session), 0.5 for anything else up to 60
+  minutes, and minus 2 for longer (multi-hour livestreams); no change if the duration is
+  unknown;</li>
+  <li><code>log10(views) / 3</code>, so a million views is worth 2.</li>
+</ul>
+
+<p>
+  The list is sorted by score, then up to <code>GREGMAT_SLOTS</code> (3) GregMat videos that mention
+  the topic are moved to the front. Only a non-empty result is cached, so a rate-limited search is
+  retried on the next request rather than remembered as "nothing found".
+</p>
+
+<h3 id="s10-5"><span class="num">10.5</span><span>The client</span></h3>
+
+<p>
+  <b>The hub.</b> <code>frontend/app/learn/page.tsx</code> renders inside
+  <code>DashboardLayout</code>. It sets the exam from the profile once the account loads (SAT if
+  there is none), and the SAT and GRE chips switch it with <code>aria-pressed</code>. It fetches
+  <code>getUserStats()</code> for weak and strong topics and reads <code>useLearned()</code>. A lime
+  progress bar shows "<i>n</i> of <i>m</i> learned" for the current exam.
+</p>
+
+<p>
+  <code>FeaturedLesson</code> picks, in order, the first lesson whose topic is weak, the first
+  lesson not yet learned, or the first lesson. It renders a cobalt card with "Recommended: your
+  weakest topic" or "Recommended next", an "Open lesson" button and, on the right, the single best
+  video for that topic from <code>useTopicVideos(..., 1)</code>. Below it, each course for the exam
+  gets a heading and a grid of lesson cards with the summary, the number of key ideas and badges
+  for "Needs work", "Strong" and "Learned".
+</p>
+
+<p>
+  <b>The lesson.</b> <code>LessonPage</code> resolves the lesson with <code>findLesson</code> from
+  the route params and shows "That lesson doesn't exist." for an unknown slug. Otherwise it renders
+  <code>LessonView</code>, keyed by the lesson id so all local state resets when you follow "Next".
+  The article has six parts: a back link to the course, the title and summary; key ideas as glass
+  cards; the worked example; the traps on coral-soft; the <code>QuickCheck</code> on cobalt-soft;
+  and a footer with "Mark as learned", "Practice in a game" and a "Next: <i>topic</i>" link to the
+  following lesson in the same course.
+</p>
+
+<p>
+  The worked example starts with one step visible. The button reads "Show next step" until all
+  steps are shown, then "Show answer", and the answer replaces the button in a lime box.
+  "Practice in a game" calls <code>setExamPrefs</code> with the lesson's exam and section, then
+  pushes to <code>/games</code>.
+</p>
+
+<p>
+  <code>VideoPanel</code> is passed to the shell as its <code>aside</code>, and rendered again
+  inline with <code>xl:hidden</code> so narrow screens still get it. It shows a skeleton while
+  loading, <code>VideosUnavailable</code> if there is nothing, or the selected video with its
+  title, <code>VideoMeta</code> and a list of the others as <code>VideoRow</code>s. Picking another
+  video sets <code>started</code>, so the new one plays immediately. A "Wider"/"Narrow" toggle
+  widens the aside from 320&#160;px to 440 or 560&#160;px; the choice is remembered in localStorage
+  under <code>lesson_video_wide</code>.
+</p>
+
+<p>
+  <b>Video components.</b> <code>frontend/components/learn/Videos.tsx</code> holds
+  <code>useTopicVideos(exam, section, topic, limit)</code>, which returns
+  <code>{ videos, failed }</code> where <code>videos</code> is <code>null</code> while loading. It
+  keeps a module-level <code>Map</code> from <code>exam:section:topic:limit</code> to the request
+  promise, so revisiting a lesson in the same visit costs nothing, and deletes a failed promise so
+  the next visit retries. <code>VideoPlayer</code> shows the thumbnail with a lime play button and
+  swaps in a <code>youtube-nocookie.com</code> embed with <code>autoplay=1&amp;rel=0</code> when
+  clicked; no YouTube code loads until then. <code>VideoMeta</code> prints the channel, a "Prep
+  channel" badge for trusted ones and the duration. <code>VideosUnavailable</code> says either
+  "Video search is unavailable right now." or "No lesson videos found for this topic yet." and links
+  to a YouTube search built by <code>youtubeSearchUrl</code>.
+</p>
+
+<p>
+  <b>The quick check.</b> <code>QuickCheck</code> takes a lesson's <code>check</code>. Options are
+  lettered A to E. Once one is picked, all are disabled, the correct one turns lime with a check
+  mark, a wrong pick turns coral, and the rest fade. "Correct." or "Not quite." and the explanation
+  appear in a polite live region, with "Try again" to reset. The result is not recorded anywhere.
+</p>
+
+<h3 id="s10-6"><span class="num">10.6</span><span>How it works</span></h3>
+
+<p>
+  A student with SAT on their profile who missed most Advanced Math questions in their last game
+  opens <code>/learn</code>. The hub sets the exam to SAT, the stats call returns
+  <code>weak_topics</code> containing "Advanced Math", and <code>FeaturedLesson</code> features it as
+  their weakest topic. Its video hook asks <code>/api/learn/videos?exam=sat&amp;section=quant&amp;topic=Advanced%20Math&amp;limit=1</code>.
+</p>
+
+<p>
+  On a cold cache the backend runs the GregMat query and up to three general queries through the
+  provider chain, ranks every candidate it found, caches the list and returns the top one. The student
+  opens the lesson. <code>VideoPanel</code> asks for six; the client has no entry for limit 6, so it
+  calls the server, which answers from its cache instantly. The student steps through the example,
+  answers the check, presses "Mark as learned" (now <code>"sat:Advanced Math"</code> is in
+  localStorage) and then "Practice in a game", which leaves their exam prefs on SAT Math.
+</p>
+
+<h3 id="s10-7"><span class="num">10.7</span><span>How to add or edit a lesson</span></h3>
+
+<ol>
+  <li><b>Editing text</b> is a change to the right array in <code>frontend/lib/lessons.ts</code>.
+  Aim for four ideas and three short traps, keep the SAT at four options and the GRE at five, and make sure <code>check.correctAnswer</code> is the zero-based
+  index of the right option. Use real typographic characters (the file already uses &#8722;, &#215;,
+  &#178; and curly quotes) rather than markup; the fields render as plain text.</li>
+  <li><b>Adding a topic to an existing course</b> takes two edits. Add the topic name to that
+  course's <code>topics</code> in <code>frontend/lib/courses.ts</code>, spelled exactly as the
+  question bank spells it, so weak-topic matching and the dashboard's focus topics work. Then add a
+  <code>LessonContent</code> object with the same <code>topic</code> to the course's array in
+  <code>lessons.ts</code>. Its position in the array is its position in the course and decides what
+  "Next" points to.</li>
+  <li><b>Check the slug.</b> Run the topic through <code>topicSlug</code> in your head: it must be
+  unique within the exam. Two topics that differ only in punctuation would collide.</li>
+  <li><b>Adding a course</b> means a new <code>COURSES</code> entry, a new content array and a new
+  <code>BY_COURSE</code> key of the form <code>exam:section</code>. A course with no
+  <code>BY_COURSE</code> entry produces no lessons but still shows its heading on the hub with an
+  empty grid. A new section also needs the backend's <code>section</code> pattern in
+  <code>learn.py</code> and an entry in <code>EXAMS</code> in <code>question_sources.py</code>.</li>
+  <li><b>Check the videos.</b> Open the lesson and look at what the search returns. If the results
+  are poor, the levers are the query templates and <code>TRUSTED_CHANNELS</code> in
+  <code>videos.py</code>, not the lesson. Restart the backend to clear its cache.</li>
+  <li><b>Run</b> <code>npm run type-check</code> in <code>frontend/</code>. The <code>Lesson</code>
+  type catches missing fields; it does not catch a wrong <code>correctAnswer</code>, so read the
+  check once more.</li>
+</ol>
+
+<h3 id="s10-8"><span class="num">10.8</span><span>Edge cases and tests</span></h3>
+
+<ul>
+  <li><b>No keys configured.</b> With neither <code>YOUTUBE_API_KEY</code> nor
+  <code>SERPER_API_KEY</code>, every search goes to DuckDuckGo, which rate limits. A cold lesson can
+  then take several seconds (up to four searches, each with a possible 2 second backoff) and may
+  return nothing; the panel says no videos were found and offers the YouTube search link. Nothing is
+  cached, so the next visit tries again.</li>
+  <li><b>Serverless cache.</b> <code>_cache</code> lives in process memory with no size bound. On a
+  serverless deployment each instance has its own and loses it on a cold start, so the one-day TTL
+  is a ceiling, not a promise.</li>
+  <li><b>Learned is per browser.</b> Clearing site data or switching devices resets it, and two
+  people on one browser share it.</li>
+  <li><b>Hub counts.</b> Each course heading shows <code>course.topics.length</code> while the grid
+  shows the lessons that exist for that section. They agree today because every topic has a lesson;
+  if they ever diverge, the count will be wrong.</li>
+  <li><b>Weak topics across exams.</b> Status badges match by topic name only. A weak "Algebra" from
+  GRE games will also mark the SAT Algebra lesson as "Needs work".</li>
+  <li><b>Answer position.</b> Nine of the 15 quick checks have option A as the answer. A student
+  who notices will stop reading the options. When you write or edit a check, vary the position.</li>
+  <li><b>Unknown slug.</b> <code>/learn/sat/nope</code> renders the not-found card inside the shell;
+  it does not return a 404 status.</li>
+</ul>
+
+<p>
+  There are no automated tests. <code>topicSlug</code>, <code>findLesson</code>,
+  <code>_score</code>, <code>_iso_to_clock</code>, <code>_duration_minutes</code> and
+  <code>_mentions</code> are pure functions and the obvious first candidates.
+</p>
+
+<h3 id="s10-9"><span class="num">10.9</span><span>Study notes</span></h3>
+
+<div class="study">
+<h4>Read in this order</h4>
+<ol>
+  <li><code>frontend/lib/courses.ts</code>, the four courses and their topics.</li>
+  <li><code>frontend/lib/lessons.ts</code>, the type, one lesson, then the bottom 20 lines.</li>
+  <li><code>frontend/app/learn/[exam]/[topic]/page.tsx</code>, the lesson view and video panel.</li>
+  <li><code>frontend/components/learn/Videos.tsx</code> and <code>QuickCheck.tsx</code>.</li>
+  <li><code>frontend/app/learn/page.tsx</code>, the hub and <code>FeaturedLesson</code>.</li>
+  <li><code>backend/src/api/learn.py</code>, then <code>backend/src/services/videos.py</code> from <code>find_topic_videos</code> upward.</li>
+</ol>
+<h4>Check yourself</h4>
+<p class="q">Why is the video cache key on the server free of <code>limit</code> while the client's includes it?</p>
+<p class="a">The server caches the whole ranked list and slices it per request, so every limit can
+share one search. The client caches request promises, and a promise for one video cannot answer a
+request for six.</p>
+<p class="q">Why are the general queries run one after another instead of with <code>asyncio.gather</code>?</p>
+<p class="a">The free providers rate limit bursts. The comment in <code>find_topic_videos</code>
+says so, and serial queries also let the loop stop early once it has 15 non-GregMat videos.</p>
+<p class="q">What must be true of a new topic name for the dashboard to recommend its lesson?</p>
+<p class="a">It must appear in the course's <code>topics</code> and match, character for character,
+the topic the games report in <code>question_attempts</code>, since <code>weak_topics</code> comes from
+those reports.</p>
+<p class="q">A DuckDuckGo search hits a rate limit. What does the student see, and when is the search tried again?</p>
+<p class="a">The provider returns an empty list, the endpoint returns no videos, and the panel shows
+"No lesson videos found for this topic yet." with a YouTube search link. The empty result is not
+cached, so the next request searches again.</p>
+<p class="q">Where is "Mark as learned" stored, and what is its id for GRE Geometry?</p>
+<p class="a">In localStorage under <code>learned_lessons</code>, as <code>"gre:Geometry"</code>.</p>
+</div>
+</section>

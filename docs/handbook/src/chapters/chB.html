@@ -1,0 +1,182 @@
+<section class="chapter" id="chB" data-hue="ref">
+<p class="chapter-kicker">Appendix B</p>
+<h2><span class="num">B</span><span>Decisions</span></h2>
+
+<p class="lede">
+  This is a log of the design and engineering decisions that can be read off the code. Each entry
+  gives the decision, the reason (from a comment in the code where there is one), and the
+  consequence a contributor lives with. None of them is sacred. If you change one, change the
+  entry too.
+</p>
+
+<h3 id="sB-1"><span class="num">B.1</span><span>A separate FastAPI backend</span></h3>
+<p><b>Decision.</b> All data access and every outside call runs in a Python FastAPI app in
+<code>backend/</code>, deployed as its own Vercel project. The Next.js app has no API routes.</p>
+<p><b>Reason.</b> The question pipeline is Python: the <code>openai</code> client for OpenRouter,
+<code>ddgs</code> for DuckDuckGo, <code>pypdf</code> for uploads, and <code>httpx</code> for the
+College Board and YouTube. Keeping secrets and slow work off the browser and out of the page
+server keeps the frontend a static-ish client.</p>
+<p><b>Consequence.</b> Two deploys, two sets of environment variables, and CORS:
+<code>ALLOWED_ORIGINS</code> must name the frontend's origin. The frontend must be built with
+<code>NEXT_PUBLIC_API_URL</code> pointing at the backend. A change that spans both needs both
+deployed.</p>
+
+<h3 id="sB-2"><span class="num">B.2</span><span>Supabase for auth and data, behind the backend</span></h3>
+<p><b>Decision.</b> Supabase provides Auth and Postgres. Only the backend talks to it, through one
+client built by <code>Database.get_client</code>, which prefers
+<code>SUPABASE_SERVICE_ROLE_KEY</code>.</p>
+<p><b>Reason.</b> One client with full rights is simple: no per-request client, no RLS to
+reason about in each query. The comment in <code>utils/database.py</code> says it plainly: the
+"service role key bypasses RLS".</p>
+<p><b>Consequence.</b> The RLS policies in <code>backend/database/*.sql</code> are defence in depth
+only. Isolation between users depends on every query filtering on <code>user_id</code>. The
+frontend's <code>@supabase/ssr</code> and <code>@supabase/supabase-js</code> dependencies are
+unused.</p>
+
+<h3 id="sB-3"><span class="num">B.3</span><span>A bearer token in localStorage and a cookie</span></h3>
+<p><b>Decision.</b> The Supabase access token is returned by <code>/api/auth/login</code>, stored
+by <code>ApiClient.setToken</code> under <code>auth_token</code> in localStorage and a seven-day
+cookie, and sent as <code>Authorization: Bearer</code>. <code>middleware.ts</code> checks only that
+the cookie exists. <code>AuthService.get_user</code> decodes the JWT without verifying its
+signature and checks <code>exp</code>.</p>
+<p><b>Reason.</b> The cookie exists so the edge middleware can redirect signed-out visitors before
+a page renders; the comment in <code>setToken</code> says "Also set cookie for middleware auth
+check". Decoding without a network call keeps every request fast.</p>
+<p><b>Consequence.</b> No refresh: when the token expires, calls fail with 401 until the student
+logs in again. And because the signature is not checked while the backend holds the service-role
+key, a forged token is trusted. Verifying the JWT is the most important open fix in the
+codebase.</p>
+
+<h3 id="sB-4"><span class="num">B.4</span><span>Official questions first, then the LLM, then an offline bank</span></h3>
+<p><b>Decision.</b> <code>ExamLearningAgent.generate_questions</code> takes SAT questions from the
+College Board Educator Question Bank (<code>CollegeBoardSource</code>). Any shortfall, and every
+GRE question, comes from one LLM call that is given up to four web pages of practice questions
+(<code>WebQuestionSource.find_pages</code>) and told to extract real questions first and write the
+rest. If the backend returns nothing, <code>fetchAIQuestions</code> falls back to
+<code>getBankQuestions</code> in <code>frontend/lib/questionBank.ts</code>.</p>
+<p><b>Reason.</b> The landing page promises questions "Drafted in the real format" and "Checked
+against the web". An LLM alone invents plausible but wrong questions; real sources fix that where
+they exist. The offline bank means a game always starts, even with no API key.</p>
+<p><b>Consequence.</b> A question is labelled <code>web</code> only if the first 50 normalized
+characters of its stem or passage appear on the cited page
+(<code>_normalize_llm_question</code>); otherwise it is <code>ai</code>. Every question carries
+<code>source</code>, <code>sourceName</code> and <code>sourceUrl</code> so the UI can say where
+it came from. One LLM call is capped at <code>MAX_LLM_QUESTIONS</code> (25). The offline bank is
+small: nine questions per section, 36 in all.</p>
+
+<h3 id="sB-5"><span class="num">B.5</span><span>Question length matched to the game</span></h3>
+<p><b>Decision.</b> Games have a pace. <code>gamePace</code> marks <code>squid-game</code> as
+<code>deep</code> and every other game as <code>quick</code>, and the backend filters with
+<code>is_quick_question</code> and <code>_fits_pace</code>.</p>
+<p><b>Reason.</b> The comment in <code>question_sources.py</code>: "Fast games need questions that
+can be read and answered in seconds; slow games take the long passages and multi-step
+problems."</p>
+<p><b>Consequence.</b> Quick games never see reading passages, so verbal practice in them is
+limited to short skills (<code>QUICK_SKILLS</code>). The College Board fetch oversamples five
+times for quick games because so many candidates are dropped.</p>
+
+<h3 id="sB-6"><span class="num">B.6</span><span>Weak topics decided per game, by fixed thresholds</span></h3>
+<p><b>Decision.</b> <code>GameService._update_user_stats</code> marks a topic weak below 50 percent
+accuracy in the game just played and strong at 80 percent or more, and moves topics between the
+two lists.</p>
+<p><b>Reason.</b> The comment: "A topic moves between the lists as the player improves or
+slips."</p>
+<p><b>Consequence.</b> One bad game makes a topic weak, and one good game clears it. Topics in
+neither range keep whatever label they had. The dashboard and the agent both read these lists.</p>
+
+<h3 id="sB-7"><span class="num">B.7</span><span>Lessons as static content</span></h3>
+<p><b>Decision.</b> The fifteen lessons are TypeScript constants in
+<code>frontend/lib/lessons.ts</code>, one per topic in <code>COURSES</code>, each with ideas, a
+worked example, traps and a quick check.</p>
+<p><b>Reason.</b> Lessons must be right, and they change rarely. Static content is reviewed in a
+pull request, costs nothing to serve, and needs no backend.</p>
+<p><b>Consequence.</b> Editing a lesson is a code change and a deploy. A new topic in
+<code>COURSES</code> needs a lesson in the matching array, or it has none.</p>
+
+<h3 id="sB-8"><span class="num">B.8</span><span>A video provider chain with a one-day cache</span></h3>
+<p><b>Decision.</b> <code>videos.py</code> tries the YouTube Data API
+(<code>YOUTUBE_API_KEY</code>), then Serper (<code>SERPER_API_KEY</code>), then DuckDuckGo; the
+first provider with results wins. Results are cached in memory for <code>CACHE_TTL_SECONDS</code>
+(24 hours), ranked toward trusted channels and 3 to 25 minute lengths, with up to
+<code>GREGMAT_SLOTS</code> (3) GregMat videos first.</p>
+<p><b>Reason.</b> DuckDuckGo needs no key but rate limits; the paid providers are reliable but
+optional. The module docstring explains the ranking: lesson-length videos from established
+test-prep channels.</p>
+<p><b>Consequence.</b> With no keys set, videos still work, slowly and sometimes not at all. Only
+non-empty results are cached, "so a rate-limited search is retried next time". The cache is per
+process, so each Vercel instance warms its own.</p>
+
+<h3 id="sB-9"><span class="num">B.9</span><span>Profiles in a table, with a pending-profile flow</span></h3>
+<p><b>Decision.</b> Profiles live in <code>profiles</code>, keyed by <code>user_id</code>, saved by
+an upsert in <code>PUT /api/profile</code>. When signup returns no session (email confirmation
+on), the profile is parked in localStorage as <code>pending_profile</code> and saved on first
+login.</p>
+<p><b>Reason.</b> The comment in <code>frontend/lib/profile.ts</code>: "When Supabase requires email
+confirmation, signup returns no session, so the profile can't be saved yet."</p>
+<p><b>Consequence.</b> A student who confirms and logs in on another device has no profile and is
+asked again. Usernames are unique; a clash is a 409, and signup or login sends the student to
+<code>/profile?setup=1</code> rather than failing.</p>
+
+<h3 id="sB-10"><span class="num">B.10</span><span>Lesson progress in localStorage</span></h3>
+<p><b>Decision.</b> "Mark as learned" writes to the <code>learned_lessons</code> key in
+<code>frontend/lib/learnProgress.ts</code>. So do exam preferences (<code>exam_prefs</code>) and
+high scores (<code>arcade_hi_&lt;gameId&gt;</code>).</p>
+<p><b>Reason.</b> The file's comment: "Kept in this browser only." It needs no table, no endpoint
+and no sign-in.</p>
+<p><b>Consequence.</b> Progress does not follow the student between browsers. Moving it to a
+table is a small, self-contained change.</p>
+
+<h3 id="sB-11"><span class="num">B.11</span><span>Mock exams saved as game sessions</span></h3>
+<p><b>Decision.</b> <code>app/mock/page.tsx</code> saves results with
+<code>saveScore('mock-exam', ...)</code>, in the same <code>GameAnalytics</code> shape as a
+game.</p>
+<p><b>Reason.</b> The comment: "Save it alongside game sessions so it feeds statistics and weak
+topics." No new table or endpoint.</p>
+<p><b>Consequence.</b> <code>gameTitle</code> special-cases <code>mock-exam</code>. Statistics mix
+mock exams with games.</p>
+
+<h3 id="sB-12"><span class="num">B.12</span><span>Uploaded questions need approval</span></h3>
+<p><b>Decision.</b> Questions from uploads go into <code>custom_questions</code> as
+<code>pending</code>. Only <code>approved</code> ones are served, and they make up at most half of
+a game's set (<code>limit // 2</code> in <code>get_questions</code>).</p>
+<p><b>Reason.</b> Parsed and LLM-extracted questions can have the wrong or missing answer
+(<code>correct_answer</code> is nullable). The student is the only one who can confirm them.</p>
+<p><b>Consequence.</b> Uploading has a review step. The rest of every set still comes from the
+agent, so the student's own material never crowds out real exam questions.</p>
+
+<h3 id="sB-13"><span class="num">B.13</span><span>A neo-brutalist and glass design system</span></h3>
+<p><b>Decision.</b> The site's look is thick ink outlines with hard offset shadows
+(<code>brutal</code>, <code>brutal-sm</code>, <code>brutal-lg</code> in
+<code>tailwind.config.js</code>) combined with frosted <code>glass</code> panels, over a paper
+background, in a five-colour palette: <code>paper</code>, <code>ink</code>, <code>cobalt</code>,
+<code>lime</code>, <code>coral</code>.</p>
+<p><b>Reason.</b> The comment in <code>app/globals.css</code>: "SATistics theme: brutalist outlines
+with frosted glass panels". It reads as a game, not a textbook.</p>
+<p><b>Consequence.</b> Use the component classes in <code>globals.css</code> (<code>.brutal</code>,
+<code>.glass</code>, <code>.btn</code>) and the Tailwind tokens rather than raw colours. The
+in-game screens use a separate arcade skin with the Press Start 2P font from
+<code>lib/arcade.ts</code>.</p>
+
+<h3 id="sB-14"><span class="num">B.14</span><span>Game covers drawn as inline SVG</span></h3>
+<p><b>Decision.</b> <code>components/brand/GameCover.tsx</code> draws each game's cover as SVG in
+the site palette, with a <code>FALLBACK</code> for unknown ids.</p>
+<p><b>Reason.</b> The file's comment: "Illustrated cover art for each game, drawn as SVG in the
+site palette." No image assets to license, load or keep in sync with the palette.</p>
+<p><b>Consequence.</b> A new game needs a cover entry in <code>COVERS</code>, written as SVG.</p>
+
+<h3 id="sB-15"><span class="num">B.15</span><span>Schema as hand-run SQL files</span></h3>
+<p><b>Decision.</b> The schema lives in <code>backend/database/*.sql</code>, run by hand in the
+Supabase SQL editor. There is no migration tool.</p>
+<p><b>Reason.</b> Few tables, one environment, one maintainer.</p>
+<p><b>Consequence.</b> Order matters and nothing records what has been applied. <code>reset.sql</code>
+recreates the four core tables but not <code>materials</code> or <code>custom_questions</code>, so
+after a reset run <code>add_materials.sql</code> again.</p>
+
+<h3 id="sB-16"><span class="num">B.16</span><span>The backend as one Vercel Python function</span></h3>
+<p><b>Decision.</b> <code>backend/vercel.json</code> rewrites every path to
+<code>/api/index</code>, and <code>backend/api/index.py</code> exposes the whole FastAPI app.</p>
+<p><b>Reason.</b> One deploy target for both apps, no server to run.</p>
+<p><b>Consequence.</b> In-memory caches are per instance and lost on cold starts. Long question
+builds (web search plus an LLM call) run inside a single function invocation. The Docker, Fly,
+Railway and Render configs in <code>backend/</code> are left over and not used.</p>
+</section>

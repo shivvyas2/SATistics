@@ -1,220 +1,155 @@
-# NYU Hacks Arcade
+<h1 align="center">SATistics</h1>
 
-A collection of classic arcade games built with Next.js, TypeScript, and Three.js for 3D graphics. Features SAT question integration for educational gameplay with AI-powered adaptive learning.
+<p align="center">SAT and GRE practice that plays like an arcade. Real-format exam questions inside six games, concept lessons with videos, and a dashboard that points you at your weakest topic.</p>
 
-##  Games
+<p align="center"><a href="https://www.satistic.tech">Live site</a> · <a href="docs/handbook/index.html">Engineering handbook</a> · <a href="CONTRIBUTING.md">Contribute</a> · <a href="https://www.satistic.tech/developer">Developer</a></p>
 
-- **Subway Surfers** - Endless runner - dodge obstacles and collect coins!
-- **Squid Game** - Survive the challenges inspired by the popular series!
-- **Mario** - Classic platformer - jump, run, and collect coins!
-- **Pac-Man** - Classic maze game - eat dots and avoid ghosts!
-- **Whack-A-Mole** - Whack the mole with the correct SAT answer!
-- **Zombie Apocalypse** - First-person shooter! Shoot zombies with correct answers!
-- **Carnival** - Pop balloons to answer SAT questions!
+<p align="center">
+  <a href="https://github.com/shivvyas2/SATistics/actions/workflows/ci.yml"><img src="https://github.com/shivvyas2/SATistics/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT"></a>
+  <img src="https://img.shields.io/badge/Next.js-14-black.svg" alt="Next.js 14">
+  <img src="https://img.shields.io/badge/FastAPI-Python-009688.svg" alt="FastAPI">
+  <img src="https://img.shields.io/badge/Supabase-Postgres-3ECF8E.svg" alt="Supabase">
+</p>
 
-## Quick Start
+<p align="center"><img src="docs/images/dashboard.png" alt="The SATistics dashboard" width="860"></p>
 
-### Prerequisites
+SATistics turns test prep into something students want to open. Every zombie, mole, balloon and gate carries a real-format SAT or GRE question; answer right to keep playing. Around the games sits a full study loop: learn a concept, watch a lesson, check yourself, then lock it in with a game. An AI agent watches your accuracy per topic and steers new questions toward what you miss.
 
-- **Node.js 18+** - For the frontend
-- **Python 3.8+** - For the backend
-- **Supabase Account** - For authentication and database
+It started at NYU Hacks as a weekend project and has grown into a complete prep platform. It is now open source, and this repo is set up so you can pick one area and start contributing without learning all of it.
 
-### Option 1: Quick Start Script
+## Features
 
-```bash
-# Make the script executable (first time only)
-chmod +x start_local.sh
+- **Six arcade games.** Zombie Apocalypse, Whack-A-Mole, Balloon Pop, Subway Surfers, Squid Game and Pac-Man, built with Three.js and canvas. Each one turns answering into gameplay.
+- **Real-format questions.** SAT questions come from the College Board's public question bank, GRE and extra questions are found on the web or written by an LLM to the official spec, and an offline bank keeps the games working with no keys at all.
+- **Two exams, four courses.** SAT Math, SAT Reading and Writing, GRE Quant and GRE Verbal, organized by the official content domains.
+- **Learn.** A lesson for every topic: key ideas, a worked example revealed step by step, common traps, a quick check, and ranked YouTube lessons.
+- **Mock exams and your own material.** Mock exams at quick, module or full-section length with a rough score estimate. Upload a practice test or your notes, review the questions pulled out of it, and the ones you approve show up in your games.
+- **Profiles and a dashboard.** Exam, target score, test-day countdown and a daily goal, plus recent sessions, focus topics and an "up next" recommendation.
 
-# Run both frontend and backend
-./start_local.sh
+## Tech stack
+
+| Layer | Technology |
+| --- | --- |
+| Frontend | Next.js 14 (App Router), React 18, TypeScript, Tailwind CSS |
+| Games | Three.js, HTML canvas, Yuka |
+| Backend | FastAPI (Python), Pydantic |
+| Database and auth | Supabase (Postgres, Auth, Row Level Security) |
+| AI | OpenRouter (default model Claude Haiku 4.5) |
+| Questions and search | College Board question bank (SAT), DuckDuckGo (questions and videos), optional YouTube Data API and Serper |
+| Hosting | Vercel, two projects: frontend and backend |
+
+## Architecture
+
+```
+                 ┌──────────────────────────┐
+  Browser ──────►│  Next.js (frontend/)     │
+                 │  pages, games, lessons   │
+                 └────────────┬─────────────┘
+                              │  fetch + Bearer token
+                 ┌────────────▼─────────────┐      ┌──────────────────────┐
+                 │  FastAPI (backend/)      │─────►│ OpenRouter (LLM)     │
+                 │  /api/auth /api/profile  │─────►│ YouTube / Serper /   │
+                 │  /api/questions /learn   │      │ DuckDuckGo search    │
+                 │  /api/games /stats ...   │      └──────────────────────┘
+                 └────────────┬─────────────┘
+                              │  service-role key
+                 ┌────────────▼─────────────┐
+                 │  Supabase                │
+                 │  Postgres + Auth + RLS   │
+                 └──────────────────────────┘
 ```
 
-### Option 2: Manual Setup
+The browser never talks to Supabase directly. It signs in through the backend, keeps the session token, and sends it as a Bearer token on every API call. The backend holds the service-role key and the AI and search keys, and none of them ever reach the browser.
 
-**Start Backend:**
-```bash
+## Repository layout
+
+```
+.
+├── frontend/                 Next.js app
+│   ├── app/                  Routes: landing, auth, dashboard, learn, games, mock, materials, profile, stats, developer
+│   ├── components/           UI: brand, arcade frame, exam UI, game containers, learn, profile
+│   ├── games/                Game engines, one folder per game
+│   ├── lib/                  API client, exams and courses, lessons, question bank, sessions, site metadata
+│   └── public/               3D models, textures and audio
+├── backend/                  FastAPI app
+│   ├── api/index.py          Vercel entry point
+│   ├── src/api/              Routers: auth, profile, questions, learn, games, stats, materials, health
+│   ├── src/services/         Question agent, question sources, videos, materials, auth, scores
+│   ├── src/models/           Pydantic schemas
+│   └── database/             SQL: reset.sql, then add_materials.sql, create the schema
+├── docs/
+│   ├── handbook/             The engineering handbook (HTML, PDF, EPUB) and its sources
+│   └── images/               Screenshots
+└── .github/                  CI, issue and pull request templates
+```
+
+## Getting started
+
+You need Node.js 18 or newer, Python 3.9 or newer, and a free Supabase project.
+
+**1. Database.** In the Supabase SQL editor of a *new* project, run [`backend/database/reset.sql`](backend/database/reset.sql), then [`backend/database/add_materials.sql`](backend/database/add_materials.sql). Together they create every table, trigger and policy. `reset.sql` also drops existing tables and deletes all auth users, so never run it against a project with real users.
+
+**2. Backend.**
+
+```sh
 cd backend
-./run.sh
-# Backend runs on http://localhost:8000
-```
-
-**Start Frontend (in a new terminal):**
-```bash
-cd frontend
-npm install  # First time only
-npm run dev
-# Frontend runs on http://localhost:3000
-```
-
-Visit [http://localhost:3000](http://localhost:3000) to start playing!
-
-##  Project Structure
-
-```
-NYUHacks/
-├── frontend/              # Next.js frontend application
-│   ├── app/              # Next.js App Router
-│   ├── components/       # React components
-│   ├── games/            # Game implementations
-│   └── lib/              # Utilities and API client
-├── backend/              # FastAPI backend
-│   ├── src/             # Source code
-│   │   ├── api/         # API routes
-│   │   ├── services/    # Business logic
-│   │   └── models/      # Data models
-│   ├── agent.py         # AI learning agent
-│   └── database/        # Database schema
-├── start_local.sh        # Quick start script
-└── README.md            # This file
-```
-
-##  Tech Stack
-
-### Frontend
-- **Next.js 14** - React framework with App Router
-- **TypeScript** - Type safety
-- **Three.js** - 3D graphics and game rendering
-- **Tailwind CSS** - Styling
-
-### Backend
-- **FastAPI** - Python web framework
-- **Supabase** - Authentication and database
-- **Pydantic** - Data validation
-- **Claude Haiku 4.5** (via OpenRouter) - AI-powered question generation
-- **DuckDuckGo Search** - Real SAT question sourcing
-
-##  Features
-
-- **User Authentication** - Sign up, login, and secure sessions
-- **Game Score Tracking** - Save and track your game progress
-- **Statistics Dashboard** - View your performance metrics
-- **SAT Question Integration** - Educational gameplay with SAT questions
-- **AI-Powered Adaptive Learning** - Intelligent agent analyzes performance and generates personalized questions
-- **Multiple Game Modes** - Various arcade-style games
-- **3D Graphics** - Immersive Three.js-powered games
-
-##  AI Learning Agent
-
-The backend includes an intelligent SAT learning agent that:
-
-1. **Analyzes Performance** - Reviews your historical game data from Supabase
-2. **Identifies Weak Topics** - Finds topics where you struggle (<60% accuracy)
-3. **Generates Personalized Questions** - Uses Claude Haiku 4.5 to create custom questions
-4. **Adaptive Strategy** - 60% weak topics, 30% mixed, 10% challenge questions
-5. **Continuous Learning** - Improves question selection based on your progress
-
-See `backend/agent.py` for implementation details.
-
-##  Documentation
-
-- **[Developer Guide](DEVELOPER_GUIDE.md)** - Local development, testing, and troubleshooting
-- **[Deployment Guide](DEPLOYMENT.md)** - Production deployment instructions
-- **[Architecture Guide](ARCHITECTURE.md)** - System design and architecture (from agent branch)
-- **[Frontend README](frontend/README.md)** - Frontend-specific documentation
-- **[Backend README](backend/README.md)** - Backend-specific documentation
-
-##  Development
-
-### Adding a New Game
-
-1. Create a new game folder in `frontend/games/[game-name]/`
-2. Create the game class `[GameName]Game.ts` extending `BaseGame`
-3. Implement required methods: `init()`, `update()`, `render()`, `handleInput()`
-4. Register the game in `frontend/games/GameRenderer.ts`
-5. Add game metadata to `frontend/lib/games.ts`
-
-### Game Architecture
-
-Each game extends `BaseGame` which provides:
-- Game state management (score, level, lives, pause, game over)
-- Common game properties
-- Abstract methods for game-specific logic
-
-##  Environment Variables
-
-### Backend (`backend/.env`)
-```env
-SUPABASE_URL=your_supabase_project_url
-SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
-ALLOWED_ORIGINS=http://localhost:3000
-OPENROUTER_API_KEY=your_openrouter_key  # For AI agent
-YOUTUBE_API_KEY=your_youtube_key        # Optional: lesson videos
-SERPER_API_KEY=your_serper_key          # Optional: lesson videos fallback
-```
-
-### Frontend (`frontend/.env.local`)
-```env
-NEXT_PUBLIC_API_URL=http://localhost:8000
-NEXT_PUBLIC_SUPABASE_URL=your_supabase_url  # Optional
-NEXT_PUBLIC_SUPABASE_ANON_KEY=your_anon_key  # Optional
-```
-
-##  Installation
-
-### Frontend
-```bash
-cd frontend
-npm install
-```
-
-### Backend
-```bash
-cd backend
-python3 -m venv venv
-source venv/bin/activate
+cp .env.example .env          # fill in the Supabase values at minimum
+python3 -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
+uvicorn src.main:app --reload --port 8000
 ```
 
-##  Testing
+Check it with `curl http://localhost:8000/api/health/`.
 
-See [Developer Guide](DEVELOPER_GUIDE.md) for detailed testing instructions.
+**3. Frontend.**
 
-Quick test:
-1. Start both servers (see Quick Start above)
-2. Visit http://localhost:3000
-3. Sign up for an account
-4. Play a game
-5. Check your stats
-
-##  Deployment
-
-See [Deployment Guide](DEPLOYMENT.md) for complete deployment instructions.
-
-Quick deploy:
-```bash
-# Backend
-cd backend
-vercel --prod
-
-# Frontend
+```sh
 cd frontend
-vercel --prod
+cp .env.example .env.local
+npm install
+npm run dev
 ```
 
-## � Troubleshooting
+Open http://localhost:3000, create an account, and play.
 
-See [Developer Guide](DEVELOPER_GUIDE.md) for common issues and solutions.
+### What each integration unlocks
 
-Quick fixes:
-- **CORS errors**: Make sure backend is running and CORS is configured
-- **Connection errors**: Verify `NEXT_PUBLIC_API_URL` is set correctly
-- **Auth errors**: Check Supabase credentials in `backend/.env`
+| Variable | Needed for | Without it |
+| --- | --- | --- |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Accounts, profiles, scores, stats | The server starts and `/api/health/` works, but sign-in and every database route fail |
+| `OPENROUTER_API_KEY` | AI-written, personalized questions and parsing uploaded material | SAT questions still come from the College Board bank; GRE questions use the built-in offline bank |
+| `YOUTUBE_API_KEY` or `SERPER_API_KEY` | Reliable lesson videos | Falls back to DuckDuckGo, which rate limits |
+| `ALLOWED_ORIGINS` | Calling the API from a deployed frontend | Only localhost may call it |
+| `NEXT_PUBLIC_API_URL` (frontend) | Pointing the site at your backend | Defaults to `http://localhost:8000` |
 
-## 📄 License
+Every variable is documented in [`backend/.env.example`](backend/.env.example) and [`frontend/.env.example`](frontend/.env.example), and chapter 3 of the handbook walks through getting each key.
 
-MIT
+## The engineering handbook
 
-##  Contributing
+[`docs/handbook/`](docs/handbook/) is a book about this codebase: how every part works, why it is shaped that way, and how to change it. Open `index.html` in a browser, or read the PDF or EPUB. Each feature chapter ends with a reading order through the code and questions to check yourself.
 
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Submit a pull request
+| If you want to work on | Start with |
+| --- | --- |
+| A game, or adding one | Chapters 8 and 9 |
+| Questions and the AI agent | Chapters 6 and 7 |
+| Lessons and videos | Chapter 10 |
+| Dashboard and stats | Chapter 11 |
+| Accounts and profiles | Chapter 5 |
+| Look and feel | Chapter 4 |
+| The API | Chapters 13 and 14 |
+| Deploying your own copy | Chapter 15 |
 
-##  Support
+## Contributing
 
-For issues and questions:
-- Check the [Developer Guide](DEVELOPER_GUIDE.md)
-- Review [Troubleshooting](DEVELOPER_GUIDE.md#troubleshooting) section
-- Check backend and frontend README files
+Contributions are welcome, from typo fixes to new games. Read [CONTRIBUTING.md](CONTRIBUTING.md) first, then pick an issue labelled `good first issue` or open one describing what you want to build. Please follow the [Code of Conduct](CODE_OF_CONDUCT.md), and report security problems privately as described in [SECURITY.md](SECURITY.md).
+
+## Credits
+
+Created by [Shiv Vyas](https://www.shivvyas.com) ([LinkedIn](https://www.linkedin.com/in/shivvyas/)). SATistics began at NYU Hacks; thanks to the original hackathon team and to everyone in the commit history.
+
+SAT is a trademark of the College Board and GRE is a trademark of ETS. Neither is affiliated with or endorses this project.
+
+## License
+
+[MIT](LICENSE)

@@ -1,0 +1,161 @@
+<section class="chapter" id="chA" data-hue="ref">
+<p class="chapter-kicker">Appendix A</p>
+<h2><span class="num">A</span><span>Glossary and reading order</span></h2>
+
+<p class="lede">
+  The words the code and the product use, defined the way the code uses them and pointed at the file
+  where each one lives, followed by four routes through the repository: one for frontend work, one for
+  games, one for the backend, and one for questions and AI.
+</p>
+
+<p>
+  The glossary has three parts: the exam vocabulary the product is built on, the project's own terms,
+  and the infrastructure terms that show up in the code. Paths are relative to the repository root.
+  Where a term means something narrower here than it does in general, the definition says so.
+</p>
+
+<h3 id="sA-1"><span class="num">A.1</span><span>Exams and study</span></h3>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Term</th><th>Meaning here</th><th>Where</th></tr></thead>
+<tbody>
+<tr><td>SAT</td><td>The digital SAT. Exam id <code>sat</code>. Sections are Math (<code>quant</code>, 95 seconds per question) and Reading &amp; Writing (<code>verbal</code>, 71 seconds). Four answer choices. Target scores 400 to 1600.</td><td><code>EXAMS</code> in <code>frontend/lib/exam.ts</code> and <code>backend/src/services/question_sources.py</code>; <code>Profile</code> in <code>schemas.py</code></td></tr>
+<tr><td>GRE</td><td>Exam id <code>gre</code>. Sections are Quantitative (<code>quant</code>, 105 seconds) and Verbal (<code>verbal</code>, 90 seconds). Five answer choices in the backend's settings. Target scores 260 to 340.</td><td>Same files</td></tr>
+<tr><td>Exam</td><td>Which test a user studies for: <code>sat</code> or <code>gre</code>. Stored on the profile, on each material, and in the browser's <code>exam_prefs</code>.</td><td><code>ExamId</code> in <code>lib/exam.ts</code></td></tr>
+<tr><td>Section</td><td>The half of an exam a question belongs to. Always one of two ids: <code>quant</code> or <code>verbal</code>, whatever the exam calls them on screen.</td><td><code>SectionId</code> in <code>lib/exam.ts</code></td></tr>
+<tr><td>Quant, verbal</td><td>The two section ids. <code>quant</code> is SAT Math or GRE Quantitative; <code>verbal</code> is SAT Reading &amp; Writing or GRE Verbal.</td><td><code>lib/exam.ts</code>; <code>materials.section</code> check constraint</td></tr>
+<tr><td>Exam prefs</td><td>The exam, section and question count (6, 10 or 20) a player picked. Kept in <code>localStorage</code> as <code>exam_prefs</code>.</td><td><code>getExamPrefs</code>, <code>setExamPrefs</code>, <code>QUESTION_COUNTS</code></td></tr>
+<tr><td>Course</td><td>One exam section presented as a course: a title, a summary and its topics. There are four: SAT Math, SAT Reading &amp; Writing, GRE Quant, GRE Verbal.</td><td><code>COURSES</code> in <code>frontend/lib/courses.ts</code></td></tr>
+<tr><td>Topic</td><td>A content area inside a course, matching the official content domains (for SAT Math: Algebra, Advanced Math, Problem-Solving and Data Analysis, Geometry and Trigonometry). Every question carries one, and stats are kept per topic.</td><td><code>Course.topics</code>; <code>question_attempts.topic</code></td></tr>
+<tr><td>Domain</td><td>The College Board's name for what the app calls a topic. The code comment calls topics "official content domains".</td><td><code>lib/courses.ts</code></td></tr>
+<tr><td>Skill</td><td>A finer label under a topic on official questions, such as Words in Context or Boundaries. Used for quick-pace filtering and for hints.</td><td><code>Question.skill</code>; <code>QUICK_SKILLS</code> in <code>question_sources.py</code>; <code>lib/hints.ts</code></td></tr>
+<tr><td>Difficulty</td><td><code>easy</code>, <code>medium</code> or <code>hard</code>. The agent recommends one from the user's accuracy (under 50% easy, over 75% hard).</td><td><code>DIFFICULTIES</code>; <code>analyze_performance</code> in <code>agent.py</code></td></tr>
+<tr><td>Pace: quick, deep</td><td>What kind of question a game needs. <code>quick</code> games want short questions answerable in seconds; <code>deep</code> games take passages and multi-step problems. Squid Game is the only deep game.</td><td><code>Pace</code>, <code>gamePace</code>, <code>DEEP_GAMES</code> in <code>lib/exam.ts</code>; <code>is_quick_question</code></td></tr>
+<tr><td>Weak topic, strong topic</td><td>A topic answered under 50% correct in a session is weak; 80% or more is strong. The lists in <code>user_stats</code> are merged session by session, and a topic moves between them. The agent asks for more questions in weak topics.</td><td><code>_update_user_stats</code> in <code>game_service.py</code>; <code>CollegeBoardSource._pick_candidates</code></td></tr>
+<tr><td>Mock exam</td><td>A timed, game-free test at the real exam's pace, in three lengths: <code>quick</code> (10 questions), <code>module</code> (22 or 27 SAT, 12 GRE) and <code>section</code> (two modules). It ends with a rough scaled-score estimate and is saved as a session with game id <code>mock-exam</code>.</td><td><code>frontend/app/mock/page.tsx</code></td></tr>
+<tr><td>Target score, test date, daily minutes</td><td>The goal fields on a profile. Daily minutes is 5 to 240 on the server; the form offers 10, 20, 30 or 45.</td><td><code>Profile</code> in <code>schemas.py</code>; <code>DAILY_MINUTES</code> in <code>lib/profile.ts</code></td></tr>
+</tbody></table></div>
+
+<h3 id="sA-2"><span class="num">A.2</span><span>Project terms</span></h3>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Term</th><th>Meaning here</th><th>Where</th></tr></thead>
+<tbody>
+<tr><td>Game</td><td>One of six playable games, by id: <code>zombie</code>, <code>whackamole</code>, <code>carnival</code> (shown as Balloon Pop), <code>subway-surfers</code>, <code>squid-game</code>, <code>pac-man</code>. Each answers questions as part of play. A <code>mario</code> game exists in <code>frontend/games/mario/</code> and <code>GameRenderer.ts</code> but is not in the catalogue.</td><td><code>frontend/lib/games.ts</code>, <code>lib/gameMeta.ts</code>, <code>frontend/games/</code></td></tr>
+<tr><td>Game container</td><td>The React component that loads questions, mounts a game's engine and saves the score at the end.</td><td><code>frontend/components/*GameContainer.tsx</code></td></tr>
+<tr><td>Session</td><td>One finished game or mock exam: a row in <code>game_sessions</code>. Not a login session.</td><td><code>GameService.save_game_session</code>; <code>lib/sessions.ts</code></td></tr>
+<tr><td>Attempt</td><td>One question answered within a session: a row in <code>question_attempts</code>, sent as <code>questionAttempts</code> in the analytics.</td><td><code>QuestionAttempt</code> in <code>schemas.py</code></td></tr>
+<tr><td>Analytics</td><td>The summary a game posts when it ends: score, counts, attempts, per-topic performance, streak and average response time.</td><td><code>GameAnalytics</code> in <code>schemas.py</code></td></tr>
+<tr><td>Stats</td><td>A user's running totals and weak and strong topics, one <code>user_stats</code> row.</td><td><code>GET /api/stats/user</code></td></tr>
+<tr><td>Question source</td><td>Where a question came from, in <code>Question.source</code>: <code>official</code> (College Board's question bank), <code>web</code> (extracted from a practice page found by search), <code>ai</code> (written by the LLM), <code>custom</code> (the user's own approved material) or <code>practice</code> (the built-in offline bank).</td><td><code>question_sources.py</code>, <code>agent.py</code>, <code>custom_questions.py</code>, <code>lib/questionBank.ts</code></td></tr>
+<tr><td>Agent</td><td><code>ExamLearningAgent</code>: reads the user's stats, then assembles a question set from the sources above, weighted toward weak topics.</td><td><code>backend/src/services/agent.py</code></td></tr>
+<tr><td>Built-in bank</td><td>A fixed set of questions per exam and section shipped with the frontend, used when the backend returns nothing.</td><td><code>getBankQuestions</code> in <code>frontend/lib/questionBank.ts</code></td></tr>
+<tr><td>Hint</td><td>A strategy tip, an elimination of one wrong choice, or a "why not" note for a chosen answer, built from the question's wording, skill and topic.</td><td><code>frontend/lib/hints.ts</code>; <code>components/exam/HintButton.tsx</code></td></tr>
+<tr><td>Lesson</td><td>The study page for one course topic: summary, core ideas, one worked example, traps, and a quick check, with lesson videos alongside.</td><td><code>Lesson</code>, <code>LESSONS</code> in <code>frontend/lib/lessons.ts</code>; <code>app/learn/[exam]/[topic]/page.tsx</code></td></tr>
+<tr><td>Quick check</td><td>The one multiple-choice question at the end of a lesson, answered in place with no score saved.</td><td><code>Lesson.check</code>; <code>components/learn/QuickCheck.tsx</code></td></tr>
+<tr><td>Learned</td><td>A lesson the viewer marked as learned, kept only in this browser as <code>learned_lessons</code>.</td><td><code>useLearned</code> in <code>lib/learnProgress.ts</code></td></tr>
+<tr><td>Lesson videos, trusted</td><td>YouTube videos found for a topic and ranked. <code>trusted</code> marks a video from a channel in <code>TRUSTED_CHANNELS</code>.</td><td><code>backend/src/services/videos.py</code>; <code>components/learn/Videos.tsx</code></td></tr>
+<tr><td>Material</td><td>A file or pasted text a user uploaded to practise from: a row in <code>materials</code>.</td><td><code>backend/src/api/materials.py</code>; <code>app/materials/page.tsx</code></td></tr>
+<tr><td>Custom question</td><td>A question from a material: a row in <code>custom_questions</code>. Its <code>origin</code> is <code>extracted</code> (copied from the material) or <code>generated</code> (written by the LLM from it); its <code>status</code> is <code>pending</code> until approved. Only approved ones, with an answer, appear in games, as up to half of a set.</td><td><code>services/custom_questions.py</code>; <code>services/material_parser.py</code></td></tr>
+<tr><td>Cover</td><td>The illustrated SVG art for a game, drawn in the site palette, shown on cards and loading screens.</td><td><code>GameCover</code> in <code>components/brand/GameCover.tsx</code></td></tr>
+<tr><td>Arcade frame</td><td>The full-screen cabinet the arcade-style games render inside: pixel font (Press Start 2P), a neon accent colour and a CRT overlay.</td><td><code>ArcadeFrame</code> in <code>components/arcade/ArcadeFrame.tsx</code>; <code>lib/arcade.ts</code></td></tr>
+<tr><td>HUD</td><td>In-game panels and chips drawn over the canvas.</td><td><code>components/arcade/GameHud.tsx</code></td></tr>
+<tr><td>High score</td><td>The best score for a game on this device, in <code>localStorage</code> as <code>arcade_hi_{gameId}</code>. Not sent to the server.</td><td><code>getHighScore</code>, <code>recordHighScore</code> in <code>lib/arcade.ts</code></td></tr>
+<tr><td>Lane</td><td>An answer choice's position in Subway Surfers, reused as a coloured letter chip elsewhere.</td><td><code>components/exam/LaneChip.tsx</code></td></tr>
+<tr><td>Profile, username</td><td>The user's display name, unique lower-case handle, exam goals and avatar colour: one <code>profiles</code> row.</td><td><code>backend/src/api/profile.py</code>; <code>lib/profile.ts</code></td></tr>
+<tr><td>Pending profile</td><td>A profile filled in at signup when no session came back (email confirmation on), held in <code>localStorage</code> and saved at first login with the same email.</td><td><code>savePendingProfile</code>, <code>takePendingProfile</code></td></tr>
+<tr><td>Account</td><td>The signed-in user plus their profile, cached across pages.</td><td><code>useAccount</code> in <code>lib/useAccount.ts</code></td></tr>
+</tbody></table></div>
+
+<h3 id="sA-3"><span class="num">A.3</span><span>Infrastructure terms</span></h3>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Term</th><th>Meaning here</th><th>Where</th></tr></thead>
+<tbody>
+<tr><td>Supabase</td><td>Hosted Postgres plus Auth. The backend uses both through one Python client; the frontend does not use it at all.</td><td><code>backend/src/utils/database.py</code></td></tr>
+<tr><td>Service-role key</td><td>The Supabase key that bypasses Row Level Security. The backend reads it from <code>SUPABASE_SERVICE_ROLE_KEY</code> (or <code>SUPABASE_SERVICE_KEY</code>) and uses it for every query.</td><td><code>Database.get_client</code></td></tr>
+<tr><td>Anon key</td><td><code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>. Subject to RLS. Only a fallback in the backend.</td><td><code>database.py</code>, <code>config.py</code></td></tr>
+<tr><td>RLS</td><td>Row Level Security: Postgres policies that limit rows to <code>auth.uid() = user_id</code>. Enabled on all six tables, bypassed by the service role, so the backend's own filters are the real access control.</td><td><code>backend/database/*.sql</code>; <a href="#s13-5">13.5</a></td></tr>
+<tr><td>Access token, <code>auth_token</code></td><td>The Supabase JWT returned by login and sent as a bearer header. The browser keeps it in <code>localStorage</code> and in a cookie both named <code>auth_token</code>.</td><td><code>frontend/lib/api/client.ts</code>; <code>frontend/middleware.ts</code></td></tr>
+<tr><td><code>get_current_user</code></td><td>The FastAPI dependency that turns a bearer token into <code>{id, email}</code> or a 401.</td><td><code>backend/src/api/auth.py</code></td></tr>
+<tr><td>Guest user id</td><td>The all-zero UUID the question route passes to the agent when no one is signed in.</td><td><code>backend/src/api/questions.py</code></td></tr>
+<tr><td>Sanitized HTML</td><td>Official question HTML and MathML re-rendered from an allowlist of tags and attributes, in the <code>*Html</code> fields.</td><td><code>backend/src/utils/html_utils.py</code>; <code>components/QuestionContent.tsx</code></td></tr>
+<tr><td>OpenRouter</td><td>The LLM gateway the agent and the material parser call, through the OpenAI SDK, with <code>OPENROUTER_API_KEY</code> and model <code>OPENROUTER_MODEL</code> (default <code>anthropic/claude-haiku-4.5</code>).</td><td><code>backend/src/services/agent.py</code>; <code>backend/src/config.py</code></td></tr>
+<tr><td><code>CUSTOM_ID_OFFSET</code></td><td>1,500,000,000, added to a custom question's database id so it does not clash with ids from other sources.</td><td><code>services/custom_questions.py</code></td></tr>
+</tbody></table></div>
+
+<h3 id="sA-4"><span class="num">A.4</span><span>Reading order: frontend contributor</span></h3>
+
+<ol>
+  <li><code>frontend/app/layout.tsx</code> and <code>frontend/app/page.tsx</code>, the shell and the public landing page.</li>
+  <li><code>frontend/middleware.ts</code>, which paths need a login and how that is checked.</li>
+  <li><code>frontend/lib/api/client.ts</code>, every backend call and the token's storage.</li>
+  <li><code>frontend/lib/useAccount.ts</code> and <code>frontend/lib/profile.ts</code>, the signed-in user and their profile.</li>
+  <li><code>frontend/app/login/page.tsx</code> and <code>frontend/app/signup/page.tsx</code>, with <code>components/auth/AuthShell.tsx</code>.</li>
+  <li><code>frontend/components/DashboardLayout.tsx</code> and <code>frontend/app/dashboard/page.tsx</code>.</li>
+  <li><code>frontend/lib/exam.ts</code> and <code>frontend/lib/courses.ts</code>, the exam vocabulary every page shares.</li>
+  <li><code>frontend/app/learn/page.tsx</code>, <code>app/learn/[exam]/[topic]/page.tsx</code> and <code>frontend/lib/lessons.ts</code>.</li>
+  <li><code>frontend/app/stats/page.tsx</code> and <code>frontend/lib/sessions.ts</code>.</li>
+  <li><code>frontend/app/materials/page.tsx</code> with <code>frontend/lib/materials.ts</code>.</li>
+  <li><code>frontend/app/mock/page.tsx</code>, the largest page, a self-contained timed exam.</li>
+  <li><code>frontend/tailwind.config.js</code> and <code>frontend/app/globals.css</code>, for the palette and the brutalist borders and shadows.</li>
+</ol>
+
+<h3 id="sA-5"><span class="num">A.5</span><span>Reading order: game developer</span></h3>
+
+<ol>
+  <li><code>frontend/lib/games.ts</code> and <code>frontend/lib/gameMeta.ts</code>, the catalogue.</li>
+  <li><code>frontend/app/games/page.tsx</code> and <code>app/games/[gameId]/select/page.tsx</code>, how a player picks a game and an exam section.</li>
+  <li><code>frontend/app/games/[gameId]/page.tsx</code> and <code>layout.tsx</code>, which container mounts.</li>
+  <li><code>frontend/lib/api/questions.ts</code>, <code>SATQuestion</code>, <code>fetchAIQuestions</code> and the fallback to <code>lib/questionBank.ts</code>.</li>
+  <li><code>frontend/games/BaseGame.ts</code> and <code>frontend/games/GameRenderer.ts</code>, the engine contract.</li>
+  <li>One simple game end to end: <code>components/WhackAMoleGameContainer.tsx</code> with <code>games/whackamole/</code>.</li>
+  <li>One arcade-style game: <code>components/PacManGameContainer.tsx</code> with <code>games/pac-man/</code>, <code>components/arcade/ArcadeFrame.tsx</code> and <code>GameHud.tsx</code>.</li>
+  <li><code>frontend/components/exam/</code>: <code>QuestionCard</code>, <code>HintButton</code>, <code>useQuestionHints</code>, <code>PauseMenu</code>, <code>ReviewList</code>, <code>GameIntro</code>.</li>
+  <li><code>frontend/lib/hints.ts</code> and <code>frontend/lib/arcade.ts</code>.</li>
+  <li><code>backend/src/models/schemas.py</code> (<code>GameAnalytics</code>) and <code>backend/src/services/game_service.py</code>, what happens to the score you post.</li>
+</ol>
+
+<h3 id="sA-6"><span class="num">A.6</span><span>Reading order: backend contributor</span></h3>
+
+<ol>
+  <li><code>backend/src/main.py</code>, routers, CORS and the exception handler.</li>
+  <li><code>backend/database/reset.sql</code> and <code>backend/database/add_materials.sql</code>, the schema.</li>
+  <li><code>backend/src/utils/database.py</code> and <code>backend/src/config.py</code>, keys and environment.</li>
+  <li><code>backend/src/api/auth.py</code> and <code>backend/src/services/auth_service.py</code>; read <a href="#s13-7">13.7</a> alongside.</li>
+  <li><code>backend/src/models/schemas.py</code>.</li>
+  <li><code>backend/src/api/profile.py</code>, <code>stats.py</code>, <code>games.py</code> with <code>services/game_service.py</code>.</li>
+  <li><code>backend/src/api/materials.py</code>, the most complete router.</li>
+  <li><code>backend/api/index.py</code>, <code>backend/vercel.json</code> and <code>backend/requirements.txt</code>, how it is deployed.</li>
+</ol>
+
+<h3 id="sA-7"><span class="num">A.7</span><span>Reading order: questions and AI</span></h3>
+
+<ol>
+  <li><code>backend/src/api/questions.py</code>, the one entry point and its parameters.</li>
+  <li><code>backend/src/services/agent.py</code>, <code>generate_questions</code> first, then <code>_questions_from_llm</code> and <code>_normalize_llm_question</code>.</li>
+  <li><code>backend/src/services/supabase_agent_ops.py</code>, the two read functions the agent uses (the write functions are unused).</li>
+  <li><code>backend/src/services/question_sources.py</code>: <code>CollegeBoardSource</code>, <code>is_quick_question</code>, <code>_balance_difficulty</code>, then <code>WebQuestionSource</code>.</li>
+  <li><code>backend/src/utils/html_utils.py</code>, sanitized HTML and plain text from the same tree.</li>
+  <li><code>backend/src/services/custom_questions.py</code> and <code>backend/src/services/material_parser.py</code>, the user's own questions.</li>
+  <li><code>backend/src/services/videos.py</code>, the other search-driven service.</li>
+  <li><code>frontend/lib/api/questions.ts</code>, <code>frontend/lib/questionBank.ts</code> and <code>frontend/components/QuestionContent.tsx</code>, the receiving end.</li>
+</ol>
+
+<h3 id="sA-8"><span class="num">A.8</span><span>Study notes</span></h3>
+<div class="study">
+<h4>Read in this order</h4>
+<ol>
+  <li><code>frontend/lib/exam.ts</code>, where most of the exam vocabulary above is defined.</li>
+  <li><code>frontend/lib/courses.ts</code> and <code>frontend/lib/gameMeta.ts</code>.</li>
+  <li><code>backend/src/models/schemas.py</code>, where the project terms become types.</li>
+</ol>
+<h4>Check yourself</h4>
+<p class="q">What is the difference between a session and a login?</p>
+<p class="a">A session is one finished game or mock exam, a row in <code>game_sessions</code>. A login produces an access token; the code never calls that a session.</p>
+<p class="q">Which question sources can produce sanitized HTML?</p>
+<p class="a">Only <code>official</code>. Web, AI, custom and practice questions are plain text.</p>
+<p class="q">Which game is deep pace, and what does that change?</p>
+<p class="a">Squid Game. It is sent <code>pace=deep</code>, so the sources may return passages and multi-step problems; quick games get only short questions.</p>
+</div>
+</section>

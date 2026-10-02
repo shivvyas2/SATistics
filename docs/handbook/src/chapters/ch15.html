@@ -1,0 +1,406 @@
+<section class="chapter" id="ch15" data-hue="ship">
+<p class="chapter-kicker">Chapter fifteen</p>
+<h2><span class="num">15</span><span>Deploying and operating</span></h2>
+
+<p class="lede">
+  One repository becomes two Vercel projects. The project called <code>satistics</code> builds
+  <code>frontend/</code> and serves <code>https://www.satistic.tech</code>; the project called
+  <code>backend</code> builds <code>backend/</code> as a single Python function and serves
+  <code>https://api.satistic.tech</code>. Both deploy on every push to <code>main</code>. The
+  database is a Supabase project that neither deploy touches: schema changes are SQL you run by
+  hand.
+</p>
+
+<p>
+  This chapter describes how each project is configured, which variables each one needs, why the
+  API lives on a custom domain, how CORS and search-engine files are set up, how to change the
+  schema and roll back a bad deploy, and what the other deploy files in <code>backend/</code> are.
+  It ends with a checklist to run after any deploy that touches configuration. Setting up your
+  own copy uses the same steps with your own domains and keys.
+</p>
+
+<h3 id="s15-1"><span class="num">15.1</span><span>Two projects, one repository</span></h3>
+
+<figure>
+<svg class="diagram" viewBox="0 0 860 250" role="img" aria-label="A push to main builds two Vercel projects. The satistics project, root frontend, serves www.satistic.tech. The backend project, root backend, serves api.satistic.tech. The browser loads pages from the first and calls the second, which calls Supabase.">
+  <defs>
+    <marker id="ch15a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head" points="0,0 10,5 0,10"/></marker>
+    <marker id="ch15b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head-hot" points="0,0 10,5 0,10"/></marker>
+  </defs>
+  <text class="lbl-sm" x="20" y="20">GIT</text>
+  <text class="lbl-sm" x="230" y="20">VERCEL PROJECTS</text>
+  <text class="lbl-sm" x="490" y="20">DOMAINS</text>
+  <text class="lbl-sm" x="710" y="20">DATA</text>
+
+  <rect class="box" x="20" y="100" width="160" height="44" rx="8"/>
+  <text class="lbl" x="100" y="127" text-anchor="middle">push to main</text>
+
+  <rect class="box" x="230" y="44" width="200" height="50" rx="8"/>
+  <text class="lbl" x="330" y="64" text-anchor="middle">satistics</text>
+  <text class="lbl-sm" x="330" y="82" text-anchor="middle">root: frontend, Next.js</text>
+
+  <rect class="box-hot" x="230" y="150" width="200" height="50" rx="10"/>
+  <text class="lbl" x="330" y="170" text-anchor="middle">backend</text>
+  <text class="lbl-hot" x="330" y="188" text-anchor="middle">root: backend, api/index.py</text>
+
+  <rect class="box" x="490" y="44" width="180" height="50" rx="8"/>
+  <text class="lbl" x="580" y="74" text-anchor="middle">www.satistic.tech</text>
+
+  <rect class="box-hot" x="490" y="150" width="180" height="50" rx="10"/>
+  <text class="lbl" x="580" y="180" text-anchor="middle">api.satistic.tech</text>
+
+  <rect class="box" x="710" y="150" width="130" height="50" rx="8"/>
+  <text class="lbl" x="775" y="170" text-anchor="middle">Supabase</text>
+  <text class="lbl-sm" x="775" y="188" text-anchor="middle">Auth, Postgres</text>
+
+  <path class="flow" d="M180 112 L 224 76" marker-end="url(#ch15a)"/>
+  <path class="flow-hot" d="M180 132 L 224 168" marker-end="url(#ch15b)"/>
+  <path class="flow" d="M430 69 L 484 69" marker-end="url(#ch15a)"/>
+  <path class="flow-hot" d="M430 175 L 484 175" marker-end="url(#ch15b)"/>
+  <path class="flow-dash" d="M580 94 L 580 144" marker-end="url(#ch15a)"/>
+  <path class="flow-hot" d="M670 175 L 704 175" marker-end="url(#ch15b)"/>
+
+  <text class="lbl-sm" x="490" y="124">browser fetch</text>
+  <text class="lbl-sm" x="20" y="236">The two builds are independent. Neither waits for the other, and neither touches the database schema.</text>
+</svg>
+<figcaption>
+  Production. Pages come from one project, API calls go to the other, and only the API holds
+  Supabase credentials.
+</figcaption>
+</figure>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Vercel project</th><th>Root directory</th><th>Domain</th><th>Config files</th></tr></thead>
+<tbody>
+<tr><td><code>satistics</code></td><td><code>frontend</code></td><td><code>www.satistic.tech</code></td><td><code>frontend/vercel.json</code>, <code>frontend/next.config.js</code>, <code>frontend/.vercelignore</code></td></tr>
+<tr><td><code>backend</code></td><td><code>backend</code></td><td><code>api.satistic.tech</code></td><td><code>backend/vercel.json</code>, <code>backend/api/index.py</code>, <code>backend/.vercelignore</code></td></tr>
+</tbody>
+</table></div>
+
+<p>
+  The root directory is set in each project's settings, not in a file. There used to be a
+  <code>vercel.json</code> at the repository root with a <code>rootDirectory</code> field; Vercel
+  rejected the field and every backend build failed until it was removed (commit "Fix backend
+  Vercel deployment"). Do not add one back. Each project reads only the <code>vercel.json</code>
+  inside its own root.
+</p>
+
+<p>
+  Both projects use Vercel's Git integration. A push to <code>main</code> becomes production in
+  both; a push to any other branch makes preview deployments. GitHub Actions
+  (<code>.github/workflows/ci.yml</code>) runs lint, typecheck, build and a backend import check on
+  the same push, but nothing makes Vercel wait for CI. A red CI run does not stop a deploy, which
+  is why <code>CONTRIBUTING.md</code> says nobody commits to <code>main</code> directly.
+</p>
+
+<h3 id="s15-2"><span class="num">15.2</span><span>The backend on Vercel</span></h3>
+
+<p>
+  The backend is one Python serverless function. Vercel's Python runtime installs
+  <code>backend/requirements.txt</code>, finds <code>backend/api/index.py</code>, and serves the ASGI
+  object named <code>app</code> that the file exposes. The file is four lines of real code:
+</p>
+
+<pre><code># backend/api/index.py
+backend_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if backend_dir not in sys.path:
+    sys.path.insert(0, backend_dir)
+
+from src.main import app  # noqa: E402,F401</code></pre>
+
+<p>
+  It puts <code>backend/</code> on the import path so <code>from src.api import ...</code> resolves
+  exactly as it does locally, then re-exports the FastAPI app. There is no adapter such as Mangum;
+  the runtime speaks ASGI directly. <code>backend/vercel.json</code> sends every path to that one
+  function:
+</p>
+
+<pre><code>{
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/api/index" }
+  ]
+}</code></pre>
+
+<p>
+  The rewrite changes which function runs, not the path FastAPI sees, so
+  <code>/api/health/</code> still matches the health router. The file sets no
+  <code>maxDuration</code> or memory, so the platform defaults apply. Question generation that calls
+  the College Board bank, a web search and a model in sequence is the slowest request; if it starts
+  timing out, a <code>functions</code> block in this file is the place to raise the limit.
+</p>
+
+<p>
+  <code>backend/.vercelignore</code> keeps the upload small and secret-free. It excludes
+  <code>.env</code> and <code>.env.*</code>, <code>venv/</code>, caches, the alternative deploy files
+  (<code>Dockerfile</code>, <code>fly.toml</code>, <code>railway.json</code>, <code>render.yaml</code>),
+  every <code>*.sh</code> script, and the whole <code>database/</code> folder. The SQL never ships,
+  because nothing at runtime reads it.
+</p>
+
+<p>
+  Serverless has two consequences worth knowing. The in-memory caches (the 24-hour video cache in
+  <code>src/services/videos.py</code> and the College Board index cache in
+  <code>src/services/question_sources.py</code>) live per warm instance and vanish on a cold start.
+  And <code>Database.get_client()</code> keeps one Supabase client per instance, shared by every
+  request that instance serves.
+</p>
+
+<h3 id="s15-3"><span class="num">15.3</span><span>The frontend on Vercel</span></h3>
+
+<p>
+  <code>frontend/vercel.json</code> declares the Next.js framework with <code>npm install</code>,
+  <code>npm run build</code> and an output directory of <code>.next</code>. It also contains a
+  rewrite that is left over from an earlier hosting plan:
+</p>
+
+<pre><code>"rewrites": [
+  {
+    "source": "/api/:path*",
+    "destination": "https://your-backend-url.railway.app/api/:path*"
+  }
+]</code></pre>
+
+<p>
+  The destination is a placeholder that does not resolve. Nothing depends on it, because the
+  browser calls the API by its full URL from <code>NEXT_PUBLIC_API_URL</code>, never through a
+  relative <code>/api</code> path, and <code>frontend/middleware.ts</code> skips <code>/api</code>
+  paths. A request to <code>www.satistic.tech/api/...</code> fails. Removing the block, or pointing
+  it at <code>https://api.satistic.tech</code>, is a safe cleanup.
+</p>
+
+<p>
+  <code>frontend/next.config.js</code> sets <code>reactStrictMode</code>, allows remote images from
+  one host for the developer page, sets <code>output: 'standalone'</code> (which Vercel ignores; it
+  matters only for self-hosting in a container), and copies <code>NEXT_PUBLIC_API_URL</code> into
+  the build's <code>env</code> with a default of <code>http://localhost:8000</code>.
+</p>
+
+<div class="note caution"><b>The API URL is baked into the build</b>
+<code>NEXT_PUBLIC_API_URL</code> is inlined into the JavaScript bundle at build time. Changing it in
+the Vercel dashboard does nothing until the frontend is redeployed. If it is missing from the
+project, the build succeeds and production quietly calls <code>http://localhost:8000</code>, which
+shows up as every API call failing in users' browsers.
+</div>
+
+<p>
+  <code>frontend/.vercelignore</code> excludes <code>.env.local</code>, <code>.env.*.local</code>,
+  <code>node_modules/</code>, <code>.next/</code>, <code>.vercel/</code> and log files.
+  <code>frontend/deploy.sh</code> builds and runs <code>npx vercel --prod</code> by hand; with the
+  Git integration you do not need it, and its reminder to set Supabase variables on the frontend is
+  out of date (see <a href="#s15-4">15.4</a>).
+</p>
+
+<h3 id="s15-4"><span class="num">15.4</span><span>Environment variables per project</span></h3>
+
+<p>
+  Set these in each project's Settings, Environment Variables, for the Production environment.
+  <a href="#s3-4">Section 3.4</a> explains each one and where it is read.
+</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Project</th><th>Variable</th><th>Production value</th></tr></thead>
+<tbody>
+<tr><td><code>backend</code></td><td><code>SUPABASE_URL</code></td><td>The production Supabase project URL</td></tr>
+<tr><td><code>backend</code></td><td><code>SUPABASE_SERVICE_ROLE_KEY</code></td><td>That project's service-role key. Mark it sensitive</td></tr>
+<tr><td><code>backend</code></td><td><code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code></td><td>That project's anon key (fallback only)</td></tr>
+<tr><td><code>backend</code></td><td><code>ALLOWED_ORIGINS</code></td><td><code>https://www.satistic.tech,https://satistic.tech</code> or your own origins</td></tr>
+<tr><td><code>backend</code></td><td><code>OPENROUTER_API_KEY</code>, <code>OPENROUTER_MODEL</code></td><td>Optional; AI questions and material reading</td></tr>
+<tr><td><code>backend</code></td><td><code>YOUTUBE_API_KEY</code>, <code>SERPER_API_KEY</code></td><td>Optional, but in production DuckDuckGo rate limits quickly, so set at least one</td></tr>
+<tr><td><code>satistics</code></td><td><code>NEXT_PUBLIC_API_URL</code></td><td><code>https://api.satistic.tech</code></td></tr>
+</tbody>
+</table></div>
+
+<p>
+  The service-role key must be under one of the two names the backend reads,
+  <code>SUPABASE_SERVICE_ROLE_KEY</code> or <code>SUPABASE_SERVICE_KEY</code>. If neither is set, the
+  client silently falls back to the anon key, Row Level Security rejects the backend's writes, and
+  saving a score fails. That exact failure is why <code>SUPABASE_SERVICE_KEY</code> was added as a
+  fallback name. Backend variables take effect on the next deployment, so redeploy after changing
+  one.
+</p>
+
+<h3 id="s15-5"><span class="num">15.5</span><span>Domains, CORS and deployment protection</span></h3>
+
+<p>
+  Both domains are added in each project's Settings, Domains, with DNS records at the registrar
+  pointing at Vercel. The site's canonical host is <code>www.satistic.tech</code>; it is
+  <code>SITE_URL</code> in <code>frontend/lib/site.ts</code>.
+</p>
+
+<p>
+  <b>Why the API has its own domain.</b> Vercel's deployment protection puts a Vercel login in
+  front of generated deployment URLs (the <code>*.vercel.app</code> hosts). A browser
+  <code>fetch</code> from the site to such a URL gets a 401 and a login page instead of JSON, and
+  the CORS preflight fails with it, so the site looks broken while the API is fine. A custom
+  production domain is not covered by standard protection, so <code>api.satistic.tech</code> is
+  reachable by every browser while the generated URLs stay private. Point
+  <code>NEXT_PUBLIC_API_URL</code> at the custom domain, never at a <code>vercel.app</code> URL.
+</p>
+
+<p>
+  <b>CORS.</b> <code>backend/src/main.py</code> builds the allow list once, at import:
+</p>
+
+<pre><code>allowed_origins = os.getenv("ALLOWED_ORIGINS", "").split(",") if os.getenv("ALLOWED_ORIGINS") else []
+default_origins = [
+    "http://localhost:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3001",
+]
+allowed_origins = [origin for origin in allowed_origins + default_origins if origin]</code></pre>
+
+<p>
+  The middleware allows credentials, the methods <code>GET</code>, <code>POST</code>,
+  <code>PUT</code>, <code>DELETE</code>, <code>OPTIONS</code>, <code>PATCH</code> and
+  <code>HEAD</code>, any header, and caches a preflight for 3600 seconds. Matching is exact:
+  <code>https://satistic.tech</code> and <code>https://www.satistic.tech</code> are different
+  origins, and the split does not trim spaces, so write the list with commas only. A frontend
+  preview deployment has its own origin, which is not on the list, so previews can load pages but
+  their API calls to production are blocked. Test API changes locally, not on previews.
+</p>
+
+<h3 id="s15-6"><span class="num">15.6</span><span>Changing the database</span></h3>
+
+<p>
+  There is no migration runner. Schema lives in SQL files under <code>backend/database/</code>, and
+  a change reaches production when someone pastes it into the Supabase SQL Editor for the
+  production project. <code>CONTRIBUTING.md</code> sets the rule: a schema change is a new SQL file,
+  and the same change is folded into <code>reset.sql</code> so a fresh project gets the whole schema
+  in one run. Every new table gets RLS enabled and policies, even though the backend uses the
+  service-role key.
+</p>
+
+<p>Order matters because the two sides deploy separately:</p>
+
+<ol>
+  <li>Write the change additively: <code>CREATE TABLE IF NOT EXISTS</code>, <code>ADD COLUMN</code> with a default, and <code>DROP POLICY IF EXISTS</code> before <code>CREATE POLICY</code>, so the file can be rerun.</li>
+  <li>Run it on a development project and exercise the code against it.</li>
+  <li>Run it on production <i>before</i> merging code that reads the new column or table.</li>
+  <li>Merge. The new backend deploys against a schema that already fits it.</li>
+  <li>Remove old columns only in a later change, after no deployed code reads them.</li>
+</ol>
+
+<p>
+  A new project gets the schema from two files, run in order: <code>reset.sql</code>, then
+  <code>add_materials.sql</code>, which creates <code>materials</code> and
+  <code>custom_questions</code>. Never run <code>reset.sql</code> on production. It drops the core tables and deletes every user in
+  <code>auth.users</code>. <a href="#ch13">Chapter 13</a> lists the tables and policies.
+</p>
+
+<h3 id="s15-7"><span class="num">15.7</span><span>Search engines</span></h3>
+
+<p>
+  Three files in the frontend describe the site to crawlers, and all of them build URLs from
+  <code>SITE_URL</code> in <code>frontend/lib/site.ts</code>:
+</p>
+
+<ul>
+  <li><code>frontend/app/sitemap.ts</code> lists four public URLs: the home page, <code>/developer</code>, <code>/signup</code> and <code>/login</code>, with <code>lastModified</code> set to build time.</li>
+  <li><code>frontend/app/robots.ts</code> allows <code>/</code>, disallows <code>/dashboard</code>, <code>/games</code>, <code>/learn</code>, <code>/materials</code>, <code>/mock</code>, <code>/profile</code> and <code>/stats</code>, and points at <code>/sitemap.xml</code>.</li>
+  <li><code>frontend/app/layout.tsx</code> sets <code>metadataBase</code>, the title template <code>%s | SATistics</code>, the description and application name from <code>lib/site.ts</code>, and renders JSON-LD through the <code>jsonLd</code> helper, which escapes <code>&lt;</code> so the data cannot close the script tag.</li>
+</ul>
+
+<p>
+  The robots disallow list matches <code>protectedPrefixes</code> in
+  <code>frontend/middleware.ts</code> route for route. Keep the two lists in step when you add a
+  signed-in route. If you run your own copy on another domain, <code>SITE_URL</code> is the one
+  value to change.
+</p>
+
+<h3 id="s15-8"><span class="num">15.8</span><span>Rolling back</span></h3>
+
+<p>
+  Every deployment Vercel has built stays available. To undo a bad release, open the project's
+  Deployments tab, find the last good production deployment, and use Instant Rollback (or
+  "Promote to Production"). The CLI does the same with <code>vercel rollback</code> from a directory
+  linked to the project. The switch is immediate because nothing is rebuilt.
+</p>
+
+<p>Three things to keep in mind:</p>
+
+<ul>
+  <li><b>The projects roll back separately.</b> If a change touched both the API and the client, decide whether the old frontend works with the new backend before rolling back only one.</li>
+  <li><b>An instant rollback keeps the old build's inlined values.</b> A frontend deployment carries the <code>NEXT_PUBLIC_API_URL</code> it was built with.</li>
+  <li><b>The database does not roll back.</b> Nothing reverses a SQL change. This is why schema changes are additive and run first.</li>
+</ul>
+
+<p>
+  After a rollback, fix forward on a branch: <code>git revert</code> the bad commit in a pull
+  request, so <code>main</code> matches what is serving again and the next push does not reintroduce
+  the bug.
+</p>
+
+<h3 id="s15-9"><span class="num">15.9</span><span>The other deploy files</span></h3>
+
+<p>
+  <code>backend/</code> carries four configurations for hosts other than Vercel. None is used by
+  the live site; they are alternatives for self-hosting and leftovers from before the move to
+  Vercel. <code>.vercelignore</code> keeps them out of the Vercel upload.
+</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>File</th><th>What it does</th><th>Notes</th></tr></thead>
+<tbody>
+<tr><td><code>Dockerfile</code></td><td><code>python:3.11-slim</code>, installs <code>gcc</code> and the requirements, copies <code>src/</code> and <code>database/</code>, runs <code>uvicorn src.main:app</code> on port 8000</td><td>The most portable option. The port is fixed at 8000 and does not read <code>PORT</code>.</td></tr>
+<tr><td><code>fly.toml</code></td><td>App <code>nyuhacks-arcade-api</code> in region <code>iad</code>, uvicorn on 8080, machines stop when idle</td><td>Uses the hackathon app name.</td></tr>
+<tr><td><code>railway.json</code></td><td>Nixpacks build, <code>uvicorn src.main:app --host 0.0.0.0 --port $PORT</code>, restart on failure up to 10 times</td><td>The placeholder rewrite in <code>frontend/vercel.json</code> dates from this setup.</td></tr>
+<tr><td><code>render.yaml</code></td><td>Free web service <code>nyuhacks-arcade-api</code> in <code>oregon</code>, same start command, declares <code>SUPABASE_URL</code> and <code>SUPABASE_SERVICE_ROLE_KEY</code></td><td>Lists only two of the variables; add the rest by hand.</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  On any of them, set the same backend variables as in <a href="#s15-4">15.4</a> and point
+  <code>NEXT_PUBLIC_API_URL</code> at the new host.
+</p>
+
+<h3 id="s15-10"><span class="num">15.10</span><span>Operations checklist</span></h3>
+
+<p>Run this after a deploy that changes configuration, domains, dependencies or schema.</p>
+
+<ol>
+  <li><code>curl https://api.satistic.tech/api/health/</code> returns <code>"status":"healthy"</code>.</li>
+  <li><code>curl https://api.satistic.tech/api/health/supabase</code> returns <code>"supabase":"connected"</code>. If it says unhealthy, read the <code>error</code> field: a missing table means SQL was not run, an auth error means a wrong key.</li>
+  <li>A CORS preflight from the site origin succeeds:
+<pre>curl -si -X OPTIONS https://api.satistic.tech/api/auth/login \
+  -H "Origin: https://www.satistic.tech" \
+  -H "Access-Control-Request-Method: POST" | grep -i access-control-allow-origin</pre></li>
+  <li>Load <code>https://www.satistic.tech</code>, log in, and check in the browser's network tab that requests go to <code>api.satistic.tech</code>, not <code>localhost</code>.</li>
+  <li>Play one round and confirm it appears on <code>/stats</code>.</li>
+  <li>Open one lesson and confirm videos load.</li>
+  <li><code>https://www.satistic.tech/sitemap.xml</code> and <code>/robots.txt</code> show the production host.</li>
+  <li>In the backend project's runtime logs, look for <code>Unhandled exception</code> lines, which <code>global_exception_handler</code> prints with a traceback before returning a generic 500.</li>
+</ol>
+
+<div class="note caution"><b>What a green deployment does not tell you</b>
+Vercel marks a deployment ready when it builds. It does not check that the environment variables
+are present, that the API URL was right at build time, or that the database has the tables the code
+queries. Each of those fails only at request time, in a user's browser. The checklist above is how
+you find out first.
+</div>
+
+<h3 id="s15-11"><span class="num">15.11</span><span>Study notes</span></h3>
+<div class="study">
+<h4>Read in this order</h4>
+<ol>
+  <li><code>backend/api/index.py</code> and <code>backend/vercel.json</code>, the whole backend deploy.</li>
+  <li><code>backend/.vercelignore</code>, for what never ships.</li>
+  <li><code>backend/src/main.py</code>, the CORS block and the exception handler.</li>
+  <li><code>frontend/next.config.js</code> and <code>frontend/vercel.json</code>, including the stale rewrite.</li>
+  <li><code>frontend/lib/site.ts</code>, <code>app/sitemap.ts</code>, <code>app/robots.ts</code> and the metadata in <code>app/layout.tsx</code>.</li>
+  <li><code>.github/workflows/ci.yml</code>, for what runs beside each deploy.</li>
+  <li><code>backend/Dockerfile</code>, if you plan to host the API elsewhere.</li>
+</ol>
+<h4>Check yourself</h4>
+<p class="q">You change <code>NEXT_PUBLIC_API_URL</code> in the dashboard. Why does production still call the old API?</p>
+<p class="a">The value is inlined at build time. The frontend has to be redeployed.</p>
+<p class="q">Why does the site call <code>api.satistic.tech</code> and not the backend's <code>vercel.app</code> URL?</p>
+<p class="a">Deployment protection puts a Vercel login in front of generated URLs, so browser calls get a 401 page. The custom production domain is not protected.</p>
+<p class="q">Saving scores fails in production with a row-level security error. What is the likely cause?</p>
+<p class="a">Neither <code>SUPABASE_SERVICE_ROLE_KEY</code> nor <code>SUPABASE_SERVICE_KEY</code> is set, so the client fell back to the anon key.</p>
+<p class="q">A frontend preview deployment loads but every API call fails. Is the backend down?</p>
+<p class="a">Probably not. The preview's origin is not in <code>ALLOWED_ORIGINS</code>, so CORS blocks it.</p>
+<p class="q">You rolled back the backend after a release that added a column. What did not roll back?</p>
+<p class="a">The database. SQL changes are not reversed, which is why they must be additive and applied before the code that needs them.</p>
+</div>
+</section>

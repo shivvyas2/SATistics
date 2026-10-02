@@ -1,0 +1,36 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="2560" viewBox="0 0 1600 2560">
+  <!-- Kindle cover, 1600 by 2560. SATistics palette from frontend/tailwind.config.js:
+       paper #ECEAE4, ink #17171C, cobalt #3A33E8, lime #D4F34A, coral #FF6B4A.
+       The figure is the logo mark: four answer bubbles arranged like a gamepad's face buttons,
+       the correct one filled in. -->
+  <rect width="1600" height="2560" fill="#ECEAE4"/>
+  <rect x="80" y="80" width="1440" height="2400" rx="64" fill="none" stroke="#17171C" stroke-width="8"/>
+
+  <!-- Logo mark, large, with a hard offset shadow (the brutalist signature) -->
+  <rect x="408" y="588" width="840" height="840" rx="250" fill="#3A33E8"/>
+  <g transform="translate(800 980)">
+    <rect x="-420" y="-420" width="840" height="840" rx="250" fill="#17171C"/>
+    <circle cx="0" cy="-206" r="122" fill="#D4F34A"/>
+    <circle cx="-206" cy="0" r="98" fill="none" stroke="#FFFFFF" stroke-width="58"/>
+    <circle cx="206" cy="0" r="98" fill="none" stroke="#FFFFFF" stroke-width="58"/>
+    <circle cx="0" cy="206" r="98" fill="none" stroke="#FFFFFF" stroke-width="58"/>
+  </g>
+
+  <!-- Answer row -->
+  <g font-family="Helvetica, Arial, sans-serif" font-weight="800" font-size="64" text-anchor="middle">
+    <circle cx="560" cy="1640" r="70" fill="#FFFFFF" stroke="#17171C" stroke-width="10"/>
+    <text x="560" y="1662" fill="#17171C">A</text>
+    <circle cx="720" cy="1640" r="70" fill="#3A33E8" stroke="#17171C" stroke-width="10"/>
+    <text x="720" y="1662" fill="#FFFFFF">B</text>
+    <circle cx="880" cy="1640" r="70" fill="#FFFFFF" stroke="#17171C" stroke-width="10"/>
+    <text x="880" y="1662" fill="#17171C">C</text>
+    <circle cx="1040" cy="1640" r="70" fill="#FFFFFF" stroke="#17171C" stroke-width="10"/>
+    <text x="1040" y="1662" fill="#17171C">D</text>
+  </g>
+
+  <g font-family="Helvetica, Arial, sans-serif" fill="#17171C" text-anchor="middle">
+    <text x="800" y="1960" font-size="150" font-weight="800" letter-spacing="-4">SATistics</text>
+    <text x="800" y="2080" font-size="76" font-style="italic" font-family="Georgia, serif">Engineering Handbook</text>
+    <text x="800" y="2330" font-size="44" font-weight="600" fill="#3A33E8">Shiv Vyas and contributors · Revision A</text>
+  </g>
+</svg>

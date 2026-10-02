@@ -1,0 +1,362 @@
+<section class="chapter" id="ch01" data-hue="system">
+<p class="chapter-kicker">Chapter one</p>
+<h2><span class="num">1</span><span>What SATistics is</span></h2>
+
+<p class="lede">
+  SATistics is a practice site for the SAT and the GRE that hides real-format exam questions inside
+  arcade games. You shoot the zombie wearing the right answer, run through the right gate, pop the
+  right balloon. Around the games sit short concept lessons with videos, a timed mock exam, a
+  profile with a target score and a test date, and a page for turning your own study material into
+  questions. The one idea that shapes it is that every answer you give is recorded by topic, and the
+  topics you miss are the ones that come back.
+</p>
+
+<p>
+  This chapter describes the product as the code on <code>main</code> builds it. It is the map a new
+  contributor needs before reading any code: who the site is for, what a session looks like, which
+  exams and sections it covers, which screen lives at which route, and what it deliberately does not
+  do. <a href="#ch02">Chapter 2</a> takes the same product apart into its frontend, backend and
+  database. The repository still carries an earlier name in places: the FastAPI title in
+  <code>backend/src/main.py</code> is "NYU Hacks Arcade API", and the root <code>README.md</code> is
+  headed "NYU Hacks Arcade". The product name, set in <code>frontend/lib/site.ts</code> as
+  <code>SITE_NAME</code>, is SATistics, served at <code>https://www.satistic.tech</code>.
+</p>
+
+<h3 id="s1-1"><span class="num">1.1</span><span>The product in one paragraph</span></h3>
+
+<p>
+  <code>SITE_DESCRIPTION</code> in <code>frontend/lib/site.ts</code> says it plainly: "Train for the
+  SAT and GRE with arcade games built on real-format questions, concept lessons and videos." Each
+  part of that sentence is a feature with its own code.
+</p>
+
+<ul>
+  <li><b>Arcade games.</b> Six playable games, listed in <code>frontend/lib/games.ts</code>: Zombie
+  Apocalypse, Whack-A-Mole, Balloon Pop (id <code>carnival</code>), Subway Surfers, Squid Game and
+  Pac-Man. Each one asks exam questions as part of play, and the way you answer is the game's own
+  mechanic. <code>GAME_META</code> in <code>frontend/lib/gameMeta.ts</code> records that mechanic
+  for each game as <code>answerBy</code>, for example "Switch lanes and run through the right gate".</li>
+  <li><b>Real-format questions.</b> SAT questions come first from the College Board Educator
+  Question Bank, fetched live by <code>CollegeBoardSource</code> in
+  <code>backend/src/services/question_sources.py</code>. Anything missing, and all GRE questions,
+  come from an LLM that is handed web pages of practice questions to extract from and writes the
+  rest in the official style. If the backend cannot answer at all, the browser falls back to an
+  offline set of 36 questions in <code>frontend/lib/questionBank.ts</code>.</li>
+  <li><b>Concept lessons and videos.</b> Fifteen lessons, one per course topic, written as static
+  content in <code>frontend/lib/lessons.ts</code>. Each has key ideas, a worked example, the traps
+  that cost points and a one-question quick check. Beside each lesson the backend finds YouTube
+  videos for the topic.</li>
+  <li><b>Profiles with goals.</b> A display name, a username, the exam, a target score, a test date,
+  daily minutes and an avatar colour, stored in the <code>profiles</code> table.</li>
+  <li><b>A dashboard</b> that greets you, counts down to your test date, suggests a game and a focus
+  topic, and shows your recent sessions.</li>
+  <li><b>Mock exams.</b> A timed section in test-day format at <code>/mock</code>, with no feedback
+  until the end and a score report afterwards.</li>
+  <li><b>Your own material.</b> Upload a PDF or text file, or paste text, and the backend pulls the
+  multiple-choice questions out of it (and can write new ones from it). Questions you approve are
+  mixed into your games.</li>
+</ul>
+
+<h3 id="s1-2"><span class="num">1.2</span><span>Who it is for</span></h3>
+
+<p>
+  The person the code is written for is a student preparing for one of two exams, who finds a
+  question bank dull and will play a game for longer than they would sit through a worksheet. The
+  landing page, <code>frontend/app/page.tsx</code>, makes the pitch: "Every zombie, mole and balloon
+  carries a real-format exam question. Answer right to win, and your weak topics come back until
+  they aren't."
+</p>
+
+<p>
+  Two assumptions follow from that. First, the student is studying for a specific exam on a
+  specific date, so signup asks for both and the dashboard counts down to the date. Second, the
+  student will not configure much. Exam, section and question count are remembered per browser in
+  the <code>exam_prefs</code> localStorage key, defaulting to SAT, quant and ten questions
+  (<code>DEFAULT_PREFS</code> in <code>frontend/lib/exam.ts</code>), and every route into a game
+  (the dashboard's course cards, a lesson's practice button) sets those preferences for you before
+  it navigates.
+</p>
+
+<p>
+  The site is free. The structured data in <code>frontend/app/layout.tsx</code> declares an
+  <code>Offer</code> with price <code>0</code>, and there is no payment code anywhere in the repo.
+</p>
+
+<h3 id="s1-3"><span class="num">1.3</span><span>The core loop: learn, play, review</span></h3>
+
+<p>
+  A session goes round a loop. You read a lesson on a topic. You play a game whose questions lean
+  toward the topics you are weak in. At the end of the game you review every question with your
+  answer and the explanation. The game's analytics go to the backend, which updates your weak and
+  strong topics, and those topics decide what the dashboard suggests you learn next and which
+  questions the next game leans on.
+</p>
+
+<figure>
+<svg class="diagram" viewBox="0 0 860 340" role="img" aria-label="A loop of three stages. Learn (a lesson at /learn/exam/topic) leads to Play (a game at /games/id), which leads to Review (the end-of-game review list), which leads back to Learn. From Play, the game posts its analytics to POST /api/games/save-score, which updates user_stats weak_topics and strong_topics. Those topics feed the dashboard's focus topic, which points back at Learn, and the question agent, which weights the next game's questions.">
+  <defs>
+    <marker id="ch01a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head" points="0,0 10,5 0,10"/></marker>
+    <marker id="ch01b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head-hot" points="0,0 10,5 0,10"/></marker>
+  </defs>
+  <text class="lbl-sm" x="20" y="24">IN THE BROWSER</text>
+  <text class="lbl-sm" x="600" y="24">ON THE BACKEND</text>
+
+  <rect class="box" x="40" y="50" width="180" height="60" rx="10"/>
+  <text class="lbl" x="130" y="76" text-anchor="middle">Learn</text>
+  <text class="lbl-sm" x="130" y="96" text-anchor="middle">/learn/[exam]/[topic]</text>
+
+  <rect class="box-hot" x="320" y="50" width="180" height="60" rx="10"/>
+  <text class="lbl" x="410" y="76" text-anchor="middle">Play</text>
+  <text class="lbl-hot" x="410" y="96" text-anchor="middle">/games/[gameId]</text>
+
+  <rect class="box" x="320" y="200" width="180" height="60" rx="10"/>
+  <text class="lbl" x="410" y="226" text-anchor="middle">Review</text>
+  <text class="lbl-sm" x="410" y="246" text-anchor="middle">GameOverModal, ReviewList</text>
+
+  <rect class="box-alt" x="40" y="200" width="180" height="60" rx="10"/>
+  <text class="lbl" x="130" y="226" text-anchor="middle">Dashboard</text>
+  <text class="lbl-sm" x="130" y="246" text-anchor="middle">focus topic, next game</text>
+
+  <rect class="box" x="600" y="50" width="220" height="60" rx="10"/>
+  <text class="lbl" x="710" y="76" text-anchor="middle">POST /api/games/save-score</text>
+  <text class="lbl-sm" x="710" y="96" text-anchor="middle">game_sessions, question_attempts</text>
+
+  <rect class="box" x="600" y="200" width="220" height="60" rx="10"/>
+  <text class="lbl" x="710" y="226" text-anchor="middle">user_stats</text>
+  <text class="lbl-sm" x="710" y="246" text-anchor="middle">weak_topics, strong_topics</text>
+
+  <path class="flow-hot" d="M220 80 L 314 80" marker-end="url(#ch01b)"/>
+  <path class="flow-hot" d="M410 110 L 410 194" marker-end="url(#ch01b)"/>
+  <path class="flow" d="M320 230 L 226 230" marker-end="url(#ch01a)"/>
+  <path class="flow" d="M130 200 L 130 116" marker-end="url(#ch01a)"/>
+  <path class="flow" d="M500 80 L 594 80" marker-end="url(#ch01a)"/>
+  <text class="lbl-sm" x="512" y="72">analytics</text>
+  <path class="flow" d="M710 110 L 710 194" marker-end="url(#ch01a)"/>
+  <path class="flow-dash" d="M710 260 L 710 300 L 130 300 L 130 266" marker-end="url(#ch01a)"/>
+  <text class="lbl-sm" x="300" y="318">GET /api/stats/user: weak topics shown as the focus topic</text>
+  <path class="flow-dash" d="M600 240 L 560 240 L 560 130 L 506 100" marker-end="url(#ch01a)"/>
+  <text class="lbl-sm" x="566" y="160">agent weights</text>
+  <text class="lbl-sm" x="566" y="174">next questions</text>
+</svg>
+<figcaption>
+  The learning loop. The red path is what the student does; the black paths are what the code does
+  with it. Weak topics are written once per game and read twice: by the dashboard and by the
+  question agent.
+</figcaption>
+</figure>
+
+<p>
+  Each arrow is real code. A lesson's practice button calls <code>setExamPrefs</code> with the
+  lesson's exam and section and pushes <code>/games</code>. Each game container fetches questions
+  through <code>fetchAIQuestions</code> or <code>fetchQuestionsWithCache</code> in
+  <code>frontend/lib/api/questions.ts</code>, and when the game ends it calls
+  <code>apiClient.saveScore</code>. <code>GameService._update_user_stats</code> in
+  <code>backend/src/services/game_service.py</code> marks a topic weak below 50 percent accuracy in
+  that game and strong at 80 percent or above, and moves topics between the two lists as the student
+  improves or slips. The dashboard reads <code>weak_topics</code>, keeps the ones in the current
+  exam's courses, and offers the first as the focus. The question agent reads the same table and
+  asks for about half of each difficulty band from weak topics.
+</p>
+
+<p>
+  Review happens inside the game screen. <code>components/exam/ReviewList.tsx</code> lists every
+  question with the player's answer; wrong answers keep the right one hidden until the player asks,
+  "so the review can be used to retry". During play, <code>frontend/lib/hints.ts</code> offers a
+  strategy hint matched to the question's skill or wording, and can rule out a wrong choice without
+  naming the right one.
+</p>
+
+<h3 id="s1-4"><span class="num">1.4</span><span>Exams, sections and courses</span></h3>
+
+<p>
+  Two exams, two sections each, one course per section. The types are in
+  <code>frontend/lib/exam.ts</code>: <code>ExamId</code> is <code>'sat' | 'gre'</code> and
+  <code>SectionId</code> is <code>'quant' | 'verbal'</code>. The section names and pacing come from
+  the <code>EXAMS</code> table; the courses and their topics come from <code>COURSES</code> in
+  <code>frontend/lib/courses.ts</code>.
+</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Course</th><th>Ids</th><th>Real pacing</th><th class="num-cell">Seconds per question</th><th>Topics</th></tr></thead>
+<tbody>
+<tr><td>SAT Math</td><td><code>sat</code>, <code>quant</code></td><td>22 questions in 35 min</td><td class="num-cell">95</td><td>Algebra; Advanced Math; Problem-Solving and Data Analysis; Geometry and Trigonometry</td></tr>
+<tr><td>SAT Reading &amp; Writing</td><td><code>sat</code>, <code>verbal</code></td><td>27 questions in 32 min</td><td class="num-cell">71</td><td>Information and Ideas; Craft and Structure; Expression of Ideas; Standard English Conventions</td></tr>
+<tr><td>GRE Quant</td><td><code>gre</code>, <code>quant</code></td><td>12 questions in 21 min</td><td class="num-cell">105</td><td>Arithmetic; Algebra; Geometry; Data Analysis</td></tr>
+<tr><td>GRE Verbal</td><td><code>gre</code>, <code>verbal</code></td><td>12 questions in 18 min</td><td class="num-cell">90</td><td>Text Completion; Sentence Equivalence; Reading Comprehension</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  Fifteen topics in all, and each has exactly one lesson. The topic names are not decoration. The
+  comment on <code>Course.topics</code> says they match "the topic names the question bank uses",
+  which is what lets a weak topic recorded from a College Board question be matched to a course and
+  to a lesson.
+</p>
+
+<p>
+  Games also have a pace. <code>gamePace</code> returns <code>'deep'</code> for
+  <code>squid-game</code> and <code>'quick'</code> for everything else. Quick games ask for short
+  questions (the backend drops long ones with <code>is_quick_question</code>, which caps the text at
+  220 characters for quant and 420 for verbal), and the offline bank skips its hard questions for
+  them. Squid Game, where the player freezes on red light and has time to think, takes passages and
+  multi-step problems, with a calculator for math.
+</p>
+
+<p>
+  Profile score targets use the real scales: <code>SCORE_RANGES</code> in
+  <code>frontend/lib/profile.ts</code> sets 400 to 1600 in steps of 10 for the SAT and 260 to 340
+  for the GRE (verbal plus quant).
+</p>
+
+<h3 id="s1-5"><span class="num">1.5</span><span>A tour of the screens</span></h3>
+
+<p>
+  All pages live under <code>frontend/app/</code> in the Next.js App Router. Signed-in pages share
+  <code>components/DashboardLayout.tsx</code>, whose sidebar <code>NAV</code> lists Home, Learn,
+  Games, Mock exam, My material, Statistics and Profile, and shows the avatar, the username and the
+  days left to the test.
+</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Route</th><th>File</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>/</code></td><td><code>app/page.tsx</code></td><td>Public landing page: hero, a sample question from the offline bank (<code>HeroQuestion</code>), courses, how it works, the game covers.</td></tr>
+<tr><td><code>/signup</code></td><td><code>app/signup/page.tsx</code></td><td>Multi-step signup: email and password, then the profile. Accepts <code>?exam=gre</code>.</td></tr>
+<tr><td><code>/login</code></td><td><code>app/login/page.tsx</code></td><td>Login; saves a pending profile on first login; honours <code>?redirect=</code>.</td></tr>
+<tr><td><code>/dashboard</code></td><td><code>app/dashboard/page.tsx</code></td><td>Greeting, countdown, the exam's courses, a suggested game, a focus topic with a video, recent sessions.</td></tr>
+<tr><td><code>/learn</code></td><td><code>app/learn/page.tsx</code></td><td>Every course and its lessons, with learned ticks and your weak and strong topics.</td></tr>
+<tr><td><code>/learn/[exam]/[topic]</code></td><td><code>app/learn/[exam]/[topic]/page.tsx</code></td><td>One lesson: key ideas, worked example, traps, quick check, videos, "mark as learned".</td></tr>
+<tr><td><code>/games</code></td><td><code>app/games/page.tsx</code></td><td>"Explore": search and filter by genre, with your plays per game.</td></tr>
+<tr><td><code>/games/[gameId]/select</code></td><td><code>app/games/[gameId]/select/page.tsx</code></td><td>Choose exam, section and question count (6, 10 or 20) before playing.</td></tr>
+<tr><td><code>/games/[gameId]</code></td><td><code>app/games/[gameId]/page.tsx</code></td><td>The game itself, full screen, through <code>GameContainer</code>.</td></tr>
+<tr><td><code>/mock</code></td><td><code>app/mock/page.tsx</code></td><td>Timed mock exam: quick check (10), one module, or a full section (two modules).</td></tr>
+<tr><td><code>/materials</code></td><td><code>app/materials/page.tsx</code></td><td>Upload material, review the extracted questions, approve them for games.</td></tr>
+<tr><td><code>/stats</code></td><td><code>app/stats/page.tsx</code></td><td>Accuracy over recent sessions, totals, results by game, recent sessions.</td></tr>
+<tr><td><code>/profile</code></td><td><code>app/profile/page.tsx</code></td><td>Edit the profile; with <code>?setup=1</code> it is the "finish your profile" step.</td></tr>
+<tr><td><code>/developer</code></td><td><code>app/developer/page.tsx</code></td><td>Public page about the site's author and what was built.</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  <code>frontend/middleware.ts</code> sends anyone without an <code>auth_token</code> cookie from
+  the seven app prefixes (<code>/dashboard</code>, <code>/games</code>, <code>/learn</code>,
+  <code>/materials</code>, <code>/mock</code>, <code>/profile</code>, <code>/stats</code>) to
+  <code>/login?redirect=...</code>, and sends a signed-in visitor away from <code>/login</code> and
+  <code>/signup</code> to <code>/dashboard</code>. So the public surface is the landing page, the
+  developer page, signup and login, which is exactly what <code>app/sitemap.ts</code> lists.
+</p>
+
+<h4>The mock exam</h4>
+
+<p>
+  The mock exam is the one place the product drops the game. <code>MODULE_QUESTIONS</code> in
+  <code>app/mock/page.tsx</code> holds the real module sizes (SAT 22 and 27, GRE 12 and 12). The
+  clock is the question count times the section's <code>secondsPerQuestion</code>. Questions come
+  from the same <code>fetchAIQuestions</code> the games use. When it finishes, the result is saved
+  through the same <code>saveScore</code> call with the game id <code>mock-exam</code>, "so it feeds
+  statistics and weak topics". The results page gives a rough scaled estimate using
+  <code>SCORE_RANGE</code>: 200 to 800 per SAT section, 130 to 170 per GRE section.
+</p>
+
+<h4>Your own material</h4>
+
+<p>
+  The materials page posts a file (4 MB at most, enforced on both sides as
+  <code>MAX_FILE_BYTES</code> and <code>MAX_UPLOAD_BYTES</code>) or pasted text to
+  <code>POST /api/materials</code>. The backend parses numbered questions with lettered choices and
+  an answer line or answer key. If the parser finds nothing, or the student ticked the option to
+  write questions, the LLM reads the material too. Every question starts as <code>pending</code>; a
+  question with no answer shows "No answer was found. Pick the correct one". Only
+  <code>approved</code> questions reach games, where they can make up to half of a set.
+</p>
+
+<h3 id="s1-6"><span class="num">1.6</span><span>What happens on first visit</span></h3>
+
+<p>
+  A new visitor lands on <code>/</code>, clicks "Start free" and goes to <code>/signup</code>. The
+  form asks for an email and a password of at least six characters, then the profile.
+  <code>createAccount</code> calls <code>apiClient.signup</code> and, before anything else, copies
+  the chosen exam into the saved preferences, so the first game is on the right exam.
+</p>
+
+<p>
+  What happens next depends on a Supabase setting. If email confirmation is off, signup returns an
+  access token, the profile is saved at once with <code>PUT /api/profile</code>, and the student
+  lands on <code>/dashboard</code>. If it is on, there is no session yet, so the profile cannot be
+  saved. <code>savePendingProfile</code> parks it in localStorage under
+  <code>pending_profile</code>, keyed to the lower-cased email, and the page tells the student to
+  confirm their email. On their first login, <code>takePendingProfile</code> finds it, the login
+  page saves it, and the key is removed. If saving fails either way (a taken username returns 409),
+  the student is sent to <code>/profile?setup=1</code> with the error as a notice, rather than
+  failing the signup.
+</p>
+
+<h3 id="s1-7"><span class="num">1.7</span><span>What is out of scope</span></h3>
+
+<p>
+  Knowing what the product does not do saves a contributor from looking for it.
+</p>
+
+<ul>
+  <li><b>No other exams.</b> <code>ExamId</code> is two values and the backend's queries validate
+  <code>^(sat|gre)$</code>. There is no ACT, LSAT or GMAT.</li>
+  <li><b>No free-response or figure questions.</b> <code>CollegeBoardSource._normalize</code>
+  keeps only <code>mcq</code> items and drops any whose stem, stimulus or options contain a figure.
+  The LLM prompt says "Skip anything that needs a figure, chart, or image". GRE numeric entry and
+  multi-select types are not produced.</li>
+  <li><b>No official scoring.</b> The mock exam's scaled score is a linear estimate and the page
+  calls it rough. There is no adaptive second module.</li>
+  <li><b>No social features.</b> Usernames are unique, but nothing shows another user's profile,
+  scores or a leaderboard. High scores are per browser, in <code>arcade_hi_&lt;gameId&gt;</code>
+  localStorage keys.</li>
+  <li><b>No lesson authoring.</b> Lessons are TypeScript constants. There is no editor, no CMS and
+  no LLM in the lesson path.</li>
+  <li><b>No synced lesson progress.</b> "Mark as learned" is stored in the <code>learned_lessons</code>
+  localStorage key. It does not follow the student to another browser.</li>
+  <li><b>No payments, no admin console, no email of its own.</b> Confirmation emails, if enabled,
+  are sent by Supabase Auth.</li>
+  <li><b>No mobile app.</b> The site supports touch in the games, but there is only the web
+  client.</li>
+</ul>
+
+<div class="note"><b>A game that exists but cannot be played</b>
+<code>frontend/games/mario/MarioGame.ts</code> and the <code>GameRenderer</code> that constructs
+it are still in the tree, and the README still lists Mario. But <code>mario</code> is not in
+<code>games</code> in <code>frontend/lib/games.ts</code>, so <code>/games/mario</code> returns
+<code>notFound()</code>. Treat it as dead code. <a href="#ch02">Chapter 2</a> lists the rest.</div>
+
+<h3 id="s1-8"><span class="num">1.8</span><span>Study notes</span></h3>
+<div class="study">
+<h4>Read in this order</h4>
+<ol>
+  <li><code>frontend/lib/site.ts</code>, the product's name and one-line description.</li>
+  <li><code>frontend/lib/exam.ts</code> and <code>frontend/lib/courses.ts</code>, the exams, sections, pacing and topics.</li>
+  <li><code>frontend/lib/games.ts</code> and <code>frontend/lib/gameMeta.ts</code>, the six games and how each one answers.</li>
+  <li><code>frontend/app/page.tsx</code>, the pitch as a student sees it.</li>
+  <li><code>frontend/components/DashboardLayout.tsx</code>, the navigation that ties the screens together.</li>
+  <li><code>frontend/app/dashboard/page.tsx</code>, how weak topics become a suggestion.</li>
+  <li><code>frontend/app/mock/page.tsx</code>, the one screen without a game.</li>
+  <li><code>frontend/middleware.ts</code>, which routes are public.</li>
+</ol>
+<h4>Check yourself</h4>
+<p class="q">A student finishes a mock exam with poor results on Geometry. Where will that show up?</p>
+<p class="a">The mock page calls <code>saveScore('mock-exam', ...)</code>, so the attempt lands in
+<code>game_sessions</code> and <code>question_attempts</code>, and <code>_update_user_stats</code>
+adds Geometry to <code>weak_topics</code> if accuracy was under 50 percent. The dashboard will offer
+it as the focus topic (if it is in the current exam's courses), and the question agent will lean on
+it in the next game.</p>
+<p class="q">Why must course topic names match the question bank's topic names?</p>
+<p class="a">Weak topics are recorded from each question's <code>topic</code>. The dashboard keeps
+only weak topics that appear in <code>COURSES</code>, and lessons are found by topic. A mismatch
+would record weak topics that no course or lesson can ever point to.</p>
+<p class="q">A student signs up with email confirmation on, then logs in from a different browser.
+What happens to the profile they filled in?</p>
+<p class="a">It is lost. The pending profile is in the first browser's localStorage under
+<code>pending_profile</code>. The second browser has no profile, so the sidebar shows "Profile not
+set up" and the student fills it in again at <code>/profile</code>.</p>
+<p class="q">Which game asks long reading passages, and why only that one?</p>
+<p class="a">Squid Game. <code>gamePace</code> marks it <code>deep</code> because the player stops
+moving on red light and has time to read. Every other game is <code>quick</code>, and long
+questions are filtered out for them.</p>
+</div>
+</section>

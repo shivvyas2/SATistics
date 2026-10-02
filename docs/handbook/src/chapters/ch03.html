@@ -1,0 +1,414 @@
+<section class="chapter" id="ch03" data-hue="setup">
+<p class="chapter-kicker">Chapter three</p>
+<h2><span class="num">3</span><span>Running it locally</span></h2>
+
+<p class="lede">
+  SATistics runs on a laptop as two processes and one hosted database: the Next.js dev server on
+  port 3000, the FastAPI server on port 8000, and a Supabase project you create for yourself.
+  Supabase is the only integration you must set up. Everything else (AI questions, lesson video
+  search) has a keyless fallback, so you can play every game and read every lesson before you
+  sign up for anything else.
+</p>
+
+<p>
+  This chapter walks from an empty machine to a working sign-up. It covers the tool versions the
+  code actually needs, the SQL that builds the database, every environment variable either app
+  reads, where to get each key, what still works when a key is missing, and the failures people
+  hit most often on the way. Two files are the short form of this chapter:
+  <code>backend/.env.example</code> and <code>frontend/.env.example</code>. Copy them, fill them
+  in, and come back here when something does not start.
+</p>
+
+<h3 id="s3-1"><span class="num">3.1</span><span>What runs where</span></h3>
+
+<p>
+  The browser only ever talks to the FastAPI server. The frontend does not hold any Supabase key
+  and never calls Supabase directly: sign-up, login, scores, profiles and uploaded material all go
+  through <code>frontend/lib/api/client.ts</code> to the backend, which talks to Supabase with the
+  service-role key. That is why the frontend needs exactly one variable and the backend needs the
+  rest.
+</p>
+
+<figure>
+<svg class="diagram" viewBox="0 0 860 300" role="img" aria-label="The browser calls the FastAPI server on port 8000. The server calls Supabase, which is required, and optionally OpenRouter, the public College Board question bank, and video search providers.">
+  <defs>
+    <marker id="ch03a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head" points="0,0 10,5 0,10"/></marker>
+    <marker id="ch03b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head-hot" points="0,0 10,5 0,10"/></marker>
+  </defs>
+  <text class="lbl-sm" x="20" y="20">YOUR MACHINE</text>
+  <text class="lbl-sm" x="520" y="20">HOSTED SERVICES</text>
+
+  <rect class="box" x="20" y="110" width="180" height="50" rx="8"/>
+  <text class="lbl" x="110" y="131" text-anchor="middle">Browser</text>
+  <text class="lbl-sm" x="110" y="149" text-anchor="middle">next dev on :3000</text>
+
+  <rect class="box-hot" x="270" y="110" width="180" height="50" rx="10"/>
+  <text class="lbl" x="360" y="131" text-anchor="middle">FastAPI</text>
+  <text class="lbl-hot" x="360" y="149" text-anchor="middle">src/main.py on :8000</text>
+
+  <rect class="box-hot" x="520" y="34" width="320" height="44" rx="10"/>
+  <text class="lbl" x="680" y="53" text-anchor="middle">Supabase Auth and Postgres</text>
+  <text class="lbl-hot" x="680" y="70" text-anchor="middle">required</text>
+
+  <rect class="box" x="520" y="94" width="320" height="44" rx="8"/>
+  <text class="lbl" x="680" y="113" text-anchor="middle">College Board question bank</text>
+  <text class="lbl-sm" x="680" y="130" text-anchor="middle">public, no key, SAT only</text>
+
+  <rect class="box" x="520" y="154" width="320" height="44" rx="8"/>
+  <text class="lbl" x="680" y="173" text-anchor="middle">OpenRouter</text>
+  <text class="lbl-sm" x="680" y="190" text-anchor="middle">optional: OPENROUTER_API_KEY</text>
+
+  <rect class="box" x="520" y="214" width="320" height="44" rx="8"/>
+  <text class="lbl" x="680" y="233" text-anchor="middle">YouTube, Serper, DuckDuckGo</text>
+  <text class="lbl-sm" x="680" y="250" text-anchor="middle">optional keys, keyless fallback</text>
+
+  <path class="flow-hot" d="M200 135 L 264 135" marker-end="url(#ch03b)"/>
+  <path class="flow-hot" d="M450 125 L 514 60" marker-end="url(#ch03b)"/>
+  <path class="flow" d="M450 132 L 514 118" marker-end="url(#ch03a)"/>
+  <path class="flow-dash" d="M450 140 L 514 176" marker-end="url(#ch03a)"/>
+  <path class="flow-dash" d="M450 150 L 514 234" marker-end="url(#ch03a)"/>
+
+  <text class="lbl-sm" x="20" y="288">The browser holds only NEXT_PUBLIC_API_URL. Every key lives in backend/.env.</text>
+</svg>
+<figcaption>
+  A local run. Solid lines are always used; dashed lines are used only when their key is set,
+  except DuckDuckGo, which needs none.
+</figcaption>
+</figure>
+
+<h3 id="s3-2"><span class="num">3.2</span><span>Prerequisites</span></h3>
+
+<p>
+  You need Node.js, Python 3, Git and a free Supabase account. The versions come from the code,
+  not from preference:
+</p>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Tool</th><th>Minimum</th><th>Why</th></tr></thead>
+<tbody>
+<tr><td>Node.js</td><td>18.17</td><td><code>frontend/package.json</code> pins <code>next</code> at <code>^14.2.5</code>, and Next 14.2 declares <code>"node": "&gt;=18.17.0"</code> in its engines field. CI builds on Node 22, and any current LTS release works.</td></tr>
+<tr><td>Python</td><td>3.9</td><td>The backend code uses <code>typing</code> generics (<code>List</code>, <code>Dict</code>, <code>Optional</code>) and no 3.10 syntax, and runs on 3.9. The repository's <code>README.md</code> says 3.9 or newer. <code>backend/Dockerfile</code> builds on <code>python:3.11-slim</code>, which is a safe choice for a new virtual environment. CI installs the requirements on 3.12.</td></tr>
+<tr><td>npm</td><td>bundled with Node</td><td>The frontend has a <code>package-lock.json</code>; use <code>npm install</code>, not another package manager.</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  The shell scripts at the root and in <code>backend/</code> mention "Python 3.8 or higher". Trust
+  the table above; the scripts are older than the current dependency list. Section
+  <a href="#s3-8">3.8</a> says which of those scripts still work.
+</p>
+
+<h3 id="s3-3"><span class="num">3.3</span><span>The database</span></h3>
+
+<p>
+  Create a new project at supabase.com. Any region and the free tier are fine. When it is ready,
+  open the SQL Editor and run the files in <code>backend/database/</code>. There are five, and they
+  are not a numbered migration series. Two of them are the ones you run on a fresh project:
+</p>
+
+<pre class="tree">backend/database/
+reset.sql                     drops and recreates game_sessions, question_attempts,
+                              user_stats, profiles, the set_updated_at() trigger
+                              function, indexes and RLS policies; deletes every auth user
+add_materials.sql             materials and custom_questions, their indexes and RLS
+add_profiles.sql              profiles only (already included in reset.sql)
+add_user_id_to_attempts.sql   adds question_attempts.user_id to an old schema.sql database
+schema.sql                    the original three tables, without user_id or profiles</pre>
+
+<p>
+  For a new project, run <code>reset.sql</code> and then <code>add_materials.sql</code>, in that
+  order. <code>reset.sql</code> is the complete current schema for the core tables, but it does not
+  create the two tables behind "My material" uploads, and the materials pages fail with a missing
+  table error until <code>add_materials.sql</code> has run. The other three files exist for
+  databases created before <code>reset.sql</code> did; you do not need them on a fresh project.
+  <a href="#ch13">Chapter 13</a> describes every table and policy.
+</p>
+
+<div class="note caution"><b>reset.sql deletes all users</b>
+The file starts with <code>DROP TABLE IF EXISTS ... CASCADE</code> for every core table and then
+runs <code>DELETE FROM auth.users;</code>. Every account in the project, and through the
+<code>ON DELETE CASCADE</code> foreign keys every row that belongs to one, is gone. Run it only on a
+new project or a development project you are happy to wipe. Never run it against production, and
+never paste it into a SQL Editor tab without checking which project is selected.
+</div>
+
+<p>
+  Unlike <code>reset.sql</code>, <code>add_materials.sql</code> is additive and safe to run again: it uses
+  <code>CREATE TABLE IF NOT EXISTS</code> and <code>CREATE INDEX IF NOT EXISTS</code>, and drops each policy
+  before creating it.
+</p>
+
+<p>
+  One Auth setting matters for local work. Supabase enables "Confirm email" by default. With it on,
+  <code>POST /api/auth/signup</code> creates the user but returns no session, and the backend
+  answers "Please check your email to verify your account". For a development project, turn it
+  off under Authentication, Sign In / Providers, Email, so a sign-up logs you straight in.
+</p>
+
+<h3 id="s3-4"><span class="num">3.4</span><span>Environment variables</span></h3>
+
+<p>
+  The backend loads <code>backend/.env</code> with <code>python-dotenv</code>. Three modules do it
+  independently: <code>src/main.py</code>, <code>src/config.py</code> and
+  <code>src/utils/database.py</code> each look for <code>.env</code> one level above
+  <code>src/</code>. The frontend reads <code>frontend/.env.local</code>, which Next.js loads
+  automatically. Both real files are ignored by the root <code>.gitignore</code>; the
+  <code>.env.example</code> files are explicitly un-ignored so they stay in git.
+</p>
+
+<pre>cp backend/.env.example backend/.env
+cp frontend/.env.example frontend/.env.local</pre>
+
+<p>This is every variable the code reads, found by searching for <code>os.getenv</code> and <code>process.env</code>.</p>
+
+<h4>Backend</h4>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Variable</th><th>Required</th><th>Read in</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>SUPABASE_URL</code></td><td>yes</td><td><code>src/utils/database.py</code>, <code>src/config.py</code></td><td>The project URL. <code>NEXT_PUBLIC_SUPABASE_URL</code> is read as a fallback.</td></tr>
+<tr><td><code>SUPABASE_SERVICE_ROLE_KEY</code></td><td>yes</td><td><code>src/utils/database.py</code>, <code>src/config.py</code></td><td>The key the shared Supabase client uses for every query and auth call. It bypasses Row Level Security, which the backend relies on because it filters by user id itself. <code>SUPABASE_SERVICE_KEY</code> is read as a fallback.</td></tr>
+<tr><td><code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code></td><td>no</td><td><code>src/utils/database.py</code>, <code>src/config.py</code></td><td>Last fallback for the client key if neither service-role name is set. With only the anon key, RLS blocks the backend's inserts and reads. See <a href="#s3-9">3.9</a>.</td></tr>
+<tr><td><code>OPENROUTER_API_KEY</code></td><td>no</td><td><code>src/config.py</code>, used by <code>src/services/agent.py</code> and <code>src/services/material_parser.py</code></td><td>Turns on AI-written and web-extracted questions, and AI reading of uploaded material.</td></tr>
+<tr><td><code>OPENROUTER_MODEL</code></td><td>no</td><td><code>src/services/agent.py</code></td><td>Any OpenRouter model id. Defaults to <code>anthropic/claude-haiku-4.5</code>.</td></tr>
+<tr><td><code>YOUTUBE_API_KEY</code></td><td>no</td><td><code>src/services/videos.py</code></td><td>First provider for lesson video search.</td></tr>
+<tr><td><code>SERPER_API_KEY</code></td><td>no</td><td><code>src/services/videos.py</code></td><td>Second provider for lesson video search.</td></tr>
+<tr><td><code>ALLOWED_ORIGINS</code></td><td>no locally, yes deployed</td><td><code>src/main.py</code></td><td>Comma-separated origins added to the CORS allow list. The four localhost origins on ports 3000 and 3001 are always allowed.</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  Two more names are read but change nothing. <code>src/config.py</code> reads
+  <code>SUPABASE_ANON_KEY</code> into a constant no module imports, and its
+  <code>SUPABASE_SERVICE_KEY</code> constant is likewise unused; only the lookups in
+  <code>src/utils/database.py</code> decide which key the client gets. The lookup order there is:
+</p>
+
+<pre><code># backend/src/utils/database.py, Database.get_client()
+supabase_url = os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL")
+supabase_key = (
+    os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+    or os.getenv("SUPABASE_SERVICE_KEY")
+    or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+)</code></pre>
+
+<p>
+  The client is created lazily on the first request that needs it, not at import time. A backend
+  with no Supabase variables starts, answers <code>GET /api/health/</code>, and raises
+  <code>ValueError: Supabase URL and Key are required</code> on the first route that touches the
+  database.
+</p>
+
+<h4>Frontend</h4>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Variable</th><th>Required</th><th>Read in</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td><code>NEXT_PUBLIC_API_URL</code></td><td>no locally, yes deployed</td><td><code>lib/api/client.ts</code>, <code>next.config.js</code></td><td>Base URL of the FastAPI server. Both files default to <code>http://localhost:8000</code>.</td></tr>
+</tbody>
+</table></div>
+
+<p>
+  That is the whole list. Older READMEs, <code>start_local.sh</code> and
+  <code>frontend/deploy.sh</code> mention <code>NEXT_PUBLIC_SUPABASE_URL</code> and
+  <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code> for the frontend. No file under <code>frontend/app</code>,
+  <code>components</code>, <code>lib</code> or <code>games</code> reads them, and the
+  <code>@supabase/ssr</code> and <code>@supabase/supabase-js</code> packages in
+  <code>package.json</code> are not imported anywhere. Leave them out. Because the variable starts
+  with <code>NEXT_PUBLIC_</code>, Next.js inlines its value into the client bundle when it compiles,
+  so after changing it you restart <code>npm run dev</code>.
+</p>
+
+<h3 id="s3-5"><span class="num">3.5</span><span>Getting each key</span></h3>
+
+<p>
+  <b>Supabase.</b> In the dashboard, open Project Settings, then the API keys page. Copy the
+  project URL into <code>SUPABASE_URL</code>, the <code>service_role</code> key into
+  <code>SUPABASE_SERVICE_ROLE_KEY</code>, and the <code>anon</code> key into
+  <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>. Newer dashboards list these JWT-style keys under a
+  "legacy" tab beside the newer publishable and secret keys; the backend was written and tested
+  against the <code>anon</code> and <code>service_role</code> pair. The service-role key is a root
+  credential for your project. It goes in <code>backend/.env</code> and nowhere else.
+</p>
+
+<p>
+  <b>OpenRouter.</b> Create an account at openrouter.ai, add a small amount of credit, and create
+  a key under Settings, Keys. Put it in <code>OPENROUTER_API_KEY</code>. The backend talks to
+  <code>https://openrouter.ai/api/v1</code> through the <code>openai</code> Python package, so any
+  model id OpenRouter lists can go in <code>OPENROUTER_MODEL</code>. A cheap fast model is the
+  right default; each question request is one model call of up to 25 questions
+  (<code>MAX_LLM_QUESTIONS</code> in <code>src/services/agent.py</code>).
+</p>
+
+<p>
+  <b>YouTube Data API.</b> In Google Cloud Console, create a project, enable "YouTube Data API v3",
+  and create an API key. Put it in <code>YOUTUBE_API_KEY</code>.
+</p>
+
+<p>
+  <b>Serper.</b> Sign up at serper.dev and copy the API key into <code>SERPER_API_KEY</code>.
+</p>
+
+<p>
+  Video search tries the providers in a fixed order and the first one that returns results wins:
+  YouTube if its key is set, then Serper if its key is set, then DuckDuckGo through the
+  <code>ddgs</code> package, which needs no key. Results are cached in memory for 24 hours per
+  exam, section and topic (<code>CACHE_TTL_SECONDS</code> in <code>src/services/videos.py</code>),
+  and only non-empty results are cached. <a href="#ch10">Chapter 10</a> covers the ranking.
+</p>
+
+<p>
+  <b>CORS.</b> Locally you can leave <code>ALLOWED_ORIGINS</code> unset, because
+  <code>http://localhost:3000</code>, <code>http://localhost:3001</code> and the
+  <code>127.0.0.1</code> forms of both are hard-coded in <code>src/main.py</code>. Set it only if
+  you serve the frontend from another origin, such as a LAN address to test on a phone.
+</p>
+
+<h3 id="s3-6"><span class="num">3.6</span><span>What works with no optional keys</span></h3>
+
+<p>
+  With only the Supabase variables set, the app is complete enough to develop almost anything:
+</p>
+
+<ul>
+  <li><b>Accounts, profiles, scores and stats</b> work. They need Supabase and nothing else.</li>
+  <li><b>SAT questions</b> still come from the real College Board question bank.
+  <code>ExamLearningAgent.generate_questions</code> calls <code>CollegeBoardSource.fetch</code> for
+  SAT before it considers the model, and that public API needs no key. Only the shortfall goes to
+  <code>_questions_from_llm</code>, which logs "OPENROUTER_API_KEY not set" and returns nothing.</li>
+  <li><b>GRE questions</b> come from the offline bank. When the API returns no questions,
+  <code>fetchAIQuestions</code> in <code>frontend/lib/api/questions.ts</code> falls back to
+  <code>getBankQuestions</code> from <code>frontend/lib/questionBank.ts</code>.</li>
+  <li><b>Games</b> run entirely in the browser from <code>frontend/games/</code> and only need
+  questions and a place to save the score.</li>
+  <li><b>Lessons</b> are static content in <code>frontend/lib/lessons.ts</code> and
+  <code>frontend/lib/courses.ts</code>.</li>
+  <li><b>Lesson videos</b> use DuckDuckGo, which rate limits after a burst of searches. An empty
+  video list during development is usually that, not a bug.</li>
+  <li><b>Material uploads</b> still parse PDFs and text with the rule-based parser in
+  <code>src/services/material_parser.py</code>; the AI pass that finds more questions is skipped.</li>
+</ul>
+
+<p>
+  Without Supabase you can load the landing page and the backend health check, and nothing more.
+  <code>frontend/middleware.ts</code> redirects <code>/dashboard</code>, <code>/games</code>,
+  <code>/learn</code>, <code>/materials</code>, <code>/mock</code>, <code>/profile</code> and
+  <code>/stats</code> to <code>/login</code> unless an <code>auth_token</code> cookie is present, and
+  only the backend can issue one.
+</p>
+
+<h3 id="s3-7"><span class="num">3.7</span><span>Running the two servers</span></h3>
+
+<h4>Backend</h4>
+
+<pre>cd backend
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+uvicorn src.main:app --reload --port 8000</pre>
+
+<p>
+  Run uvicorn from <code>backend/</code>, because every import is absolute from the
+  <code>src</code> package (<code>from src.api import auth</code>). <code>python src/main.py</code>
+  also works: its <code>__main__</code> block puts <code>backend/</code> on <code>sys.path</code> and
+  starts uvicorn on <code>0.0.0.0:8000</code> with reload. <code>backend/run.sh</code> wraps that
+  second form and installs the requirements if <code>fastapi</code> is missing. Interactive API docs
+  are at <code>http://localhost:8000/docs</code>.
+</p>
+
+<h4>Frontend</h4>
+
+<pre>cd frontend
+npm install
+npm run dev</pre>
+
+<p>
+  The dev server listens on <code>http://localhost:3000</code>. Open it, sign up, and the three-step
+  sign-up creates your profile and drops you on the dashboard.
+</p>
+
+<h4>Both at once</h4>
+
+<p>
+  <code>start_local.sh</code> at the repository root starts both in the background, writes
+  <code>backend.log</code> and <code>frontend.log</code>, and stops both on Ctrl+C. If
+  <code>backend/.env</code> or <code>frontend/.env.local</code> is missing it writes a stub, so copy
+  the <code>.env.example</code> files first; its stub uses underscore placeholders and omits the
+  optional keys.
+</p>
+
+<h3 id="s3-8"><span class="num">3.8</span><span>Verifying the setup</span></h3>
+
+<pre>curl http://localhost:8000/api/health/
+# {"status":"healthy","service":"NYU Hacks Arcade API"}
+
+curl http://localhost:8000/api/health/supabase
+# {"status":"healthy","supabase":"connected","database":"accessible"}</pre>
+
+<p>
+  The first route proves the process is up. The second creates the Supabase client and selects
+  one row from <code>game_sessions</code>, so it proves the URL, the key and the schema in one call.
+  It always answers 200; read the <code>status</code> field, and on failure the
+  <code>error</code> field carries the exception text. Note the trailing slash on
+  <code>/api/health/</code>: the router declares <code>"/"</code>, so the bare path answers with a
+  redirect.
+</p>
+
+<p>
+  Then do the real check: sign up in the browser, play one round of any game, and open
+  <code>/stats</code>. A row in <code>game_sessions</code> in the Supabase table editor means the
+  whole path works.
+</p>
+
+<p>
+  Two scripts in <code>backend/</code> no longer work: <code>setup.sh</code> and
+  <code>start.sh</code> import <code>config</code> and run <code>main.py</code> from the backend
+  root, and neither file exists there any more (they moved under <code>src/</code>).
+  <code>check_server.sh</code> still works; it checks port 8000 and a CORS preflight.
+</p>
+
+<h3 id="s3-9"><span class="num">3.9</span><span>Common setup failures</span></h3>
+
+<div class="tablewrap"><table>
+<thead><tr><th>Symptom</th><th>Cause</th><th>Fix</th></tr></thead>
+<tbody>
+<tr><td><code>ModuleNotFoundError: No module named 'src'</code></td><td>uvicorn started from inside <code>backend/src</code> or from the root</td><td>Run it from <code>backend/</code>.</td></tr>
+<tr><td><code>/api/health/supabase</code> says <code>relation "public.game_sessions" does not exist</code></td><td>The SQL was not run, or was run in another project</td><td>Run <code>reset.sql</code> in the project whose URL is in <code>.env</code>.</td></tr>
+<tr><td>Uploads or the materials page fail on <code>materials</code> or <code>custom_questions</code></td><td><code>add_materials.sql</code> was skipped</td><td>Run it.</td></tr>
+<tr><td>Saving a score fails with a row-level security error</td><td>The client fell back to the anon key because neither service-role variable is set</td><td>Set <code>SUPABASE_SERVICE_ROLE_KEY</code> and restart.</td></tr>
+<tr><td>Sign-up succeeds but you stay on the sign-up page with "check your email"</td><td>"Confirm email" is on</td><td>Turn it off for the dev project, or confirm from the email.</td></tr>
+<tr><td>"Too many signup attempts"</td><td>Supabase's built-in email rate limit</td><td>Wait, or turn off email confirmation.</td></tr>
+<tr><td>Browser console shows a CORS error</td><td>The page is served from an origin not on the list (for example a LAN IP or port 3002)</td><td>Add it to <code>ALLOWED_ORIGINS</code> and restart the backend.</td></tr>
+<tr><td>Every API call fails with "Failed to fetch"</td><td>Backend not running, or <code>NEXT_PUBLIC_API_URL</code> points somewhere else</td><td>Check <code>/api/health/</code>; restart <code>npm run dev</code> after editing <code>.env.local</code>.</td></tr>
+<tr><td>Every page redirects to <code>/login</code></td><td>No <code>auth_token</code> cookie, often after clearing site data</td><td>Log in again.</td></tr>
+<tr><td>Games show the same small set of GRE questions</td><td>No <code>OPENROUTER_API_KEY</code>, so the offline bank is in use</td><td>Expected. Add a key for variety.</td></tr>
+<tr><td>Lessons show no videos</td><td>DuckDuckGo rate limiting</td><td>Wait a minute, or set <code>YOUTUBE_API_KEY</code>.</td></tr>
+<tr><td><code>start_local.sh</code> asks "Port 8000 is already in use"</td><td>An old backend is still running</td><td><code>lsof -ti:8000</code> shows its PID; stop it.</td></tr>
+</tbody>
+</table></div>
+
+<h3 id="s3-10"><span class="num">3.10</span><span>Study notes</span></h3>
+<div class="study">
+<h4>Read in this order</h4>
+<ol>
+  <li><code>backend/.env.example</code> and <code>frontend/.env.example</code>, the short form of this chapter.</li>
+  <li><code>backend/src/utils/database.py</code>, for the key lookup order and the lazy client.</li>
+  <li><code>backend/src/main.py</code>, for <code>.env</code> loading, the CORS list and the router prefixes.</li>
+  <li><code>backend/database/reset.sql</code>, then <code>add_materials.sql</code>, the schema you just built.</li>
+  <li><code>backend/src/api/health.py</code>, the two checks you ran.</li>
+  <li><code>frontend/lib/api/client.ts</code>, the only place the frontend reaches the network.</li>
+  <li><code>frontend/middleware.ts</code>, for why signed-out pages redirect.</li>
+</ol>
+<h4>Check yourself</h4>
+<p class="q">The backend starts and <code>/api/health/</code> is healthy, but <code>.env</code> is empty. When does it fail?</p>
+<p class="a">On the first request that calls <code>Database.get_client()</code>, which raises <code>ValueError</code> because the client is built lazily, not at import.</p>
+<p class="q">You ran <code>reset.sql</code> on a new project. What else must you run?</p>
+<p class="a"><code>add_materials.sql</code>, because <code>reset.sql</code> does not create <code>materials</code> or <code>custom_questions</code>.</p>
+<p class="q">Why does the frontend not need any Supabase key?</p>
+<p class="a">It never talks to Supabase. All auth and data calls go through the FastAPI server, which holds the service-role key.</p>
+<p class="q">With no <code>OPENROUTER_API_KEY</code>, where do SAT questions come from?</p>
+<p class="a">The public College Board question bank, through <code>CollegeBoardSource.fetch</code>. Only GRE falls back to the offline bank in <code>frontend/lib/questionBank.ts</code>.</p>
+<p class="q">You changed <code>NEXT_PUBLIC_API_URL</code> and the browser still calls the old URL. Why?</p>
+<p class="a"><code>NEXT_PUBLIC_</code> values are inlined when Next.js compiles. Restart the dev server (or rebuild and redeploy in production).</p>
+</div>
+</section>
