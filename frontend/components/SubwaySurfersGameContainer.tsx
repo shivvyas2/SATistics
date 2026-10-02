@@ -15,11 +15,16 @@ import { SATQuestion, fetchAIQuestions } from '@/lib/api/questions'
 import { ExamPrefs, QUICK_SECONDS_PER_QUESTION, gamePace, getExamPrefs, sectionLabel } from '@/lib/exam'
 import { GameOverModal } from './GameOverModal'
 import { Calculator } from './exam/Calculator'
+import { HintButton } from './exam/HintButton'
+import { PauseMenu } from './exam/PauseMenu'
 import { QuestionCard, sourceLabel } from './exam/QuestionCard'
+import { useQuestionHints } from './exam/useQuestionHints'
+import { useViewShift } from './exam/useViewShift'
+import { insightFor } from '@/lib/hints'
 import { ReviewList } from './exam/ReviewList'
 
-// Below this width the question panel sits above the game instead of beside it
-const SIDE_PANEL_MIN_WIDTH = 1024
+// A drag shorter than this is a tap, not a swipe
+const SWIPE_MIN_DISTANCE = 30
 
 function formatClock(seconds: number): string {
   const whole = Math.max(0, Math.ceil(seconds))
@@ -127,18 +132,22 @@ export function SubwaySurfersGameContainer() {
     }
   }, [questions, prefs])
 
-  // Keep the runner centered in the part of the screen the question panel doesn't cover
   const isPlaying = hud !== null && hud.phase !== 'loading' && hud.phase !== 'ready' && hud.phase !== 'done'
-  useEffect(() => {
-    const updateShift = () => {
-      const panelWidth = panelRef.current?.offsetWidth || 0
-      const isBeside = window.innerWidth >= SIDE_PANEL_MIN_WIDTH
-      gameRef.current?.setViewShift(isPlaying && isBeside ? panelWidth / 2 : 0)
-    }
-    updateShift()
-    window.addEventListener('resize', updateShift)
-    return () => window.removeEventListener('resize', updateShift)
-  }, [isPlaying])
+  useViewShift(panelRef, isPlaying && !hud?.isPaused, (x, y) => gameRef.current?.setViewShift(x, y))
+
+  const { hints, eliminated, canHint, requestHint } = useQuestionHints(currentQuestion)
+  const handleHint = () => {
+    const lane = requestHint()
+    if (lane !== null) gameRef.current?.eliminateLane(lane)
+  }
+
+  // Swipe sideways on the game to change lanes
+  const swipeStartX = useRef<number | null>(null)
+  const handleSwipeEnd = (clientX: number) => {
+    const distance = swipeStartX.current === null ? 0 : clientX - swipeStartX.current
+    swipeStartX.current = null
+    if (Math.abs(distance) > SWIPE_MIN_DISTANCE) gameRef.current?.moveLane(distance > 0 ? 1 : -1)
+  }
 
   const examName = prefs ? sectionLabel(prefs) : ''
 
@@ -152,7 +161,15 @@ export function SubwaySurfersGameContainer() {
 
   return (
     <div className={`fixed inset-0 w-screen h-screen bg-black overflow-hidden game-hud`} style={{ margin: 0, padding: 0 }}>
-      <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" style={{ display: 'block' }} tabIndex={-1} />
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0 w-full h-full touch-none"
+        style={{ display: 'block' }}
+        tabIndex={-1}
+        onPointerDown={(e) => { swipeStartX.current = e.clientX }}
+        onPointerUp={(e) => handleSwipeEnd(e.clientX)}
+        onPointerCancel={() => { swipeStartX.current = null }}
+      />
 
       {isLoading && (
         <div className="absolute inset-0 bg-gradient-to-br from-sky-600 via-blue-700 to-indigo-900 flex items-center justify-center z-40">
@@ -185,9 +202,9 @@ export function SubwaySurfersGameContainer() {
               {hud.moduleCount > 1 && ' Module 2 gets harder or easier based on how you do in Module 1.'}
             </p>
             <ul className="space-y-2 text-sm text-gray-200 mb-6">
-              <li><span className="font-bold text-white">← →</span> or <span className="font-bold text-white">1–5</span> — fly into the lane of your answer</li>
-              <li><span className="font-bold text-white">Space</span> — dive through the gate as soon as you&apos;re sure</li>
-              <li>Take too long and the gates come to you. Whatever lane you&apos;re in is your answer.</li>
+              <li><span className="font-bold text-white">Swipe</span>, tap an answer, or use <span className="font-bold text-white">← →</span> to fly into the lane of your answer</li>
+              <li><span className="font-bold text-white">Dive</span> (Space) through the gate as soon as you&apos;re sure</li>
+              <li>Stuck? Ask for a hint. Miss a question and it comes back later instead of showing the answer.</li>
             </ul>
             <button
               onClick={() => gameRef.current?.start()}
@@ -195,8 +212,8 @@ export function SubwaySurfersGameContainer() {
             >
               Start Run
             </button>
-            <Link href="/dashboard" className="block text-center text-gray-300 hover:text-white text-sm mt-3">
-              Back to dashboard
+            <Link href="/games" className="block text-center text-gray-300 hover:text-white text-sm mt-3">
+              Back to games
             </Link>
           </div>
         </div>
@@ -220,35 +237,41 @@ export function SubwaySurfersGameContainer() {
                   activeLabel="YOUR LANE"
                   feedback={feedback}
                   onPick={(lane) => gameRef.current?.setLane(lane)}
+                  hints={hints}
+                  eliminated={eliminated}
+                  insight={feedback?.willRetry ? insightFor(currentQuestion, feedback.selected) : null}
                 />
 
                 <div className="flex-none px-4 py-2 border-t border-white/10">
                   {feedback ? (
                     <div className="flex items-center justify-between text-sm">
                       <span className={`font-bold ${feedback.isCorrect ? 'text-green-400' : 'text-red-400'}`}>
-                        {feedback.isCorrect ? `Correct! +${feedback.points}` : 'Not quite'}
+                        {feedback.isCorrect ? `Correct! +${feedback.points}` : feedback.willRetry ? 'Not quite. You get another try later.' : 'Not quite'}
                       </span>
                       {!feedback.isCorrect && (
                         <button onClick={() => gameRef.current?.skipFeedback()} className="text-xs font-bold text-sky-300 hover:text-white">
-                          Continue (Space)
+                          Continue
                         </button>
                       )}
                     </div>
                   ) : (
-                    <>
-                      <div className="flex items-center justify-between text-xs mb-1">
-                        <span className="text-gray-300">{hud.isDiving ? 'Diving...' : 'Gates arrive in'}</span>
-                        <span className={`font-bold tabular-nums ${isGateClose ? 'text-amber-400' : 'text-white'}`}>
-                          {formatClock(hud.gateSecondsLeft)}
-                        </span>
+                    <div className="flex items-center gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between text-xs mb-1">
+                          <span className="text-gray-300">{hud.isDiving ? 'Diving...' : 'Gates arrive in'}</span>
+                          <span className={`font-bold tabular-nums ${isGateClose ? 'text-amber-400' : 'text-white'}`}>
+                            {formatClock(hud.gateSecondsLeft)}
+                          </span>
+                        </div>
+                        <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full rounded-full ${isGateClose ? 'bg-amber-400' : 'bg-sky-400'}`}
+                            style={{ width: `${Math.min(100, gateShare * 100)}%` }}
+                          />
+                        </div>
                       </div>
-                      <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
-                        <div
-                          className={`h-full rounded-full ${isGateClose ? 'bg-amber-400' : 'bg-sky-400'}`}
-                          style={{ width: `${Math.min(100, gateShare * 100)}%` }}
-                        />
-                      </div>
-                    </>
+                      <HintButton hintsShown={hints.length} disabled={!canHint || hud.isDiving} onClick={handleHint} />
+                    </div>
                   )}
                   {sourceLabel(currentQuestion) && (
                     <p className="text-xs text-gray-300 mt-1.5 truncate">{sourceLabel(currentQuestion)}</p>
@@ -275,21 +298,21 @@ export function SubwaySurfersGameContainer() {
           <div className="relative flex-1 min-h-0">
             {/* Exam Status - Top Right */}
             <div className="pointer-events-auto absolute top-0 lg:top-3 right-3 flex items-stretch gap-2">
-              <div className="bg-gray-950/95 backdrop-blur-md rounded-xl border border-white/15 px-4 py-2 text-white text-center">
+              <div className="bg-gray-950/95 backdrop-blur-md rounded-xl border border-white/15 px-2.5 sm:px-4 py-1.5 sm:py-2 text-white text-center">
                 <div className="text-xs font-semibold tracking-wide text-gray-300">
                   MODULE {hud.module}/{hud.moduleCount} TIME
                 </div>
-                <div className={`text-2xl font-black tabular-nums ${isClockLow ? 'text-red-400' : ''}`}>
+                <div className={`text-lg sm:text-2xl font-black tabular-nums ${isClockLow ? 'text-red-400' : ''}`}>
                   {formatClock(hud.sectionSecondsLeft)}
                 </div>
               </div>
-              <div className="bg-gray-950/95 backdrop-blur-md rounded-xl border border-white/15 px-4 py-2 text-white text-center">
+              <div className="bg-gray-950/95 backdrop-blur-md rounded-xl border border-white/15 px-2.5 sm:px-4 py-1.5 sm:py-2 text-white text-center">
                 <div className="text-xs font-semibold tracking-wide text-gray-300">SCORE</div>
-                <div className="text-2xl font-black tabular-nums">{hud.score}</div>
+                <div className="text-lg sm:text-2xl font-black tabular-nums">{hud.score}</div>
               </div>
-              <div className="bg-gray-950/95 backdrop-blur-md rounded-xl border border-white/15 px-4 py-2 text-white text-center">
+              <div className="bg-gray-950/95 backdrop-blur-md rounded-xl border border-white/15 px-2.5 sm:px-4 py-1.5 sm:py-2 text-white text-center">
                 <div className="text-xs font-semibold tracking-wide text-gray-300">STREAK</div>
-                <div className="text-2xl font-black tabular-nums text-orange-400">{hud.streak > 0 ? `🔥 ${hud.streak}` : '—'}</div>
+                <div className="text-lg sm:text-2xl font-black tabular-nums text-orange-400">{hud.streak > 0 ? `🔥 ${hud.streak}` : '—'}</div>
               </div>
               <div className="flex flex-col gap-1">
                 <button
@@ -332,7 +355,7 @@ export function SubwaySurfersGameContainer() {
                   disabled={hud.isDiving}
                   className="px-6 py-2 rounded-full bg-white text-gray-900 font-black text-sm shadow-lg active:scale-95 disabled:opacity-60 whitespace-nowrap"
                 >
-                  {hud.isDiving ? 'Diving...' : `Lock in ${LANE_LETTERS[hud.currentLane]} — Dive (Space)`}
+                  {hud.isDiving ? 'Diving...' : `Lock in ${LANE_LETTERS[hud.currentLane]} — Dive`}
                 </button>
                 <p className="hidden lg:block text-white text-sm font-semibold bg-black/75 rounded-full px-4 py-1.5 whitespace-nowrap">
                   ← → switch lane · 1–5 jump to lane · P pause
@@ -343,20 +366,8 @@ export function SubwaySurfersGameContainer() {
         </div>
       )}
 
-      {/* Pause Overlay */}
       {hud && isPlaying && hud.isPaused && (
-        <div className="absolute inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-20">
-          <div className="text-center text-white">
-            <p className="text-4xl font-serif italic mb-1">Paused</p>
-            <p className="text-gray-300 text-sm mb-5">The clock is stopped and the question is hidden.</p>
-            <button
-              onClick={() => gameRef.current?.setPaused(false)}
-              className="px-8 py-3 bg-blue-600 hover:bg-blue-700 rounded-xl font-bold"
-            >
-              Resume
-            </button>
-          </div>
-        </div>
+        <PauseMenu gameId="subway-surfers" onResume={() => gameRef.current?.setPaused(false)} />
       )}
 
       {/* Game Over Modal */}

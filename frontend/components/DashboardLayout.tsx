@@ -9,7 +9,7 @@ import { daysUntil } from '@/lib/profile'
 import { EXAMS } from '@/lib/exam'
 import { Logo } from '@/components/brand/Logo'
 import { Avatar } from '@/components/profile/ProfileFields'
-import { BookIcon, ChartIcon, CloseIcon, GamepadIcon, HomeIcon, LogoutIcon, MenuIcon, UserIcon } from '@/components/brand/Icons'
+import { BookIcon, ChartIcon, CloseIcon, GamepadIcon, HomeIcon, LogoutIcon, MenuIcon, UploadIcon, UserIcon } from '@/components/brand/Icons'
 
 interface DashboardLayoutProps {
   children: React.ReactNode
@@ -21,6 +21,7 @@ const NAV = [
   { href: '/dashboard', label: 'Home', Icon: HomeIcon },
   { href: '/learn', label: 'Learn', Icon: BookIcon },
   { href: '/games', label: 'Games', Icon: GamepadIcon },
+  { href: '/materials', label: 'My material', Icon: UploadIcon },
   { href: '/stats', label: 'Statistics', Icon: ChartIcon },
   { href: '/profile', label: 'Profile', Icon: UserIcon },
 ]

@@ -44,6 +44,8 @@ export interface RunnerFeedback {
   selected: number
   correctAnswer: number
   points: number
+  // The question was missed for the first time and will be asked again
+  willRetry: boolean
 }
 
 export interface RunnerModuleInfo {

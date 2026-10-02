@@ -542,3 +542,59 @@ a {
   font-weight: 400;
   letter-spacing: 0.005em;
 }
+
+/* Retro arcade skin for the cabinet-style games */
+.arcade-font {
+  font-family: var(--font-arcade), 'Courier New', monospace;
+  line-height: 1.5;
+}
+
+.arcade-glow {
+  text-shadow: 0 0 8px currentColor;
+}
+
+/* CRT scanlines and darkened corners over the whole screen */
+.arcade-crt {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(ellipse at center, transparent 55%, rgba(0, 0, 0, 0.5) 100%),
+    repeating-linear-gradient(to bottom, transparent 0 2px, rgba(0, 0, 0, 0.16) 2px 4px);
+}
+
+.arcade-panel {
+  background: rgba(8, 8, 22, 0.95);
+  border: 3px solid var(--arcade-color, #22d3ee);
+  border-radius: 8px;
+  box-shadow: 0 0 0 3px #000, 0 0 18px var(--arcade-color, #22d3ee);
+}
+
+.arcade-button {
+  font-family: var(--font-arcade), 'Courier New', monospace;
+  background: var(--arcade-color, #22d3ee);
+  color: #05050f;
+  border-radius: 6px;
+  box-shadow: 0 5px 0 rgba(0, 0, 0, 0.55), 0 0 16px var(--arcade-color, #22d3ee);
+}
+
+.arcade-button:active {
+  transform: translateY(4px);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.55), 0 0 16px var(--arcade-color, #22d3ee);
+}
+
+.arcade-blink {
+  animation: arcade-blink 1s steps(2, start) infinite;
+}
+
+@keyframes arcade-blink {
+  to {
+    visibility: hidden;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .arcade-blink {
+    animation: none;
+  }
+}

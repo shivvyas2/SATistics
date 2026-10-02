@@ -10,11 +10,13 @@ import { SATQuestion, fetchAIQuestions } from '@/lib/api/questions'
 import { EXAMS, ExamPrefs, gamePace, getExamPrefs, sectionLabel } from '@/lib/exam'
 import { GameOverModal } from './GameOverModal'
 import { Calculator } from './exam/Calculator'
+import { HintButton } from './exam/HintButton'
+import { PauseMenu } from './exam/PauseMenu'
 import { QuestionCard, sourceLabel } from './exam/QuestionCard'
+import { useQuestionHints } from './exam/useQuestionHints'
+import { useViewShift } from './exam/useViewShift'
+import { insightFor } from '@/lib/hints'
 import { ReviewList } from './exam/ReviewList'
-
-// Below this width the question panel sits above the game instead of beside it
-const SIDE_PANEL_MIN_WIDTH = 1024
 
 const OUTCOMES: Record<SquidOutcome, { title: string; subtitle: string; emoji: string }> = {
   victory: { title: 'You Survived!', subtitle: 'You crossed the finish line', emoji: '🏆' },
@@ -45,6 +47,7 @@ export function SquidGameContainer() {
   pickedRef.current = picked
   const questionRef = useRef(currentQuestion)
   questionRef.current = currentQuestion
+  const eliminatedRef = useRef<number[]>([])
   const isQuant = prefs?.section === 'quant'
   const calculatorOpenRef = useRef(false)
   calculatorOpenRef.current = isQuant && showCalculator
@@ -79,7 +82,7 @@ export function SquidGameContainer() {
       const question = questionRef.current
       const letterIndex = LANE_LETTERS.indexOf(e.key.toUpperCase())
       if (question && letterIndex >= 0 && letterIndex < question.options.length) {
-        setPicked(letterIndex)
+        if (!eliminatedRef.current.includes(letterIndex)) setPicked(letterIndex)
         return
       }
       // With the calculator open, Enter means "equals"
@@ -152,19 +155,28 @@ export function SquidGameContainer() {
     }
   }, [questions, prefs])
 
-  // Keep the player centered in the part of the screen the question panel doesn't cover
   const isPlaying = hud !== null && hud.phase !== 'loading' && hud.phase !== 'ready' && !result
-  useEffect(() => {
-    const updateShift = () => {
-      const panelWidth = panelRef.current?.offsetWidth || 0
-      const isBeside = window.innerWidth >= SIDE_PANEL_MIN_WIDTH
-      gameRef.current?.setViewShift(isPlaying && isBeside ? panelWidth / 2 : 0)
-    }
-    updateShift()
-    window.addEventListener('resize', updateShift)
-    return () => window.removeEventListener('resize', updateShift)
-  }, [isPlaying])
+  useViewShift(panelRef, isPlaying && !hud?.isPaused, (x, y) => gameRef.current?.setViewShift(x, y))
 
+  const { hints, eliminated, canHint, requestHint } = useQuestionHints(currentQuestion)
+  const handleHint = () => {
+    const ruledOut = requestHint()
+    gameRef.current?.registerHint()
+    if (ruledOut !== null && ruledOut === picked) setPicked(null)
+  }
+
+  // On-screen buttons stand in for the movement keys on touch devices
+  const holdKey = (key: string) => ({
+    onPointerDown: (e: React.PointerEvent) => {
+      e.preventDefault()
+      gameRef.current?.handleInput(key)
+    },
+    onPointerUp: () => gameRef.current?.handleKeyRelease(key),
+    onPointerLeave: () => gameRef.current?.handleKeyRelease(key),
+    onPointerCancel: () => gameRef.current?.handleKeyRelease(key),
+  })
+
+  eliminatedRef.current = eliminated
   const examName = prefs ? sectionLabel(prefs) : ''
   const isLoading = !questions || !hud || hud.phase === 'loading'
   const isRedLight = hud !== null && hud.phase !== 'green'
@@ -172,7 +184,7 @@ export function SquidGameContainer() {
 
   return (
     <div className={`fixed inset-0 w-screen h-screen bg-black overflow-hidden game-hud`} style={{ margin: 0, padding: 0 }}>
-      <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" style={{ display: 'block' }} tabIndex={-1} />
+      <canvas ref={canvasRef} className="absolute inset-0 w-full h-full touch-none" style={{ display: 'block' }} tabIndex={-1} />
 
       {isLoading && (
         <div className="absolute inset-0 bg-black flex items-center justify-center z-40">
@@ -204,9 +216,10 @@ export function SquidGameContainer() {
               {isQuant && ' An on-screen calculator is provided.'}
             </p>
             <ul className="space-y-2 text-sm text-gray-200 mb-6">
-              <li><span className="font-bold text-green-400">Green light</span> — hold <span className="font-bold text-white">W</span> or <span className="font-bold text-white">↑</span> to run for the finish line</li>
+              <li><span className="font-bold text-green-400">Green light</span> — hold <span className="font-bold text-white">Run</span> (or W / ↑) to run for the finish line</li>
               <li><span className="font-bold text-red-400">Red light</span> — let go before the doll turns around, then answer the question. Take your time.</li>
               <li>A correct answer earns a long green light. A wrong answer or moving on red costs one of your {hud.maxLives} lives.</li>
+              <li>Stuck? Ask for a hint. A missed question comes back later instead of showing the answer.</li>
             </ul>
             <button
               onClick={() => gameRef.current?.start()}
@@ -214,8 +227,8 @@ export function SquidGameContainer() {
             >
               Start Game
             </button>
-            <Link href="/dashboard" className="block text-center text-gray-300 hover:text-white text-sm mt-3">
-              Back to dashboard
+            <Link href="/games" className="block text-center text-gray-300 hover:text-white text-sm mt-3">
+              Back to games
             </Link>
           </div>
         </div>
@@ -227,7 +240,7 @@ export function SquidGameContainer() {
           {/* Question Panel */}
           <div
             ref={panelRef}
-            className={`pointer-events-auto flex flex-col m-3 lg:w-[min(460px,40vw)] max-h-[60vh] lg:max-h-none ${currentQuestion ? '' : 'lg:self-start'} bg-gray-950/95 backdrop-blur-md rounded-2xl border border-white/15 text-white shadow-2xl overflow-hidden`}
+            className={`pointer-events-auto flex flex-col m-3 lg:w-[min(460px,40vw)] max-h-[72vh] lg:max-h-none ${currentQuestion ? "" : "lg:self-start"} bg-gray-950/95 backdrop-blur-md rounded-2xl border border-white/15 text-white shadow-2xl overflow-hidden`}
           >
             {currentQuestion ? (
               <>
@@ -239,6 +252,9 @@ export function SquidGameContainer() {
                   activeLabel="SELECTED"
                   feedback={feedback}
                   onPick={setPicked}
+                  hints={hints}
+                  eliminated={eliminated}
+                  insight={feedback?.willRetry ? insightFor(currentQuestion, feedback.selected) : null}
                 />
                 <div className="flex-none px-4 py-3 border-t border-white/10">
                   {feedback ? (
@@ -252,7 +268,7 @@ export function SquidGameContainer() {
                       </span>
                       {!feedback.isCorrect && (
                         <button onClick={() => gameRef.current?.skipFeedback()} className="text-xs font-bold text-sky-300 hover:text-white">
-                          Continue (Space)
+                          Continue
                         </button>
                       )}
                     </div>
@@ -269,8 +285,9 @@ export function SquidGameContainer() {
                         disabled={picked === null}
                         className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:bg-white/10 disabled:text-gray-400 font-bold text-sm"
                       >
-                        {picked === null ? 'Pick an answer (A–E)' : `Submit ${LANE_LETTERS[picked]}`}
+                        {picked === null ? 'Pick an answer' : `Submit ${LANE_LETTERS[picked]}`}
                       </button>
+                      <HintButton hintsShown={hints.length} disabled={!canHint} onClick={handleHint} />
                     </div>
                   )}
                   {sourceLabel(currentQuestion) && (
@@ -283,7 +300,7 @@ export function SquidGameContainer() {
                 {hud.phase === 'green' ? (
                   <>
                     <p className="text-3xl font-black text-green-400 mb-2">GREEN LIGHT</p>
-                    <p className="text-sm text-gray-300 mb-4">Run! Hold W or ↑. Let go before she turns around.</p>
+                    <p className="text-sm text-gray-300 mb-4">Run! Let go before she turns around.</p>
                     <div className="h-2 bg-white/10 rounded-full overflow-hidden">
                       <div
                         className="h-full bg-green-400 rounded-full"
@@ -315,13 +332,13 @@ export function SquidGameContainer() {
                 <div className="text-xs font-semibold tracking-wide opacity-90">LIGHT</div>
                 <div className="text-2xl">{isRedLight ? 'RED' : 'GREEN'}</div>
               </div>
-              <div className="bg-gray-950/95 backdrop-blur-md rounded-xl border border-white/15 px-4 py-2 text-white text-center">
+              <div className="bg-gray-950/95 backdrop-blur-md rounded-xl border border-white/15 px-2.5 sm:px-4 py-1.5 sm:py-2 text-white text-center">
                 <div className="text-xs font-semibold tracking-wide text-gray-300">LIVES</div>
                 <div className="text-2xl font-black tabular-nums text-rose-400">
                   ♥ {hud.lives}<span className="text-sm text-gray-400">/{hud.maxLives}</span>
                 </div>
               </div>
-              <div className="bg-gray-950/95 backdrop-blur-md rounded-xl border border-white/15 px-4 py-2 text-white text-center">
+              <div className="bg-gray-950/95 backdrop-blur-md rounded-xl border border-white/15 px-2.5 sm:px-4 py-1.5 sm:py-2 text-white text-center">
                 <div className="text-xs font-semibold tracking-wide text-gray-300">SCORE</div>
                 <div className="text-2xl font-black tabular-nums">{hud.score}</div>
               </div>
@@ -354,6 +371,19 @@ export function SquidGameContainer() {
               </div>
             </div>
 
+            {/* Touch Controls - shown where there is no keyboard */}
+            {(hud.phase === 'green' || hud.phase === 'turning') && (
+              <div className="pointer-events-auto absolute bottom-14 inset-x-3 hidden items-end justify-between [@media(pointer:coarse)]:flex select-none">
+                <div className="flex gap-2">
+                  <button {...holdKey('a')} aria-label="Move left" className="h-14 w-14 rounded-full bg-gray-950/80 border border-white/30 text-white text-xl touch-none">◀</button>
+                  <button {...holdKey('d')} aria-label="Move right" className="h-14 w-14 rounded-full bg-gray-950/80 border border-white/30 text-white text-xl touch-none">▶</button>
+                </div>
+                <button {...holdKey('w')} className="h-20 w-20 rounded-full bg-green-500 border-2 border-white text-ink font-black shadow-lg touch-none active:scale-95">
+                  RUN
+                </button>
+              </div>
+            )}
+
             {/* Calculator - Bottom Right */}
             {isQuant && hud.phase === 'question' && (
               <div className="pointer-events-auto absolute bottom-4 right-3">
@@ -373,20 +403,8 @@ export function SquidGameContainer() {
         </div>
       )}
 
-      {/* Pause Overlay */}
       {hud && isPlaying && hud.isPaused && (
-        <div className="absolute inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-20">
-          <div className="text-center text-white">
-            <p className="text-4xl font-serif italic mb-1">Paused</p>
-            <p className="text-gray-300 text-sm mb-5">The clock is stopped and the question is hidden.</p>
-            <button
-              onClick={() => gameRef.current?.setPaused(false)}
-              className="px-8 py-3 bg-blue-600 hover:bg-blue-700 rounded-xl font-bold"
-            >
-              Resume
-            </button>
-          </div>
-        </div>
+        <PauseMenu gameId="squid-game" onResume={() => gameRef.current?.setPaused(false)} />
       )}
 
       {/* Game Over Modal */}

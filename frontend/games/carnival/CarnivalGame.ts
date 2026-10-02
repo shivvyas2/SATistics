@@ -170,7 +170,8 @@ export class CarnivalGame extends BaseGame {
     const targetGroup = new THREE.Group()
     
     // Make 3D balloons instead of flat targets!
-    const colors = [0xFF3333, 0x00D4FF, 0xFFDD00, 0x00FF88] // Brighter, more saturated colors!
+    // Same color per answer as the answer list on screen
+    const colors = [0x3b82f6, 0xf59e0b, 0xec4899, 0x10b981]
     const targetColor = colors[answerIndex]
     
     // Balloon body (sphere)

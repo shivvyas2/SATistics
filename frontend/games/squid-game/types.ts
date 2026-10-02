@@ -36,6 +36,8 @@ export interface SquidFeedback {
   selected: number | null
   correctAnswer: number
   points: number
+  // The question was missed for the first time and will be asked again
+  willRetry: boolean
 }
 
 export interface SquidReviewItem {

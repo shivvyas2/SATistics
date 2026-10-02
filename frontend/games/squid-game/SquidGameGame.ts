@@ -87,6 +87,8 @@ const SUIT_TINTS = [0xffffff, 0xffffff, 0xd9f2e4, 0xe6e0ff, 0xfff0d6, 0xcfe8ff]
 const DIFFICULTIES: Difficulty[] = ['easy', 'medium', 'hard']
 const DIFFICULTY_POINTS: Record<Difficulty, number> = { easy: 100, medium: 150, hard: 200 }
 const FINISH_BONUS = 500
+// Share of a question's points kept for each hint taken
+const HINT_POINTS_FACTOR = 0.6
 const HUD_UPDATE_INTERVAL_MS = 100
 
 // Framerate-independent smoothing factor
@@ -110,7 +112,7 @@ export class SquidGameGame extends BaseGame {
   private camera!: THREE.PerspectiveCamera
   private renderer!: THREE.WebGLRenderer
   private disposed = false
-  private viewShiftPx = 0
+  private viewShift = { x: 0, y: 0 }
 
   // Characters
   private player: Character | null = null
@@ -139,6 +141,10 @@ export class SquidGameGame extends BaseGame {
   private pool: SATQuestion[]
   private totalQuestions: number
   private difficultyLevel = 1
+  // Missed questions waiting for a second try, and those that already had one
+  private retryQueue: SATQuestion[] = []
+  private retriedIds = new Set<number>()
+  private hintsUsed = 0
   private currentQuestion: SATQuestion | null = null
   private questionElapsed = 0
   private nextGreenSeconds = FIRST_GREEN_SECONDS
@@ -546,13 +552,18 @@ export class SquidGameGame extends BaseGame {
     // Step difficulty up after a correct answer and down after a wrong one
     const unused = this.pool.filter((q) => !this.review.some((item) => item.question.id === q.id))
     const distance = (q: SATQuestion) => Math.abs(DIFFICULTIES.indexOf(q.difficulty) - this.difficultyLevel)
-    const question = unused.sort((a, b) => distance(a) - distance(b))[0]
+    // A missed question returns after one other question, or sooner if nothing else is left
+    const lastAsked = this.review[this.review.length - 1]?.question
+    const retry = this.retryQueue.find((q) => q !== lastAsked) ?? (unused.length === 0 ? this.retryQueue[0] : undefined)
+    if (retry) this.retryQueue.splice(this.retryQueue.indexOf(retry), 1)
+    const question = retry ?? unused.sort((a, b) => distance(a) - distance(b))[0]
     if (!question) {
       this.finish('short')
       return
     }
     this.currentQuestion = question
     this.questionElapsed = 0
+    this.hintsUsed = 0
     this.phase = 'question'
     this.onQuestionChange?.(question)
     this.emitHud(true)
@@ -574,7 +585,8 @@ export class SquidGameGame extends BaseGame {
       this.maxStreak = Math.max(this.maxStreak, this.streak)
       this.difficultyLevel = Math.min(DIFFICULTIES.length - 1, this.difficultyLevel + 1)
       const timeLeftShare = Math.max(0, 1 - this.questionElapsed / this.config.secondsPerQuestion)
-      points = Math.round(DIFFICULTY_POINTS[question.difficulty] + 50 * timeLeftShare)
+      // Each hint makes the question worth less
+      points = Math.round((DIFFICULTY_POINTS[question.difficulty] + 50 * timeLeftShare) * Math.pow(HINT_POINTS_FACTOR, this.hintsUsed))
       this.setState({ score: this.getState().score + points })
       this.playTone([660, 880])
     } else {
@@ -585,11 +597,23 @@ export class SquidGameGame extends BaseGame {
       this.loseLife()
     }
 
+    // A first miss comes back later instead of showing the answer
+    const willRetry = !isCorrect && !this.retriedIds.has(question.id)
+    if (willRetry) {
+      this.retriedIds.add(question.id)
+      this.retryQueue.push(question)
+    }
+
     this.nextGreenSeconds = isCorrect ? GREEN_SECONDS_CORRECT : GREEN_SECONDS_WRONG
     this.phase = 'feedback'
     this.phaseSecondsLeft = isCorrect ? CORRECT_FEEDBACK_SECONDS : WRONG_FEEDBACK_SECONDS
-    this.onFeedback?.({ isCorrect, selected, correctAnswer: question.correctAnswer, points })
+    this.onFeedback?.({ isCorrect, selected, correctAnswer: question.correctAnswer, points, willRetry })
     this.emitHud(true)
+  }
+
+  // Called each time the player takes a hint on the current question
+  registerHint(): void {
+    this.hintsUsed++
   }
 
   skipFeedback(): void {
@@ -846,16 +870,16 @@ export class SquidGameGame extends BaseGame {
   }
 
   // Shifts the scene sideways so the player stays clear of the question panel
-  setViewShift(pixels: number): void {
-    this.viewShiftPx = pixels
+  setViewShift(x: number, y = 0): void {
+    this.viewShift = { x, y }
     this.applyViewShift()
   }
 
   private applyViewShift(): void {
     if (!this.camera) return
     this.camera.aspect = this.width / this.height
-    if (this.viewShiftPx) {
-      this.camera.setViewOffset(this.width, this.height, -this.viewShiftPx, 0, this.width, this.height)
+    if (this.viewShift.x || this.viewShift.y) {
+      this.camera.setViewOffset(this.width, this.height, -this.viewShift.x, -this.viewShift.y, this.width, this.height)
     } else {
       this.camera.clearViewOffset()
     }

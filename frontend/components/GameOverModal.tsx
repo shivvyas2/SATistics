@@ -99,7 +99,13 @@ export function GameOverModal({
             href="/stats"
             className="block w-full bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 text-white font-bold text-lg py-3 rounded-xl transition-all shadow-lg hover:shadow-xl active:scale-95 text-center"
           >
-            📊 View Statistics
+            📊 See your insights
+          </Link>
+          <Link
+            href="/games"
+            className="block w-full bg-white/10 hover:bg-white/20 text-white font-bold text-lg py-3 rounded-xl transition-all active:scale-95 text-center"
+          >
+            Back to games
           </Link>
           <div className="text-center p-2 bg-blue-900/20 border border-blue-500/30 rounded-lg">
             <p className="text-blue-300 text-xs">

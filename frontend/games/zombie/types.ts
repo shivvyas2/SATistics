@@ -1,51 +1,40 @@
-export interface SATQuestion {
-  id: number
-  question: string
-  options: string[]
-  correctAnswer: number
-  topic: string
-  difficulty: 'easy' | 'medium' | 'hard'
-  explanation: string
+import type { SATQuestion } from '@/lib/api/questions'
+
+export type ZombiePhase = 'ready' | 'question' | 'feedback' | 'done'
+
+export interface ZombieConfig {
+  questionCount: number
+  secondsPerQuestion: number
 }
 
-export interface ZombieGameState {
+export interface ZombieHudState {
+  phase: ZombiePhase
   score: number
-  correctAnswers: number
-  wrongAnswers: number
-  currentQuestionIndex: number
-  totalQuestions: number
   streak: number
-  maxStreak: number
-  ammo: number
   health: number
-  isGameOver: boolean
+  maxHealth: number
+  questionNumber: number
+  totalQuestions: number
+  // Time until the zombies reach the player
+  secondsLeft: number
+  secondsTotal: number
+  isPaused: boolean
+  isMuted: boolean
 }
 
-export interface QuestionAttempt {
-  questionId: number
-  topic: string
-  difficulty: string
+export interface ZombieFeedback {
+  isCorrect: boolean
+  // null when the zombies arrived before a shot landed
+  selected: number | null
+  correctAnswer: number
+  points: number
+  // The question was missed for the first time and will be asked again
+  willRetry: boolean
+}
+
+export interface ZombieReviewItem {
+  question: SATQuestion
+  selected: number | null
   isCorrect: boolean
   timeSpent: number
 }
-
-export interface GameAnalytics {
-  gameId: string
-  score: number
-  accuracy: number
-  correctAnswers: number
-  wrongAnswers: number
-  questionAttempts: QuestionAttempt[]
-  topicPerformance: {
-    [topic: string]: {
-      correct: number
-      total: number
-      accuracy: number
-    }
-  }
-  streakInfo: {
-    maxStreak: number
-  }
-  averageResponseTime: number
-}
-

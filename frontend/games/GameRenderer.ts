@@ -1,7 +1,6 @@
 // GameRenderer.ts
 import { BaseGame } from './BaseGame'
 import { MarioGame } from './mario/MarioGame'
-import { PacManGame } from './pac-man/PacManGame'
 
 /**
  * GameRenderer
@@ -31,10 +30,6 @@ export class GameRenderer {
     switch (this.gameId) {
       case 'mario':
         this.game = new MarioGame(this.canvas.width, this.canvas.height, this.canvas)
-        this.usesThreeJS = true
-        break
-      case 'pac-man':
-        this.game = new PacManGame(this.canvas.width, this.canvas.height, this.canvas)
         this.usesThreeJS = true
         break
       default:

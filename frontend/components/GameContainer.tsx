@@ -7,8 +7,9 @@ import { CarnivalGameContainer } from './CarnivalGameContainer'
 import ZombieGameContainer from './ZombieGameContainer'
 import { SubwaySurfersGameContainer } from './SubwaySurfersGameContainer'
 import { SquidGameContainer } from './SquidGameContainer'
+import { PacManGameContainer } from './PacManGameContainer'
 
-const OWN_CONTAINER_GAMES = ['zombie', 'whackamole', 'carnival', 'subway-surfers', 'squid-game']
+const OWN_CONTAINER_GAMES = ['zombie', 'whackamole', 'carnival', 'subway-surfers', 'squid-game', 'pac-man']
 
 interface GameContainerProps {
   game: {
@@ -77,6 +78,10 @@ export function GameContainer({ game }: GameContainerProps) {
 
   if (game.id === 'squid-game') {
     return <SquidGameContainer />
+  }
+
+  if (game.id === 'pac-man') {
+    return <PacManGameContainer />
   }
 
   return (

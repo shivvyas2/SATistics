@@ -1,12 +1,28 @@
 import { BaseGame } from '../BaseGame';
 import * as THREE from 'three';
+import type { SATQuestion } from '@/lib/api/questions'
+import type { GameAnalytics, QuestionAttempt } from '@/games/whackamole/types'
 
-interface SAT_Question {
-  question: string
-  options: string[]
-  correct: number
-  category: 'math' | 'reading' | 'writing'
+export interface PacManHudState {
+  score: number
+  lives: number
+  level: number
+  isPowerMode: boolean
+  isGameOver: boolean
+  // Time left to answer the question on screen
+  questionSecondsLeft: number
+  questionSecondsTotal: number
 }
+
+export interface PacManReviewItem {
+  question: SATQuestion
+  selected: number | null
+  isCorrect: boolean
+  timeSpent: number
+}
+
+// A question appears each time this many dots are eaten
+const DOTS_PER_QUESTION = 10
 
 interface Ghost {
   mesh: THREE.Mesh
@@ -48,67 +64,30 @@ export class PacManGame extends BaseGame {
   private dotsCollected = 0
   private totalDots = 0
   
-  private currentQuestion: SAT_Question | null = null
+  private currentQuestion: SATQuestion | null = null
   private questionTimer = 0
   private showQuestion = false
   private questionCooldown = 0
   
-  private satQuestions: SAT_Question[] = [
-    {
-      question: "If 2x + 5 = 13, what is x?",
-      options: ["2", "4", "6", "8"],
-      correct: 1,
-      category: 'math'
-    },
-    {
-      question: "What is 15% of 200?",
-      options: ["25", "30", "35", "40"],
-      correct: 1,
-      category: 'math'
-    },
-    {
-      question: "Which word is most similar to 'ephemeral'?",
-      options: ["eternal", "temporary", "solid", "beautiful"],
-      correct: 1,
-      category: 'reading'
-    },
-    {
-      question: "If a = 3b and b = 4, what is a?",
-      options: ["7", "12", "16", "20"],
-      correct: 1,
-      category: 'math'
-    },
-    {
-      question: "Which sentence is grammatically correct?",
-      options: ["Me and him went", "Him and I went", "He and I went", "I and he went"],
-      correct: 2,
-      category: 'writing'
-    },
-    {
-      question: "Solve: (x + 2)² = 16. What are the values of x?",
-      options: ["2, -6", "4, -8", "2, -2", "4, 0"],
-      correct: 0,
-      category: 'math'
-    },
-    {
-      question: "'Ameliorate' most nearly means:",
-      options: ["worsen", "improve", "maintain", "destroy"],
-      correct: 1,
-      category: 'reading'
-    },
-    {
-      question: "If f(x) = 2x - 3, what is f(5)?",
-      options: ["7", "8", "10", "13"],
-      correct: 0,
-      category: 'math'
-    }
-  ]
+  private questions: SATQuestion[] = []
+  private questionIndex = 0
+  private questionSeconds = 35
+  private attempts: QuestionAttempt[] = []
+  private review: PacManReviewItem[] = []
+  private hasEnded = false
+
+  // Callbacks
+  public onHudChange?: (state: PacManHudState) => void
+  public onQuestionChange?: (question: SATQuestion | null) => void
+  public onGameOver?: (analytics: GameAnalytics, review: PacManReviewItem[]) => void
+
+  // Questions to ask, and how long the player gets for each
+  setQuestions(questions: SATQuestion[], secondsPerQuestion: number): void {
+    this.questions = questions
+    this.questionSeconds = secondsPerQuestion
+  }
 
   init(): void {
-    console.log('PacMan init called with dimensions:', this.width, 'x', this.height);
-    console.log('Canvas passed to constructor:', this.canvas);
-    console.log('THREE object:', THREE);
-    console.log('THREE.WebGLRenderer:', THREE.WebGLRenderer);
     
     if (!this.canvas) {
       console.error('Canvas not found!');
@@ -124,8 +103,6 @@ export class PacManGame extends BaseGame {
       });
       this.renderer.setSize(this.width, this.height);
       this.renderer.setPixelRatio(window.devicePixelRatio);
-      
-      console.log('Renderer created successfully');
     } catch (error) {
       console.error('Error creating renderer:', error);
       console.error('THREE.WebGLRenderer type:', typeof THREE.WebGLRenderer);
@@ -134,18 +111,12 @@ export class PacManGame extends BaseGame {
 
     // Create scene and camera
     this.scene = new THREE.Scene();
-    this.scene.background = new THREE.Color(0x1a1a2e);
+    this.scene.background = new THREE.Color(0x000000);
     
     // Position camera to look down at the maze from above
     this.camera = new THREE.PerspectiveCamera(60, this.width / this.height, 0.1, 1000);
-    this.camera.position.set(0, 35, 0);
     this.camera.lookAt(0, 0, 0);
-    
-    console.log('PacMan: Scene initialized', {
-      width: this.width,
-      height: this.height,
-      camera: this.camera.position
-    });
+    this.resize(this.width, this.height);
     
     // Lighting - make it brighter
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
@@ -170,8 +141,6 @@ export class PacManGame extends BaseGame {
     ground.position.y = -0.1;
     this.scene.add(ground);
     
-    console.log('Lighting and ground added');
-    
     // Create maze
     this.generateMaze();
     this.createMazeWalls();
@@ -186,8 +155,6 @@ export class PacManGame extends BaseGame {
     this.pacman = new THREE.Mesh(pacmanGeometry, pacmanMaterial);
     this.pacman.position.set(this.pacmanPos.x, 0.6, this.pacmanPos.z);
     this.scene.add(this.pacman);
-    
-    console.log('Pacman created at:', this.pacmanPos);
     
     // Create ghosts
     this.createGhosts();
@@ -242,8 +209,6 @@ export class PacManGame extends BaseGame {
     const startX = -this.maze[0].length / 2 * this.cellSize
     const startZ = -this.maze.length / 2 * this.cellSize
     
-    console.log('Creating walls at:', { startX, startZ })
-    
     for (let row = 0; row < this.maze.length; row++) {
       for (let col = 0; col < this.maze[row].length; col++) {
         if (this.maze[row][col] === 1) {
@@ -258,8 +223,6 @@ export class PacManGame extends BaseGame {
         }
       }
     }
-    
-    console.log(`Created ${this.walls.length} walls`)
   }
 
   private createGhosts(): void {
@@ -339,20 +302,18 @@ export class PacManGame extends BaseGame {
   }
 
   update(deltaTime: number): void {
-    if (this.state.isPaused || this.state.isGameOver) return
+    this.emitHud()
+    if (this.state.isGameOver) {
+      this.endGame()
+      return
+    }
+    if (this.state.isPaused) return
     if (!this.pacman || !this.scene) return // Safety check
     
     // Update question timer
     if (this.showQuestion) {
       this.questionTimer += deltaTime
-      if (this.questionTimer > 10000) { // 10 seconds to answer
-        this.showQuestion = false
-        this.currentQuestion = null
-        this.setState({ lives: this.state.lives - 1 })
-        if (this.state.lives <= 0) {
-          this.setState({ isGameOver: true })
-        }
-      }
+      if (this.questionTimer > this.questionSeconds * 1000) this.answer(null)
       return // Pause game during question
     }
     
@@ -448,7 +409,7 @@ export class PacManGame extends BaseGame {
         this.setState({ score: this.state.score + 10 })
         
         // Trigger question every 10 dots
-        if (this.dotsCollected % 10 === 0 && this.questionCooldown <= 0) {
+        if (this.dotsCollected % DOTS_PER_QUESTION === 0 && this.questionCooldown <= 0) {
           this.triggerQuestion()
         }
         
@@ -536,16 +497,26 @@ export class PacManGame extends BaseGame {
   }
 
   private triggerQuestion(): void {
-    this.currentQuestion = this.satQuestions[Math.floor(Math.random() * this.satQuestions.length)]
+    if (this.questions.length === 0) return
+    this.currentQuestion = this.questions[this.questionIndex++ % this.questions.length]
     this.showQuestion = true
     this.questionTimer = 0
     this.questionCooldown = 5000
+    this.onQuestionChange?.(this.currentQuestion)
   }
 
-  private answerQuestion(answerIndex: number): void {
-    if (!this.currentQuestion) return
-    
-    if (answerIndex === this.currentQuestion.correct) {
+  // Answers the question on screen; null means time ran out
+  answer(selected: number | null): void {
+    const question = this.currentQuestion
+    if (!question) return
+
+    const isCorrect = selected === question.correctAnswer
+    const timeSpent = Math.round(this.questionTimer)
+    this.attempts.push({ questionId: question.id, topic: question.topic, difficulty: question.difficulty, isCorrect, timeSpent })
+    this.review.push({ question, selected, isCorrect, timeSpent })
+
+    if (isCorrect) {
+      // A right answer turns the ghosts blue, like a power pellet
       this.setState({ score: this.state.score + 100 })
       this.powerMode = true
       this.powerModeTimer = 5000
@@ -561,6 +532,76 @@ export class PacManGame extends BaseGame {
     
     this.showQuestion = false
     this.currentQuestion = null
+    this.onQuestionChange?.(null)
+  }
+
+  resize(width: number, height: number): void {
+    this.width = width
+    this.height = height
+    if (!this.renderer || !this.camera) return
+    this.renderer.setSize(width, height, false)
+    this.camera.aspect = width / height
+    // Pull the camera back on tall screens so the whole maze stays in view
+    this.camera.position.set(0, 35 * Math.max(1, 1.15 / this.camera.aspect), 0)
+    this.camera.lookAt(0, 0, 0)
+    this.camera.updateProjectionMatrix()
+  }
+
+  // Steers Pac-Man; the turn happens at the next opening
+  setDirection(x: number, z: number): void {
+    this.nextDir = { x, z }
+  }
+
+  setPaused(paused: boolean): void {
+    this.setState({ isPaused: paused })
+  }
+
+  private emitHud(): void {
+    this.onHudChange?.({
+      score: this.state.score,
+      lives: Math.max(0, this.state.lives),
+      level: this.state.level,
+      isPowerMode: this.powerMode,
+      isGameOver: this.state.isGameOver,
+      questionSecondsLeft: Math.max(0, this.questionSeconds - this.questionTimer / 1000),
+      questionSecondsTotal: this.questionSeconds,
+    })
+  }
+
+  private endGame(): void {
+    if (this.hasEnded) return
+    this.hasEnded = true
+
+    const topicPerformance: GameAnalytics['topicPerformance'] = {}
+    this.attempts.forEach((attempt) => {
+      const perf = (topicPerformance[attempt.topic] ||= { correct: 0, total: 0, accuracy: 0 })
+      perf.total++
+      if (attempt.isCorrect) perf.correct++
+      perf.accuracy = (perf.correct / perf.total) * 100
+    })
+    const correct = this.attempts.filter((attempt) => attempt.isCorrect).length
+    const totalTime = this.attempts.reduce((sum, attempt) => sum + attempt.timeSpent, 0)
+    let streak = 0
+    let maxStreak = 0
+    for (const attempt of this.attempts) {
+      streak = attempt.isCorrect ? streak + 1 : 0
+      maxStreak = Math.max(maxStreak, streak)
+    }
+
+    this.onGameOver?.(
+      {
+        gameId: 'pac-man',
+        score: this.state.score,
+        accuracy: this.attempts.length > 0 ? (correct / this.attempts.length) * 100 : 0,
+        correctAnswers: correct,
+        wrongAnswers: this.attempts.length - correct,
+        questionAttempts: this.attempts,
+        topicPerformance,
+        streakInfo: { maxStreak },
+        averageResponseTime: this.attempts.length > 0 ? Math.round(totalTime / this.attempts.length) : 0,
+      },
+      this.review
+    )
   }
 
   private resetPositions(): void {
@@ -608,97 +649,17 @@ export class PacManGame extends BaseGame {
     })
   }
 
-  render(ctx: CanvasRenderingContext2D): void {
-    // Render Three.js scene FIRST
+  // The score, question and game-over screens are drawn by the page, not on the canvas
+  render(): void {
     if (this.renderer && this.scene && this.camera) {
       this.renderer.render(this.scene, this.camera)
     }
-    
-    // Now overlay UI on top of the WebGL canvas
-    ctx.save()
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)'
-    ctx.fillRect(0, 0, this.width, 80)
-    
-    ctx.fillStyle = '#fff'
-    ctx.font = 'bold 24px Arial'
-    ctx.fillText(`Score: ${this.state.score}`, 20, 30)
-    ctx.fillText(`Lives: ${'❤️'.repeat(this.state.lives)}`, 20, 60)
-    ctx.fillText(`Level: ${this.state.level}`, this.width - 150, 30)
-    
-    if (this.powerMode) {
-      ctx.fillStyle = '#ff88ff'
-      ctx.fillText('POWER MODE!', this.width - 200, 60)
-    }
-    
-    // Question overlay
-    if (this.showQuestion && this.currentQuestion) {
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.9)'
-      ctx.fillRect(50, this.height / 2 - 150, this.width - 100, 300)
-      
-      ctx.fillStyle = '#fff'
-      ctx.font = 'bold 20px Arial'
-      ctx.fillText('SAT QUESTION!', this.width / 2 - 80, this.height / 2 - 100)
-      
-      ctx.font = '18px Arial'
-      const words = this.currentQuestion.question.split(' ')
-      let line = ''
-      let y = this.height / 2 - 60
-      
-      words.forEach(word => {
-        const testLine = line + word + ' '
-        if (ctx.measureText(testLine).width > this.width - 150) {
-          ctx.fillText(line, this.width / 2 - ctx.measureText(line).width / 2, y)
-          line = word + ' '
-          y += 25
-        } else {
-          line = testLine
-        }
-      })
-      ctx.fillText(line, this.width / 2 - ctx.measureText(line).width / 2, y)
-      
-      // Options
-      ctx.font = 'bold 16px Arial'
-      this.currentQuestion.options.forEach((option, i) => {
-        const optionY = this.height / 2 + i * 35
-        ctx.fillStyle = '#4a9eff'
-        ctx.fillRect(this.width / 2 - 200, optionY, 400, 30)
-        ctx.fillStyle = '#fff'
-        ctx.fillText(`${i + 1}. ${option}`, this.width / 2 - 180, optionY + 22)
-      })
-      
-      ctx.fillStyle = '#ff0'
-      ctx.font = '14px Arial'
-      const timeLeft = Math.ceil((10000 - this.questionTimer) / 1000)
-      ctx.fillText(`Time: ${timeLeft}s`, this.width / 2 - 40, this.height / 2 + 170)
-    }
-    
-    // Game Over
-    if (this.state.isGameOver) {
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.8)'
-      ctx.fillRect(0, 0, this.width, this.height)
-      
-      ctx.fillStyle = '#fff'
-      ctx.font = 'bold 48px Arial'
-      ctx.fillText('GAME OVER', this.width / 2 - 150, this.height / 2 - 40)
-      ctx.font = '24px Arial'
-      ctx.fillText(`Final Score: ${this.state.score}`, this.width / 2 - 100, this.height / 2 + 20)
-      ctx.font = '18px Arial'
-      ctx.fillText('Press R to Restart', this.width / 2 - 90, this.height / 2 + 60)
-    }
-    
-    ctx.restore()
   }
 
   handleInput(key: string): void {
-    if (this.state.isGameOver && key.toLowerCase() === 'r') {
-      this.cleanup()
-      this.init()
-      return
-    }
-    
     // Answer questions with number keys
-    if (this.showQuestion && ['1', '2', '3', '4'].includes(key)) {
-      this.answerQuestion(parseInt(key) - 1)
+    if (this.showQuestion && this.currentQuestion && key >= '1' && key <= String(this.currentQuestion.options.length)) {
+      this.answer(parseInt(key) - 1)
       return
     }
     
@@ -719,9 +680,6 @@ export class PacManGame extends BaseGame {
       case 'arrowright':
       case 'd':
         this.nextDir = { x: 1, z: 0 }
-        break
-      case ' ':
-        this.setState({ isPaused: !this.state.isPaused })
         break
     }
   }

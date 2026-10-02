@@ -4,6 +4,7 @@
  */
 
 import type { Profile } from '@/lib/profile'
+import type { CustomQuestion, Material } from '@/lib/materials'
 
 export interface Video {
   id: string
@@ -219,6 +220,57 @@ class ApiClient {
     const params = new URLSearchParams({ exam, section, topic, limit: String(limit) })
     const result = await this.request<{ videos: Video[] }>(`/api/learn/videos?${params.toString()}`)
     return result.videos ?? []
+  }
+
+  // Study material endpoints
+  async uploadMaterial(input: { exam: string; section: string; name: string; text: string; generate: boolean; file: File | null }) {
+    const form = new FormData()
+    form.append('exam', input.exam)
+    form.append('section', input.section)
+    form.append('name', input.name)
+    form.append('text', input.text)
+    form.append('generate', String(input.generate))
+    if (input.file) form.append('file', input.file)
+
+    // Sent with fetch directly so the browser sets the multipart boundary itself
+    const response = await fetch(`${this.baseUrl}/api/materials`, {
+      method: 'POST',
+      body: form,
+      headers: this.token ? { Authorization: `Bearer ${this.token}` } : {},
+    })
+    const body = await response.json().catch(() => ({ detail: response.statusText }))
+    if (!response.ok) throw new Error(body.detail || `HTTP error! status: ${response.status}`)
+    return body as { material: Material; questions: CustomQuestion[] }
+  }
+
+  async getMaterials(): Promise<Material[]> {
+    const result = await this.request<{ materials: Material[] }>('/api/materials')
+    return result.materials
+  }
+
+  async getMaterialQuestions(materialId: string): Promise<CustomQuestion[]> {
+    const result = await this.request<{ questions: CustomQuestion[] }>(`/api/materials/${materialId}/questions`)
+    return result.questions
+  }
+
+  async updateCustomQuestion(questionId: number, changes: Partial<Pick<CustomQuestion, 'correct_answer' | 'status'>>): Promise<CustomQuestion> {
+    const result = await this.request<{ question: CustomQuestion }>(`/api/materials/questions/${questionId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(changes),
+    })
+    return result.question
+  }
+
+  async deleteCustomQuestion(questionId: number) {
+    return this.request(`/api/materials/questions/${questionId}`, { method: 'DELETE' })
+  }
+
+  async approveAllQuestions(materialId: string) {
+    return this.request<{ approved: number; needs_answer: number }>(`/api/materials/${materialId}/approve-all`, { method: 'POST' })
+  }
+
+  async deleteMaterial(materialId: string) {
+    return this.request(`/api/materials/${materialId}`, { method: 'DELETE' })
   }
 
   async getTopics() {

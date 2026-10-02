@@ -6,7 +6,7 @@ export async function middleware(request: NextRequest) {
                 request.headers.get('authorization')?.replace('Bearer ', '')
 
   // PROTECTED ROUTES - Require authentication for the app; the landing page stays public
-  const protectedPrefixes = ['/dashboard', '/games', '/learn', '/profile', '/stats']
+  const protectedPrefixes = ['/dashboard', '/games', '/learn', '/materials', '/profile', '/stats']
   if (protectedPrefixes.some((prefix) => request.nextUrl.pathname.startsWith(prefix)) && !token) {
     const url = request.nextUrl.clone()
     url.pathname = '/login'

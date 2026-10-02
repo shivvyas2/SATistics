@@ -6,6 +6,15 @@ import type { CarnivalGame } from '@/games/carnival/CarnivalGame'
 import { GameOverModal } from './GameOverModal'
 import { fetchQuestionsWithCache } from '@/lib/api/questions'
 import { satQuestions } from '@/games/carnival/questions'
+import type { SATQuestion as ExamQuestion } from '@/lib/api/questions'
+import { getHighScore, recordHighScore } from '@/lib/arcade'
+import { strategyHint } from '@/lib/hints'
+import { ArcadeFrame, ArcadeStartScreen, ArcadeTopBar } from './arcade/ArcadeFrame'
+import { LaneChip } from './exam/LaneChip'
+import { PauseMenu } from './exam/PauseMenu'
+import { QuestionContent } from './QuestionContent'
+
+const ACCENT = '#f472b6'
 
 interface CarnivalGameContainerProps {
   gameId: string
@@ -22,6 +31,15 @@ export function CarnivalGameContainer({ gameId }: CarnivalGameContainerProps) {
   const [showResult, setShowResult] = useState(false)
   const [gameOver, setGameOver] = useState(false)
   const [analytics, setAnalytics] = useState<GameAnalytics | null>(null)
+  const [started, setStarted] = useState(false)
+  const [paused, setPaused] = useState(false)
+  const [showHint, setShowHint] = useState(false)
+  const [highScore, setHighScore] = useState(0)
+  // The game loop reads this to know whether to advance the game
+  const runningRef = useRef(false)
+  runningRef.current = started && !paused
+
+  useEffect(() => setHighScore(getHighScore('carnival')), [])
 
   // Fetch AI questions on mount
   useEffect(() => {
@@ -65,6 +83,7 @@ export function CarnivalGameContainer({ gameId }: CarnivalGameContainerProps) {
         setCurrentQuestion(question)
         setSelectedAnswer(null)
         setShowResult(false)
+        setShowHint(false)
       }
 
       game.onGameStateChange = (state) => {
@@ -74,6 +93,7 @@ export function CarnivalGameContainer({ gameId }: CarnivalGameContainerProps) {
       game.onGameOver = async (analyticsData) => {
         setAnalytics(analyticsData)
         setGameOver(true)
+        setHighScore(recordHighScore('carnival', analyticsData.score))
         
         // Save score to database via FastAPI
         try {
@@ -93,7 +113,8 @@ export function CarnivalGameContainer({ gameId }: CarnivalGameContainerProps) {
         const deltaTime = currentTime - lastTime
         lastTime = currentTime
 
-        game.update(deltaTime)
+        // Hold the game still on the start screen and while paused
+        if (runningRef.current) game.update(deltaTime)
         game.render(null as any)
 
         animationFrameId = requestAnimationFrame(gameLoop)
@@ -134,131 +155,108 @@ export function CarnivalGameContainer({ gameId }: CarnivalGameContainerProps) {
     window.location.reload()
   }
 
-  // Show loading screen while fetching AI questions
   if (loading) {
     return (
-      <div className="fixed inset-0 w-screen h-screen bg-gradient-to-br from-purple-600 via-pink-500 to-yellow-400 overflow-hidden flex items-center justify-center">
-        <div className="text-center">
-          <div className="text-6xl mb-4">🎯</div>
-          <div className="text-white text-2xl font-bold mb-2">Loading AI Questions...</div>
-          <div className="text-white/80">Generating personalized SAT questions with Claude Haiku 4.5</div>
-          <div className="mt-4">
-            <div className="w-64 h-2 bg-white/20 rounded-full overflow-hidden mx-auto">
-              <div className="h-full bg-white animate-pulse" style={{ width: '60%' }}></div>
-            </div>
+      <ArcadeFrame color={ACCENT}>
+        <div className="absolute inset-0 flex items-center justify-center">
+          <div className="text-center">
+            <p className="arcade-font arcade-glow text-lg text-pink-400">BALLOON POP</p>
+            <p className="arcade-font arcade-blink mt-6 text-[10px] text-white">LOADING QUESTIONS...</p>
           </div>
         </div>
-      </div>
+      </ArcadeFrame>
     )
   }
 
+  const question = currentQuestion as ExamQuestion | null
+
   return (
-    <div className="fixed inset-0 w-screen h-screen bg-black overflow-hidden" style={{ margin: 0, padding: 0 }}>
-      {/* Game Canvas with Overlays */}
-      <div className="relative w-full h-full">
-        <canvas
-          ref={canvasRef}
-          className="absolute inset-0 w-full h-full cursor-crosshair"
-          style={{ 
-            display: 'block',
-            margin: 0,
-            padding: 0
-          }}
-          tabIndex={-1}
+    <ArcadeFrame color={ACCENT}>
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0 w-full h-full cursor-crosshair touch-manipulation"
+        style={{ display: 'block' }}
+        tabIndex={-1}
+      />
+
+      {!started && (
+        <ArcadeStartScreen
+          title="BALLOON POP"
+          subtitle={`${questions.length} quick-fire questions`}
+          instructions={[
+            'Each balloon carries one answer. Tap or click the balloon with the right one.',
+            'You get three shots per question.',
+            'Stuck? Ask for a hint.',
+          ]}
+          highScore={highScore}
+          onStart={() => setStarted(true)}
         />
+      )}
 
-        {/* Question Overlay - Top */}
-        {currentQuestion && !gameOver && (
-          <div className="absolute top-4 left-4 right-4 bg-black/80 backdrop-blur-sm rounded-lg p-4 border-2 border-red-500">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="px-2 py-1 bg-blue-600 text-white rounded text-xs font-bold">
-                {currentQuestion.topic}
-              </span>
-              <span className={`px-2 py-1 rounded text-xs font-bold text-white ${
-                currentQuestion.difficulty === 'easy' ? 'bg-green-600' :
-                currentQuestion.difficulty === 'medium' ? 'bg-yellow-600' :
-                'bg-red-600'
-              }`}>
-                {currentQuestion.difficulty.toUpperCase()}
-              </span>
-            </div>
-            <h3 className="text-white font-bold text-lg leading-tight">
-              {currentQuestion.question}
-            </h3>
-          </div>
-        )}
+      {started && !paused && !gameOver && gameState && (
+        <div className="absolute inset-0 z-10 flex flex-col pointer-events-none">
+          <ArcadeTopBar
+            stats={[
+              { label: 'SCORE', value: String(gameState.score).padStart(6, '0') },
+              { label: 'HI-SCORE', value: String(Math.max(highScore, gameState.score)).padStart(6, '0'), color: '#fde047' },
+              { label: 'SHOTS', value: '●'.repeat(gameState.bulletsRemaining) + '○'.repeat(Math.max(0, 3 - gameState.bulletsRemaining)), color: '#f472b6' },
+              { label: 'STREAK', value: `x${gameState.streak}`, color: '#fb923c' },
+            ]}
+            onPause={() => setPaused(true)}
+          />
 
-        {/* Answer Options - Compact Bottom Bar */}
-        {currentQuestion && !gameOver && (
-          <div className="absolute bottom-16 left-4 right-4 bg-black/90 backdrop-blur-sm rounded-lg p-2 border border-white/20">
-            <div className="grid grid-cols-4 gap-2 text-xs">
-              {currentQuestion.options.map((option, index) => {
-                const colors = ['bg-red-500', 'bg-cyan-500', 'bg-yellow-400', 'bg-green-400']
-                const textColors = ['text-white', 'text-white', 'text-black', 'text-black']
-                const labels = ['A', 'B', 'C', 'D']
-
-                return (
-                  <div
-                    key={index}
-                    className={`${colors[index]} ${textColors[index]} rounded px-2 py-1 text-center font-bold border border-black`}
+          {question && (
+            <>
+              {/* Question - Top */}
+              <div className="arcade-panel pointer-events-auto mx-3 mt-2 flex max-h-[34vh] flex-col overflow-hidden text-white">
+                <div className="flex flex-none items-center gap-2 px-4 pt-2 text-xs">
+                  <span className="font-bold text-pink-300">
+                    Question {gameState.currentQuestionIndex + 1} of {gameState.totalQuestions}
+                  </span>
+                  <span className="truncate text-gray-300">{question.skill || question.topic}</span>
+                  <button
+                    onClick={() => setShowHint(true)}
+                    disabled={showHint}
+                    className="ml-auto flex-none rounded-lg border border-amber-300/60 bg-amber-300/15 px-3 py-1 text-xs font-bold text-amber-200 disabled:opacity-40"
                   >
-                    <span className="font-black">{labels[index]}: </span>
-                    <span className="text-[10px]">{option}</span>
+                    Hint
+                  </button>
+                </div>
+                <div className="dark-scroll min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-2">
+                  {question.passage && (
+                    <QuestionContent html={question.passageHtml} text={question.passage} className="game-reading text-[15px] leading-normal text-gray-100" />
+                  )}
+                  <QuestionContent
+                    html={question.questionHtml}
+                    text={question.stem || question.question}
+                    className="text-[15px] font-semibold leading-snug sm:text-[17px]"
+                  />
+                  {showHint && <p className="text-sm text-amber-200">Hint: {strategyHint(question)}</p>}
+                </div>
+              </div>
+
+              <div className="flex-1" />
+
+              {/* Answers - Bottom */}
+              <div className="arcade-panel pointer-events-auto m-3 grid grid-cols-2 gap-2 p-2 text-white lg:grid-cols-4">
+                {question.options.map((option, index) => (
+                  <div key={index} className="flex items-center gap-2 rounded-lg bg-white/5 px-2 py-1.5">
+                    <LaneChip lane={index} size="sm" />
+                    <QuestionContent html={question.optionsHtml?.[index]} text={option} className="min-w-0 flex-1 break-words text-sm leading-snug" />
                   </div>
-                )
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Instruction */}
-        <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 bg-gradient-to-r from-red-600 to-pink-600 text-white px-8 py-3 rounded-full font-bold text-base shadow-2xl animate-pulse border-2 border-yellow-400 z-10">
-          🎈 POP THE CORRECT BALLOON!
+                ))}
+              </div>
+            </>
+          )}
         </div>
+      )}
 
-        {/* Bullets Remaining */}
-        {gameState && !gameOver && (
-          <div className="absolute bottom-4 left-4 bg-yellow-500 text-black px-4 py-2 rounded-lg font-bold flex items-center gap-2 z-10">
-            <span>🔫 Bullets:</span>
-            <span className="text-xl">{gameState.bulletsRemaining}</span>
-          </div>
-        )}
-
-        {/* HUD Stats - Overlay Top Right */}
-        {gameState && !gameOver && (
-          <div className="absolute top-20 right-4 bg-black/80 backdrop-blur-sm rounded-lg px-4 py-3 border border-gray-700 flex flex-col gap-2 z-10">
-            <div className="flex items-center gap-2">
-              <span className="text-gray-400 text-sm">Score:</span>
-              <span className="text-white font-bold text-lg">{gameState.score}</span>
-            </div>
-            
-            <div className="flex items-center gap-2">
-              <span className="text-gray-400 text-sm">Streak:</span>
-              <span className="text-orange-400 font-bold text-lg">
-                {gameState.streak > 0 ? `🔥 ${gameState.streak}` : '—'}
-              </span>
-            </div>
-            
-            <div className="flex items-center gap-2">
-              <span className="text-gray-400 text-sm">Question:</span>
-              <span className="text-white font-bold text-lg">
-                {gameState.currentQuestionIndex + 1}/{gameState.totalQuestions}
-              </span>
-            </div>
-            
-            <div className="flex items-center gap-2">
-              <span className="text-gray-400 text-sm">Correct:</span>
-              <span className="text-green-400 font-bold text-lg">{gameState.correctAnswers}</span>
-            </div>
-          </div>
-        )}
-      </div>
+      {paused && !gameOver && <PauseMenu gameId="carnival" onResume={() => setPaused(false)} />}
 
       {/* Game Over Modal */}
       {gameOver && analytics && (
         <GameOverModal analytics={analytics} onRestart={handleRestart} />
       )}
-    </div>
+    </ArcadeFrame>
   )
 }
-

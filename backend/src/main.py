@@ -49,13 +49,13 @@ app.add_middleware(
 
 # Import routers
 try:
-    from src.api import auth, games, stats, questions, health, profile, learn
+    from src.api import auth, games, stats, questions, health, profile, learn, materials
 except ImportError:
     # If running as script, use relative imports
     import sys
     import os
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    from src.api import auth, games, stats, questions, health, profile, learn
+    from src.api import auth, games, stats, questions, health, profile, learn, materials
 
 # Include routers
 app.include_router(health.router, prefix="/api/health", tags=["Health"])
@@ -65,6 +65,7 @@ app.include_router(stats.router, prefix="/api/stats", tags=["Statistics"])
 app.include_router(questions.router, prefix="/api/questions", tags=["Questions"])
 app.include_router(profile.router, prefix="/api/profile", tags=["Profile"])
 app.include_router(learn.router, prefix="/api/learn", tags=["Learn"])
+app.include_router(materials.router, prefix="/api/materials", tags=["Materials"])
 
 @app.get("/")
 async def root():

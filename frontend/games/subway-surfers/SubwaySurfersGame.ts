@@ -41,6 +41,8 @@ const MODULE_BREAK_SECONDS = 4
 // Module 2 gets harder when at least this share of module 1 was correct
 const HARDER_MODULE_ACCURACY = 0.6
 const DIFFICULTY_POINTS: Record<Difficulty, number> = { easy: 100, medium: 150, hard: 200 }
+// Share of a question's points kept for each answer a hint rules out
+const HINT_POINTS_FACTOR = 0.6
 const HUD_UPDATE_INTERVAL_MS = 100
 const HORIZON_COLOR = 0xd6eeff
 const MAP_TILE_COUNT = 3
@@ -106,7 +108,7 @@ export class SubwaySurfersGame extends BaseGame {
   private speed = CRUISE_SPEED
   private cruiseSpeed = CRUISE_SPEED
   private cameraX = LANE_CENTER_X
-  private viewShiftPx = 0
+  private viewShift = { x: 0, y: 0 }
   // Wrong-answer tumble: falling, then impact, then back to flying
   private fail: { stage: 'falling' | 'impact'; secondsLeft: number } | null = null
   private cameraDip = 0
@@ -115,6 +117,10 @@ export class SubwaySurfersGame extends BaseGame {
   private pool: SATQuestion[]
   private usedIds = new Set<number>()
   private totalQuestions: number
+  // Questions already given a second try
+  private retriedIds = new Set<number>()
+  // Lanes ruled out by hints on the current question
+  private eliminatedLanes = new Set<number>()
   private moduleSizes: number[]
   private moduleIndex = 0
   private moduleQuestions: SATQuestion[] = []
@@ -538,6 +544,7 @@ export class SubwaySurfersGame extends BaseGame {
     this.gateSecondsTotal = Math.min(this.config.secondsPerQuestion * QUESTION_TIME_CAP, this.sectionSecondsLeft)
     this.isDiving = false
     this.cruiseSpeed = CRUISE_SPEED + Math.min(this.streak, MAX_STREAK_SPEED_STEPS) * STREAK_SPEED_BONUS
+    this.eliminatedLanes.clear()
     this.spawnGates(question.options.length)
     this.phase = 'question'
     this.onQuestionChange?.(question)
@@ -583,7 +590,9 @@ export class SubwaySurfersGame extends BaseGame {
       this.streak++
       this.maxStreak = Math.max(this.maxStreak, this.streak)
       const timeLeftShare = Math.max(0, 1 - this.questionElapsed / this.config.secondsPerQuestion)
-      points = Math.round(DIFFICULTY_POINTS[question.difficulty] + 50 * timeLeftShare + 10 * Math.min(this.streak, 5))
+      const base = DIFFICULTY_POINTS[question.difficulty] + 50 * timeLeftShare + 10 * Math.min(this.streak, 5)
+      // Each lane a hint ruled out makes the question worth less
+      points = Math.round(base * Math.pow(HINT_POINTS_FACTOR, this.eliminatedLanes.size))
       this.setState({ score: this.getState().score + points })
       this.playTone([660, 880])
     } else {
@@ -591,17 +600,26 @@ export class SubwaySurfersGame extends BaseGame {
       this.startFailSequence()
     }
 
+    // A first miss comes back at the end of the module instead of showing the answer
+    const willRetry = !isCorrect && !this.retriedIds.has(question.id)
+    if (willRetry) {
+      this.retriedIds.add(question.id)
+      this.moduleQuestions.push(question)
+      this.totalQuestions++
+      this.sectionSecondsLeft += this.config.secondsPerQuestion
+    }
+
     for (const gate of this.gates) {
       const material = gate.panel.material as THREE.MeshBasicMaterial
-      if (gate.lane === question.correctAnswer) material.color.set(0x16a34a)
-      else if (gate.lane === selected) material.color.set(0xdc2626)
+      if (gate.lane === selected) material.color.set(isCorrect ? 0x16a34a : 0xdc2626)
+      else if (gate.lane === question.correctAnswer && !willRetry) material.color.set(0x16a34a)
       else material.color.set(0x555555)
     }
 
     this.isDiving = false
     this.phase = 'feedback'
     this.phaseSecondsLeft = isCorrect ? CORRECT_FEEDBACK_SECONDS : WRONG_FEEDBACK_SECONDS
-    this.onFeedback?.({ isCorrect, selected, correctAnswer: question.correctAnswer, points })
+    this.onFeedback?.({ isCorrect, selected, correctAnswer: question.correctAnswer, points, willRetry })
     this.emitHud(true)
   }
 
@@ -650,8 +668,31 @@ export class SubwaySurfersGame extends BaseGame {
   }
 
   setLane(lane: number): void {
-    if (this.phase !== 'question' || lane < 0 || lane >= this.laneCount) return
+    if (this.phase !== 'question' || lane < 0 || lane >= this.laneCount || this.eliminatedLanes.has(lane)) return
     this.currentLane = lane
+    this.emitHud(true)
+  }
+
+  // Steps to the next open lane in a direction, skipping lanes a hint ruled out
+  moveLane(direction: -1 | 1): void {
+    for (let lane = this.currentLane + direction; lane >= 0 && lane < this.laneCount; lane += direction) {
+      if (!this.eliminatedLanes.has(lane)) {
+        this.setLane(lane)
+        return
+      }
+    }
+  }
+
+  // A hint ruled this answer out: close its gate and move the runner off it
+  eliminateLane(lane: number): void {
+    if (this.phase !== 'question') return
+    this.eliminatedLanes.add(lane)
+    const gate = this.gates.find((g) => g.lane === lane)
+    if (gate) gate.panel.visible = false
+    if (this.currentLane === lane) {
+      const open = this.gates.map((g) => g.lane).filter((l) => !this.eliminatedLanes.has(l))
+      this.currentLane = open.sort((a, b) => Math.abs(a - lane) - Math.abs(b - lane))[0] ?? lane
+    }
     this.emitHud(true)
   }
 
@@ -912,16 +953,16 @@ export class SubwaySurfersGame extends BaseGame {
   }
 
   // Shifts the scene sideways so the runner stays clear of the question panel
-  setViewShift(pixels: number): void {
-    this.viewShiftPx = pixels
+  setViewShift(x: number, y = 0): void {
+    this.viewShift = { x, y }
     this.applyViewShift()
   }
 
   private applyViewShift(): void {
     if (!this.camera) return
     this.camera.aspect = this.width / this.height
-    if (this.viewShiftPx) {
-      this.camera.setViewOffset(this.width, this.height, -this.viewShiftPx, 0, this.width, this.height)
+    if (this.viewShift.x || this.viewShift.y) {
+      this.camera.setViewOffset(this.width, this.height, -this.viewShift.x, -this.viewShift.y, this.width, this.height)
     } else {
       this.camera.clearViewOffset()
     }
@@ -939,9 +980,9 @@ export class SubwaySurfersGame extends BaseGame {
     if (this.getState().isPaused) return
 
     if (key === 'ArrowLeft' || lower === 'a') {
-      this.setLane(this.currentLane - 1)
+      this.moveLane(-1)
     } else if (key === 'ArrowRight' || lower === 'd') {
-      this.setLane(this.currentLane + 1)
+      this.moveLane(1)
     } else if (key >= '1' && key <= '5') {
       this.setLane(Number(key) - 1)
     } else if (key === ' ' || key === 'Enter' || key === 'ArrowUp' || lower === 'w') {

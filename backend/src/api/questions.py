@@ -9,8 +9,11 @@ from src.models.schemas import QuestionResponse, Question
 from src.utils.database import get_db
 from src.api.auth import get_current_user
 from src.services.agent import ExamLearningAgent
+from src.services.custom_questions import load_custom_questions
 from supabase import Client
 from typing import Literal, Optional
+import asyncio
+import random
 
 router = APIRouter()
 security = HTTPBearer(auto_error=False)
@@ -42,6 +45,7 @@ async def get_questions(
     exam: Literal["sat", "gre"] = Query("sat", description="Exam to practice"),
     section: Literal["quant", "verbal"] = Query("quant", description="Exam section"),
     pace: Optional[Literal["quick", "deep"]] = Query(None, description="quick for fast games, deep for slow ones"),
+    include_custom: bool = Query(True, description="Mix in approved questions from the user's own material"),
     current_user: Optional[dict] = Depends(get_current_user_optional)
 ):
     """Get questions from the question bank
@@ -51,37 +55,37 @@ async def get_questions(
     toward weak topics.
     
     Works with or without authentication:
-    - With auth: Personalized based on user's performance
+    - With auth: Personalized based on user's performance, with up to half the
+      set drawn from questions they approved from their own material
     - Without auth: Generic questions for new users
     """
     try:
         questions = []
+        custom = []
         
         # Use AI agent to generate personalized questions
         if use_agent:
+            if current_user and include_custom:
+                custom = await asyncio.to_thread(
+                    load_custom_questions, str(current_user["id"]), exam, section, pace, limit // 2
+                )
             try:
                 # Use user ID if authenticated, otherwise use a guest ID
                 user_id = str(current_user["id"]) if current_user else "00000000-0000-0000-0000-000000000000"
                 agent = ExamLearningAgent(user_id)
                 generated_questions = await agent.generate_questions(
-                    num_questions=limit,
+                    num_questions=limit - len(custom),
                     use_web_search=use_web_search,
                     exam=exam,
                     section=section,
                     pace=pace
                 )
-                questions = [Question(**q) for q in generated_questions]
+                questions = [Question(**q) for q in custom + generated_questions]
+                random.shuffle(questions)
             except Exception as agent_error:
                 # If agent fails, fall back to static questions
                 print(f"Agent error (falling back to static): {agent_error}")
-                use_agent = False
-        
-        # Fall back to static questions if agent not used or failed
-        if not use_agent or not questions:
-            # TODO: Load questions from database or game files
-            # For now, return empty list
-            # You can import from frontend/games/carnival/questions.ts or whackamole/questions.ts
-            pass
+                questions = [Question(**q) for q in custom]
         
         return QuestionResponse(
             questions=questions,

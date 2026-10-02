@@ -1,941 +1,635 @@
 import * as THREE from 'three'
-import { SATQuestion, ZombieGameState } from './types'
+import { LANE_COLORS, LANE_LETTERS } from '@/games/subway-surfers/types/game'
+import { ZombieConfig, ZombieFeedback, ZombieHudState, ZombiePhase, ZombieReviewItem } from './types'
+import type { SATQuestion } from '@/lib/api/questions'
+import type { GameAnalytics, QuestionAttempt } from '@/games/whackamole/types'
+
+type Difficulty = SATQuestion['difficulty']
 
 interface Zombie {
-  mesh: THREE.Group
-  label: string
-  speed: number
-  isCorrect: boolean
-  isDead: boolean
+  lane: number
+  group: THREE.Group
+  leftLeg: THREE.Mesh
+  rightLeg: THREE.Mesh
+  walkOffset: number
+  state: 'walking' | 'hit' | 'sinking'
+  // Meshes a shot can land on
+  hitMeshes: THREE.Mesh[]
 }
 
-interface Bullet {
+interface Particle {
   mesh: THREE.Mesh
   velocity: THREE.Vector3
+  secondsLeft: number
 }
 
+const SPAWN_Z = -26
+// Zombies stop this close to the player; arriving here means time is up
+const ARRIVE_Z = 1.5
+const ZOMBIE_SPACING = 4.2
+const PLAYER_EYE = new THREE.Vector3(0, 1.7, 6)
+const MAX_HEALTH = 4
+const CORRECT_FEEDBACK_SECONDS = 1.6
+const WRONG_FEEDBACK_SECONDS = 7
+const DIFFICULTY_POINTS: Record<Difficulty, number> = { easy: 100, medium: 150, hard: 200 }
+// Share of a question's points kept for each zombie a hint removes
+const HINT_POINTS_FACTOR = 0.6
+// How far the view turns toward the edges of the screen, in radians
+const AIM_YAW = 0.22
+const AIM_PITCH = 0.1
+const PARTICLE_SECONDS = 0.9
+const HUD_UPDATE_INTERVAL_MS = 100
+
+// Framerate-independent smoothing factor
+function damp(rate: number, dt: number): number {
+  return 1 - Math.exp(-rate * dt)
+}
+
+/**
+ * Zombie Apocalypse
+ * Each zombie carries one answer. Shoot the one with the right answer before
+ * the horde reaches you. A wrong shot or running out of time costs health.
+ */
 export class ZombieGame {
-  private scene!: THREE.Scene
-  private camera!: THREE.PerspectiveCamera
-  private renderer!: THREE.WebGLRenderer
-  private zombies: Zombie[] = []
-  private bullets: Bullet[] = []
-  private currentQuestion: SATQuestion | null = null
-  private gameState: ZombieGameState
+  private scene = new THREE.Scene()
+  private camera: THREE.PerspectiveCamera
+  private renderer: THREE.WebGLRenderer
   private raycaster = new THREE.Raycaster()
-  private mouse = new THREE.Vector2()
-  private collidableObjects: THREE.Mesh[] = []
-  private crosshair!: THREE.Group
-  private gun!: THREE.Group
-  
-  // Movement
-  private keys: { [key: string]: boolean } = {}
-  private velocity = new THREE.Vector3()
-  private moveSpeed = 0.15
-  
-  // Mouse look - START FACING FORWARD (negative Z)
-  private yaw = 0 // 0 = looking at -Z (forward where zombies are)
-  private pitch = 0
+  private gun = new THREE.Group()
+  private muzzleLight = new THREE.PointLight(0xffc266, 0, 12)
+  private zombies: Zombie[] = []
+  private particles: Particle[] = []
+  private particleGeometry = new THREE.BoxGeometry(0.12, 0.12, 0.12)
+  // Where the player is aiming, -1 to 1 across and up the screen
+  private aim = new THREE.Vector2()
+  private recoil = 0
+  private viewShift = { x: 0, y: 0 }
+  private elapsed = 0
+
+  // Game state
+  private phase: ZombiePhase = 'ready'
+  private queue: SATQuestion[]
+  private totalQuestions: number
+  private currentQuestion: SATQuestion | null = null
+  private retriedIds = new Set<number>()
+  private questionElapsed = 0
+  private phaseSecondsLeft = 0
+  private hintsUsed = 0
+  private score = 0
+  private streak = 0
+  private maxStreak = 0
+  private health = MAX_HEALTH
+  private correctAnswers = 0
+  private wrongAnswers = 0
+  private attempts: QuestionAttempt[] = []
+  private review: ZombieReviewItem[] = []
+  private isPaused = false
+
+  // Audio
+  private audioContext: AudioContext | null = null
+  private isMuted = false
+
+  private lastHudUpdateMs = 0
 
   // Callbacks
-  onScoreUpdate?: (score: number) => void
-  onQuestionComplete?: (isCorrect: boolean) => void
-  onGameOver?: (state: ZombieGameState) => void
+  public onHudChange?: (state: ZombieHudState) => void
+  public onQuestionChange?: (question: SATQuestion | null) => void
+  public onFeedback?: (feedback: ZombieFeedback | null) => void
+  public onGameOver?: (analytics: GameAnalytics, review: ZombieReviewItem[], survived: boolean) => void
 
   constructor(
-    private canvas: HTMLCanvasElement,
-    private questions: SATQuestion[]
+    private width: number,
+    private height: number,
+    canvas: HTMLCanvasElement,
+    questions: SATQuestion[],
+    private config: ZombieConfig
   ) {
-    this.gameState = {
-      score: 0,
-      correctAnswers: 0,
-      wrongAnswers: 0,
-      currentQuestionIndex: 0,
-      totalQuestions: questions.length,
-      streak: 0,
-      maxStreak: 0,
-      ammo: 50,
-      health: 100,
-      isGameOver: false
-    }
+    this.queue = questions.slice(0, config.questionCount)
+    this.totalQuestions = this.queue.length
 
-    this.init()
-    this.setupEventListeners()
-    this.animate()
-  }
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true })
+    this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+    this.renderer.setSize(width, height, false)
 
-  private init(): void {
-    // Scene - BRIGHT like a warehouse
-    this.scene = new THREE.Scene()
-    this.scene.background = new THREE.Color(0x87ceeb) // Sky blue
-    this.scene.fog = new THREE.Fog(0x87ceeb, 30, 50)
-
-    // Camera (FPS view)
-    this.camera = new THREE.PerspectiveCamera(
-      75,
-      this.canvas.width / this.canvas.height,
-      0.1,
-      1000
-    )
-    this.camera.position.set(0, 1.6, 8) // Eye level height, start at front
-    // Camera rotation will be controlled by yaw/pitch in updateCamera()
-
-    // Renderer
-    this.renderer = new THREE.WebGLRenderer({ 
-      canvas: this.canvas,
-      antialias: true 
-    })
-    this.renderer.setSize(this.canvas.width, this.canvas.height)
-    this.renderer.shadowMap.enabled = true
-    this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
-
-    // SUPER BRIGHT LIGHTING - Like daytime warehouse
-    const ambientLight = new THREE.AmbientLight(0xffffff, 1.5) // Very bright white
-    this.scene.add(ambientLight)
-
-    // Hemisphere light for natural look
-    const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 1.0)
-    hemiLight.position.set(0, 20, 0)
-    this.scene.add(hemiLight)
-
-    // Main directional light (like sun through window)
-    const sunLight = new THREE.DirectionalLight(0xffffff, 2.0)
-    sunLight.position.set(5, 10, 5)
-    sunLight.castShadow = true
-    sunLight.shadow.mapSize.width = 2048
-    sunLight.shadow.mapSize.height = 2048
-    this.scene.add(sunLight)
-
-    // Additional overhead lights for even coverage
-    const mainLight1 = new THREE.PointLight(0xffffff, 2.0, 30)
-    mainLight1.position.set(0, 4.5, 0)
-    this.scene.add(mainLight1)
-
-    const mainLight2 = new THREE.PointLight(0xffffff, 2.0, 30)
-    mainLight2.position.set(-8, 4.5, -8)
-    this.scene.add(mainLight2)
-
-    const mainLight3 = new THREE.PointLight(0xffffff, 2.0, 30)
-    mainLight3.position.set(8, 4.5, -8)
-    this.scene.add(mainLight3)
-
-    const mainLight4 = new THREE.PointLight(0xffffff, 2.0, 30)
-    mainLight4.position.set(0, 4.5, 8)
-    this.scene.add(mainLight4)
-
-    // Create creepy room
-    this.createCreepyRoom()
-    
-    // Add camera to scene
+    this.camera = new THREE.PerspectiveCamera(65, width / height, 0.1, 200)
+    this.camera.position.copy(PLAYER_EYE)
     this.scene.add(this.camera)
-    
-    // Create 3D crosshair that shows where bullets go
-    this.createCrosshair()
-    
-    // Create gun
-    this.createGun()
+
+    this.buildGraveyard()
+    this.buildGun()
+    this.emitHud(true)
   }
-  
-  private createGun(): void {
-    this.gun = new THREE.Group()
-    
-    // Gun body
-    const bodyGeometry = new THREE.BoxGeometry(0.15, 0.3, 0.5)
-    const bodyMaterial = new THREE.MeshStandardMaterial({ 
-      color: 0x2a2a2a,
-      metalness: 0.8,
-      roughness: 0.2
-    })
-    const body = new THREE.Mesh(bodyGeometry, bodyMaterial)
-    this.gun.add(body)
-    
-    // Gun barrel
-    const barrelGeometry = new THREE.CylinderGeometry(0.03, 0.03, 0.3, 8)
-    const barrelMaterial = new THREE.MeshStandardMaterial({ 
-      color: 0x1a1a1a,
-      metalness: 0.9,
-      roughness: 0.1
-    })
-    const barrel = new THREE.Mesh(barrelGeometry, barrelMaterial)
+
+  // ---------- Scene ----------
+
+  private buildGraveyard(): void {
+    const night = 0x0b1030
+    this.scene.background = new THREE.Color(night)
+    this.scene.fog = new THREE.Fog(night, 18, 60)
+
+    this.scene.add(new THREE.HemisphereLight(0x9fb4ff, 0x2a3a2a, 2.4))
+    const moonlight = new THREE.DirectionalLight(0xbfd0ff, 1.8)
+    moonlight.position.set(-12, 20, -10)
+    this.scene.add(moonlight)
+
+    const moon = new THREE.Mesh(new THREE.SphereGeometry(3, 24, 24), new THREE.MeshBasicMaterial({ color: 0xfdf6d8, fog: false }))
+    moon.position.set(-22, 26, -70)
+    this.scene.add(moon)
+
+    const starPositions: number[] = []
+    for (let i = 0; i < 300; i++) {
+      starPositions.push((Math.random() - 0.5) * 240, 12 + Math.random() * 60, -90 + Math.random() * 20)
+    }
+    const starGeometry = new THREE.BufferGeometry()
+    starGeometry.setAttribute('position', new THREE.Float32BufferAttribute(starPositions, 3))
+    this.scene.add(new THREE.Points(starGeometry, new THREE.PointsMaterial({ color: 0xffffff, size: 0.5, fog: false })))
+
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), new THREE.MeshLambertMaterial({ color: 0x1f3d2b }))
+    ground.rotation.x = -Math.PI / 2
+    this.scene.add(ground)
+
+    // Dirt path the horde walks down
+    const path = new THREE.Mesh(new THREE.PlaneGeometry(22, 60), new THREE.MeshLambertMaterial({ color: 0x3b3326 }))
+    path.rotation.x = -Math.PI / 2
+    path.position.set(0, 0.01, -18)
+    this.scene.add(path)
+
+    const stone = new THREE.MeshLambertMaterial({ color: 0x8b8f9c })
+    const wood = new THREE.MeshLambertMaterial({ color: 0x2a1c12 })
+    for (let i = 0; i < 26; i++) {
+      // Tombstones and dead trees line both sides of the path
+      const side = i % 2 === 0 ? 1 : -1
+      const x = side * (13 + Math.random() * 16)
+      const z = -42 + Math.random() * 44
+      if (i % 3 === 0) {
+        const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.45, 5, 6), wood)
+        trunk.position.set(x, 2.5, z)
+        const branch = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.16, 2.6, 5), wood)
+        branch.position.set(0.8, 1.2, 0)
+        branch.rotation.z = -0.9
+        trunk.add(branch)
+        this.scene.add(trunk)
+      } else {
+        const tombstone = new THREE.Mesh(new THREE.BoxGeometry(1, 1.5, 0.3), stone)
+        tombstone.position.set(x, 0.75, z)
+        tombstone.rotation.y = (Math.random() - 0.5) * 0.5
+        tombstone.rotation.z = (Math.random() - 0.5) * 0.15
+        this.scene.add(tombstone)
+      }
+    }
+  }
+
+  private buildGun(): void {
+    const metal = new THREE.MeshStandardMaterial({ color: 0x2c2f38, metalness: 0.7, roughness: 0.35 })
+    const body = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.2, 0.6), metal)
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.5, 10), metal)
     barrel.rotation.x = Math.PI / 2
-    barrel.position.set(0, 0.1, -0.4)
-    this.gun.add(barrel)
-    
-    // Gun handle
-    const handleGeometry = new THREE.BoxGeometry(0.1, 0.25, 0.15)
-    const handleMaterial = new THREE.MeshStandardMaterial({ 
-      color: 0x3a2a1a,
-      roughness: 0.8
-    })
-    const handle = new THREE.Mesh(handleGeometry, handleMaterial)
-    handle.position.set(0, -0.25, 0.1)
-    handle.rotation.x = -0.3
-    this.gun.add(handle)
-    
-    // Position gun on RIGHT side
-    this.gun.position.set(0.3, -0.3, -0.5)
-    this.gun.rotation.y = -0.1
+    barrel.position.set(0, 0.04, -0.5)
+    const grip = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.26, 0.14), new THREE.MeshStandardMaterial({ color: 0x4a2f1a, roughness: 0.8 }))
+    grip.position.set(0, -0.2, 0.14)
+    grip.rotation.x = -0.3
+    this.gun.add(body, barrel, grip)
+    this.muzzleLight.position.set(0, 0.04, -0.8)
+    this.gun.add(this.muzzleLight)
+    this.gun.scale.setScalar(0.35)
+    this.gun.position.set(0.3, -0.26, -0.7)
     this.camera.add(this.gun)
   }
-  
-  private createCrosshair(): void {
-    this.crosshair = new THREE.Group()
-    
-    // Red dot in center
-    const dotGeometry = new THREE.CircleGeometry(0.01, 16)
-    const dotMaterial = new THREE.MeshBasicMaterial({ 
-      color: 0xff0000,
-      side: THREE.DoubleSide
-    })
-    const dot = new THREE.Mesh(dotGeometry, dotMaterial)
-    this.crosshair.add(dot)
-    
-    // Crosshair lines
-    const lineLength = 0.03
-    const lineThickness = 0.003
-    const lineGeometry = new THREE.PlaneGeometry(lineLength, lineThickness)
-    const lineMaterial = new THREE.MeshBasicMaterial({ 
-      color: 0xff0000,
-      side: THREE.DoubleSide
-    })
-    
-    // Horizontal line
-    const hLine = new THREE.Mesh(lineGeometry, lineMaterial)
-    this.crosshair.add(hLine)
-    
-    // Vertical line
-    const vLine = new THREE.Mesh(lineGeometry.clone(), lineMaterial)
-    vLine.rotation.z = Math.PI / 2
-    this.crosshair.add(vLine)
-    
-    // Position crosshair in front of camera
-    this.crosshair.position.set(0, 0, -2)
-    this.camera.add(this.crosshair)
-  }
 
-  private createCreepyRoom(): void {
-    // Floor - Light gray concrete
-    const floorGeometry = new THREE.PlaneGeometry(30, 30)
-    const floorMaterial = new THREE.MeshStandardMaterial({ 
-      color: 0xaaaaaa, // Light gray
-      roughness: 0.7,
-      metalness: 0.1
-    })
-    const floor = new THREE.Mesh(floorGeometry, floorMaterial)
-    floor.rotation.x = -Math.PI / 2
-    floor.receiveShadow = true
-    this.scene.add(floor)
-
-    // Walls - Light brick/concrete
-    const wallMaterial = new THREE.MeshStandardMaterial({ 
-      color: 0x8b7355, // Light brown brick
-      roughness: 0.8
-    })
-
-    // Back wall
-    const backWall = new THREE.Mesh(
-      new THREE.BoxGeometry(30, 5, 0.5),
-      wallMaterial
-    )
-    backWall.position.set(0, 2.5, -15)
-    backWall.receiveShadow = true
-    backWall.castShadow = true
-    this.scene.add(backWall)
-    this.collidableObjects.push(backWall)
-
-    // Left wall
-    const leftWall = new THREE.Mesh(
-      new THREE.BoxGeometry(0.5, 5, 30),
-      wallMaterial
-    )
-    leftWall.position.set(-15, 2.5, 0)
-    leftWall.receiveShadow = true
-    leftWall.castShadow = true
-    this.scene.add(leftWall)
-    this.collidableObjects.push(leftWall)
-
-    // Right wall
-    const rightWall = new THREE.Mesh(
-      new THREE.BoxGeometry(0.5, 5, 30),
-      wallMaterial
-    )
-    rightWall.position.set(15, 2.5, 0)
-    rightWall.receiveShadow = true
-    rightWall.castShadow = true
-    this.scene.add(rightWall)
-    this.collidableObjects.push(rightWall)
-
-    // Front wall (with openings so you can see out)
-    const frontWallLeft = new THREE.Mesh(
-      new THREE.BoxGeometry(8, 5, 0.5),
-      wallMaterial
-    )
-    frontWallLeft.position.set(-11, 2.5, 15)
-    frontWallLeft.receiveShadow = true
-    frontWallLeft.castShadow = true
-    this.scene.add(frontWallLeft)
-    this.collidableObjects.push(frontWallLeft)
-
-    const frontWallRight = new THREE.Mesh(
-      new THREE.BoxGeometry(8, 5, 0.5),
-      wallMaterial
-    )
-    frontWallRight.position.set(11, 2.5, 15)
-    frontWallRight.receiveShadow = true
-    frontWallRight.castShadow = true
-    this.scene.add(frontWallRight)
-    this.collidableObjects.push(frontWallRight)
-
-    const frontWallTop = new THREE.Mesh(
-      new THREE.BoxGeometry(14, 2, 0.5),
-      wallMaterial
-    )
-    frontWallTop.position.set(0, 4, 15)
-    frontWallTop.receiveShadow = true
-    frontWallTop.castShadow = true
-    this.scene.add(frontWallTop)
-    this.collidableObjects.push(frontWallTop)
-
-    // Ceiling - Light gray
-    const ceiling = new THREE.Mesh(
-      new THREE.PlaneGeometry(30, 30),
-      new THREE.MeshStandardMaterial({ 
-        color: 0xcccccc, // Light gray ceiling
-        roughness: 0.9
-      })
-    )
-    ceiling.rotation.x = Math.PI / 2
-    ceiling.position.y = 5
-    ceiling.receiveShadow = true
-    this.scene.add(ceiling)
-
-    // Add wooden crates and boxes - BRIGHT colors
-    const boxPositions = [
-      { x: -10, z: -10 },
-      { x: 10, z: -10 },
-      { x: -10, z: 10 },
-      { x: 10, z: 10 },
-      { x: -12, z: 0 },
-      { x: 12, z: 0 },
-      { x: 0, z: -12 },
-      { x: 5, z: -8 },
-      { x: -5, z: -8 },
-      { x: 8, z: 5 },
-      { x: -8, z: 5 },
-    ]
-
-    boxPositions.forEach(pos => {
-      const boxSize = Math.random() * 1 + 1.5
-      const boxGeometry = new THREE.BoxGeometry(boxSize, boxSize, boxSize)
-      const boxMaterial = new THREE.MeshStandardMaterial({ 
-        color: 0xd2691e, // Bright chocolate brown
-        roughness: 0.7,
-        metalness: 0.1
-      })
-      const box = new THREE.Mesh(boxGeometry, boxMaterial)
-      box.position.set(pos.x, boxSize / 2, pos.z)
-      box.rotation.y = Math.random() * Math.PI
-      box.castShadow = true
-      box.receiveShadow = true
-      this.scene.add(box)
-      this.collidableObjects.push(box)
-
-      // Add label/warning stickers on some boxes
-      if (Math.random() > 0.5) {
-        const labelGeometry = new THREE.PlaneGeometry(0.5, 0.5)
-        const labelMaterial = new THREE.MeshBasicMaterial({
-          color: 0xff0000
-        })
-        const label = new THREE.Mesh(labelGeometry, labelMaterial)
-        label.position.set(pos.x, boxSize, pos.z)
-        label.rotation.x = -Math.PI / 2
-        this.scene.add(label)
-      }
-    })
-
-    // Add metal barrels - BRIGHT
-    for (let i = 0; i < 4; i++) {
-      const barrelGeometry = new THREE.CylinderGeometry(0.5, 0.5, 1.5, 16)
-      const barrelMaterial = new THREE.MeshStandardMaterial({ 
-        color: 0x888888, // Light gray metal
-        roughness: 0.4,
-        metalness: 0.9
-      })
-      const barrel = new THREE.Mesh(barrelGeometry, barrelMaterial)
-      
-      const positions = [
-        { x: -8, z: -12 },
-        { x: 8, z: -12 },
-        { x: -12, z: 8 },
-        { x: 12, z: 8 }
-      ]
-      
-      barrel.position.set(positions[i].x, 0.75, positions[i].z)
-      barrel.castShadow = true
-      barrel.receiveShadow = true
-      this.scene.add(barrel)
-      this.collidableObjects.push(barrel)
+  private createZombie(lane: number, laneCount: number): Zombie {
+    const group = new THREE.Group()
+    const skin = new THREE.MeshLambertMaterial({ color: 0x7fae6c })
+    const shirt = new THREE.MeshLambertMaterial({ color: LANE_COLORS[lane] })
+    const trousers = new THREE.MeshLambertMaterial({ color: 0x2f3440 })
+    const part = (geometry: THREE.BufferGeometry, material: THREE.Material, x: number, y: number, z: number) => {
+      const mesh = new THREE.Mesh(geometry, material)
+      mesh.position.set(x, y, z)
+      group.add(mesh)
+      return mesh
     }
 
-    // Warning signs on walls - BRIGHT
-    const signMaterial = new THREE.MeshBasicMaterial({ 
-      color: 0xffff00,
-    })
-    
-    const sign1 = new THREE.Mesh(new THREE.PlaneGeometry(2, 1), signMaterial)
-    sign1.position.set(-10, 3, -14.8)
-    this.scene.add(sign1)
+    const torso = part(new THREE.BoxGeometry(0.95, 1.1, 0.5), shirt, 0, 1.45, 0)
+    const head = part(new THREE.BoxGeometry(0.6, 0.6, 0.6), skin, 0, 2.35, 0)
+    const armGeometry = new THREE.BoxGeometry(0.24, 0.24, 0.95)
+    const leftArm = part(armGeometry, skin, -0.6, 1.75, 0.45)
+    const rightArm = part(armGeometry, skin, 0.6, 1.75, 0.45)
+    // Legs pivot at the hip so they can swing
+    const legGeometry = new THREE.BoxGeometry(0.34, 0.9, 0.36).translate(0, -0.45, 0)
+    const leftLeg = part(legGeometry, trousers, -0.24, 0.9, 0)
+    const rightLeg = part(legGeometry, trousers, 0.24, 0.9, 0)
 
-    const sign2 = new THREE.Mesh(new THREE.PlaneGeometry(2, 1), signMaterial)
-    sign2.position.set(10, 3, -14.8)
-    this.scene.add(sign2)
-  }
+    const eyes = new THREE.MeshBasicMaterial({ color: 0xff3b30 })
+    part(new THREE.SphereGeometry(0.07, 8, 8), eyes, -0.15, 2.42, 0.31)
+    part(new THREE.SphereGeometry(0.07, 8, 8), eyes, 0.15, 2.42, 0.31)
 
-  // No gun - bullets come from center crosshair
+    // Answer letter on a sign above the head
+    const sign = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.createSignTexture(lane), depthTest: false }))
+    sign.position.y = 3.35
+    sign.scale.set(1.5, 1.5, 1)
+    sign.renderOrder = 10
+    group.add(sign)
 
-  public spawnZombies(question: SATQuestion): void {
-    this.currentQuestion = question
-    this.clearZombies()
-
-    const labels = ['A', 'B', 'C', 'D']
-    const positions = [
-      { x: -6, z: -12 },
-      { x: -2, z: -13 },
-      { x: 2, z: -13 },
-      { x: 6, z: -12 }
-    ]
-
-    for (let i = 0; i < 4; i++) {
-      const zombie = this.createZombie(labels[i], i === question.correctAnswer)
-      zombie.mesh.position.set(
-        positions[i].x,
-        0,
-        positions[i].z
-      )
-      zombie.speed = 0.015 + Math.random() * 0.01
-      this.zombies.push(zombie)
-      this.scene.add(zombie.mesh)
-    }
-  }
-
-  private createZombie(label: string, isCorrect: boolean): Zombie {
-    const zombieGroup = new THREE.Group()
-
-    // Body - ALL SAME COLOR (no cheating!)
-    const bodyGeometry = new THREE.BoxGeometry(1, 2, 0.6)
-    const bodyMaterial = new THREE.MeshStandardMaterial({ 
-      color: 0x5a6a5a, // Gray-green - same for all zombies
-      roughness: 0.8,
-    })
-    const body = new THREE.Mesh(bodyGeometry, bodyMaterial)
-    body.position.y = 1
-    body.castShadow = true
-    zombieGroup.add(body)
-
-    // Head - BRIGHT
-    const headGeometry = new THREE.BoxGeometry(0.7, 0.7, 0.7)
-    const headMaterial = new THREE.MeshStandardMaterial({ 
-      color: 0x8a9a8a, // Light gray-green
-      roughness: 0.8
-    })
-    const head = new THREE.Mesh(headGeometry, headMaterial)
-    head.position.y = 2.4
-    head.castShadow = true
-    zombieGroup.add(head)
-
-    // Glowing eyes
-    const eyeGeometry = new THREE.SphereGeometry(0.1, 8, 8)
-    const eyeMaterial = new THREE.MeshBasicMaterial({ 
-      color: 0xff0000,
-    })
-    const leftEye = new THREE.Mesh(eyeGeometry, eyeMaterial)
-    leftEye.position.set(-0.2, 2.5, 0.35)
-    zombieGroup.add(leftEye)
-
-    const rightEye = new THREE.Mesh(eyeGeometry, eyeMaterial)
-    rightEye.position.set(0.2, 2.5, 0.35)
-    zombieGroup.add(rightEye)
-
-    // Add eye lights
-    const eyeLight1 = new THREE.PointLight(0xff0000, 0.5, 3)
-    eyeLight1.position.copy(leftEye.position)
-    zombieGroup.add(eyeLight1)
-
-    const eyeLight2 = new THREE.PointLight(0xff0000, 0.5, 3)
-    eyeLight2.position.copy(rightEye.position)
-    zombieGroup.add(eyeLight2)
-
-    // Arms reaching forward - BRIGHT
-    const armGeometry = new THREE.BoxGeometry(0.3, 1.2, 0.3)
-    const armMaterial = new THREE.MeshStandardMaterial({ 
-      color: 0x8a9a8a, // Light gray-green
-      roughness: 0.8
-    })
-    
-    const leftArm = new THREE.Mesh(armGeometry, armMaterial)
-    leftArm.position.set(-0.65, 1.3, 0.3)
-    leftArm.rotation.x = -Math.PI / 3
-    leftArm.castShadow = true
-    zombieGroup.add(leftArm)
-
-    const rightArm = new THREE.Mesh(armGeometry, armMaterial)
-    rightArm.position.set(0.65, 1.3, 0.3)
-    rightArm.rotation.x = -Math.PI / 3
-    rightArm.castShadow = true
-    zombieGroup.add(rightArm)
-
-    // Label above head - ALL SAME COLOR (no hints!)
-    const canvas = document.createElement('canvas')
-    const context = canvas.getContext('2d')!
-    canvas.width = 256
-    canvas.height = 256
-    context.fillStyle = '#ffffff' // White for all labels
-    context.font = 'bold 120px Arial'
-    context.textAlign = 'center'
-    context.textBaseline = 'middle'
-    context.fillText(label, 128, 128)
-
-    const labelTexture = new THREE.CanvasTexture(canvas)
-    const labelMaterial = new THREE.SpriteMaterial({ 
-      map: labelTexture,
-      transparent: true
-    })
-    const labelSprite = new THREE.Sprite(labelMaterial)
-    labelSprite.position.y = 3.5
-    labelSprite.scale.set(1.5, 1.5, 1)
-    zombieGroup.add(labelSprite)
-
-    // FORCE disable frustum culling on EVERYTHING
-    zombieGroup.frustumCulled = false
-    body.frustumCulled = false
-    head.frustumCulled = false
-    leftEye.frustumCulled = false
-    rightEye.frustumCulled = false
-    leftArm.frustumCulled = false
-    rightArm.frustumCulled = false
-    labelSprite.frustumCulled = false
-    
-    // Also traverse to be sure
-    zombieGroup.traverse((child) => {
-      child.frustumCulled = false
-      if (child instanceof THREE.Mesh || child instanceof THREE.Sprite) {
-        child.frustumCulled = false
-      }
-    })
-
+    group.position.set((lane - (laneCount - 1) / 2) * ZOMBIE_SPACING, 0, SPAWN_Z - Math.random() * 2)
+    this.scene.add(group)
     return {
-      mesh: zombieGroup,
-      label,
-      speed: 0.02,
-      isCorrect,
-      isDead: false
+      lane,
+      group,
+      leftLeg,
+      rightLeg,
+      walkOffset: Math.random() * Math.PI * 2,
+      state: 'walking',
+      hitMeshes: [torso, head, leftArm, rightArm, leftLeg, rightLeg],
     }
   }
 
-  private setupEventListeners(): void {
-    this.canvas.addEventListener('mousemove', this.handleMouseMove.bind(this))
-    this.canvas.addEventListener('click', this.handleShoot.bind(this))
-    
-    // Movement controls
-    window.addEventListener('keydown', (e) => {
-      this.keys[e.key.toLowerCase()] = true
-      if (e.key === ' ') e.preventDefault() // Prevent page scroll
-    })
-    
-    window.addEventListener('keyup', (e) => {
-      this.keys[e.key.toLowerCase()] = false
-    })
-
-    // Pointer lock for better FPS controls
-    this.canvas.addEventListener('click', () => {
-      this.canvas.requestPointerLock()
-    })
-  }
-
-  private handleMouseMove(event: MouseEvent): void {
-    if (document.pointerLockElement === this.canvas) {
-      // Mouse look when locked (FPS controls)
-      const sensitivity = 0.002
-      
-      // Yaw (left/right rotation around Y axis)
-      this.yaw -= event.movementX * sensitivity
-      
-      // Pitch (up/down rotation around X axis)
-      this.pitch -= event.movementY * sensitivity
-      
-      // Clamp pitch to prevent flipping upside down
-      this.pitch = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.pitch))
-    } else {
-      // Regular aiming (for shooting without pointer lock)
-      const rect = this.canvas.getBoundingClientRect()
-      this.mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1
-      this.mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1
+  private createSignTexture(lane: number): THREE.CanvasTexture {
+    const canvas = document.createElement('canvas')
+    canvas.width = 128
+    canvas.height = 128
+    const ctx = canvas.getContext('2d')
+    if (ctx) {
+      ctx.fillStyle = LANE_COLORS[lane]
+      ctx.beginPath()
+      ctx.arc(64, 64, 60, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.lineWidth = 8
+      ctx.strokeStyle = '#ffffff'
+      ctx.stroke()
+      ctx.fillStyle = '#ffffff'
+      ctx.font = 'bold 84px sans-serif'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(LANE_LETTERS[lane], 64, 70)
     }
-  }
-
-  private updateCamera(): void {
-    // Apply yaw and pitch to camera rotation (Euler order: YXZ)
-    this.camera.rotation.order = 'YXZ'
-    this.camera.rotation.y = this.yaw
-    this.camera.rotation.x = this.pitch
-    this.camera.rotation.z = 0 // No roll
-    
-    // Update matrix after rotation change
-    this.camera.updateMatrixWorld()
-  }
-
-  private handleShoot(): void {
-    if (this.gameState.isGameOver || this.gameState.ammo <= 0) return
-
-    this.gameState.ammo--
-
-    // Gun recoil
-    const originalZ = this.gun.position.z
-    this.gun.position.z = originalZ + 0.1
-    setTimeout(() => {
-      this.gun.position.z = originalZ
-    }, 100)
-
-    // Muzzle flash from gun barrel
-    const flashGeometry = new THREE.SphereGeometry(0.15, 8, 8)
-    const flashMaterial = new THREE.MeshBasicMaterial({ 
-      color: 0xffaa00
-    })
-    const flash = new THREE.Mesh(flashGeometry, flashMaterial)
-    flash.position.set(0.3, -0.15, -0.8)
-    this.camera.add(flash)
-    setTimeout(() => this.camera.remove(flash), 50)
-
-    // Shoot in the EXACT direction the camera is facing
-    const shootDirection = new THREE.Vector3(0, 0, -1)
-    shootDirection.applyQuaternion(this.camera.quaternion)
-    shootDirection.normalize()
-    
-    console.log('Shoot Direction:', shootDirection)
-    
-    // Create BIGGER bullet so you can see it
-    const bulletGeometry = new THREE.SphereGeometry(0.15, 8, 8)
-    const bulletMaterial = new THREE.MeshBasicMaterial({ 
-      color: 0xff0000 // RED so it's visible
-    })
-    const bulletMesh = new THREE.Mesh(bulletGeometry, bulletMaterial)
-    
-    // Start from camera center
-    bulletMesh.position.copy(this.camera.position)
-    bulletMesh.position.add(shootDirection.clone().multiplyScalar(0.5))
-    
-    this.bullets.push({
-      mesh: bulletMesh,
-      velocity: shootDirection.clone().multiplyScalar(2.0)
-    })
-    this.scene.add(bulletMesh)
-    
-    setTimeout(() => {
-      this.scene.remove(bulletMesh)
-      this.bullets = this.bullets.filter(b => b.mesh !== bulletMesh)
-    }, 1000)
-    
-    // Check hits using SAME direction as bullet
-    this.raycaster.set(this.camera.position, shootDirection)
-    
-    // Collect all zombie objects for raycasting
-    const zombieMeshes: THREE.Object3D[] = []
-    for (const zombie of this.zombies) {
-      if (!zombie.isDead && zombie.mesh.parent) {
-        // Only add if zombie is in the scene
-        zombie.mesh.updateMatrixWorld(true)
-        // Add all children meshes for better hit detection
-        zombie.mesh.traverse((child) => {
-          if (child instanceof THREE.Mesh && child.matrixWorld) {
-            zombieMeshes.push(child)
-          }
-        })
-      }
-    }
-
-    // Only raycast if we have valid objects
-    if (zombieMeshes.length === 0) return
-
-    const intersects = this.raycaster.intersectObjects(zombieMeshes, false)
-
-    if (intersects.length > 0) {
-      // Find which zombie was hit
-      const hitObject = intersects[0].object
-      for (const zombie of this.zombies) {
-        if (!zombie.isDead) {
-          // Check if hit object is part of this zombie
-          let isHit = false
-          zombie.mesh.traverse((child) => {
-            if (child === hitObject) {
-              isHit = true
-            }
-          })
-          if (isHit) {
-            this.hitZombie(zombie)
-            break
-          }
-        }
-      }
-    }
-  }
-
-  private hitZombie(zombie: Zombie): void {
-    if (zombie.isDead) return
-
-    zombie.isDead = true
-    this.createBloodEffect(zombie.mesh.position)
-
-    // Death animation
-    const fallInterval = setInterval(() => {
-      zombie.mesh.rotation.x += 0.05
-      zombie.mesh.position.y -= 0.05
-      
-      if (zombie.mesh.position.y <= -2) {
-        clearInterval(fallInterval)
-        this.scene.remove(zombie.mesh)
-      }
-    }, 30)
-
-    this.handleAnswer(zombie.isCorrect)
-  }
-
-  private createBloodEffect(position: THREE.Vector3): void {
-    const particleCount = 30
-    const particles: THREE.Mesh[] = []
-
-    for (let i = 0; i < particleCount; i++) {
-      const particleGeometry = new THREE.SphereGeometry(0.05, 4, 4)
-      const particleMaterial = new THREE.MeshBasicMaterial({ color: 0x8b0000 })
-      const particle = new THREE.Mesh(particleGeometry, particleMaterial)
-      
-      particle.position.copy(position)
-      particle.position.y += 1
-      
-      const velocity = new THREE.Vector3(
-        (Math.random() - 0.5) * 0.5,
-        Math.random() * 0.5,
-        (Math.random() - 0.5) * 0.5
-      )
-      
-      ;(particle as any).velocity = velocity
-      particles.push(particle)
-      this.scene.add(particle)
-    }
-
-    let time = 0
-    const particleAnimation = setInterval(() => {
-      time += 0.05
-      for (const particle of particles) {
-        const velocity = (particle as any).velocity as THREE.Vector3
-        particle.position.add(velocity)
-        velocity.y -= 0.02
-        particle.scale.multiplyScalar(0.95)
-      }
-      
-      if (time > 1) {
-        clearInterval(particleAnimation)
-        particles.forEach(p => this.scene.remove(p))
-      }
-    }, 30)
-  }
-
-  private handleAnswer(isCorrect: boolean): void {
-    if (isCorrect) {
-      this.gameState.score += 100
-      this.gameState.correctAnswers++
-      this.gameState.streak++
-      this.gameState.maxStreak = Math.max(this.gameState.maxStreak, this.gameState.streak)
-      this.gameState.ammo += 10
-    } else {
-      this.gameState.wrongAnswers++
-      this.gameState.streak = 0
-      this.gameState.health -= 25
-      
-      if (this.gameState.health <= 0) {
-        this.endGame()
-        return
-      }
-    }
-
-    this.onScoreUpdate?.(this.gameState.score)
-    this.onQuestionComplete?.(isCorrect)
-
-    setTimeout(() => {
-      this.nextQuestion()
-    }, 1500)
-  }
-
-  private nextQuestion(): void {
-    this.gameState.currentQuestionIndex++
-    
-    if (this.gameState.currentQuestionIndex >= this.questions.length) {
-      this.endGame()
-    }
+    return new THREE.CanvasTexture(canvas)
   }
 
   private clearZombies(): void {
     for (const zombie of this.zombies) {
-      this.scene.remove(zombie.mesh)
+      this.scene.remove(zombie.group)
+      zombie.group.traverse((child) => {
+        if (child instanceof THREE.Mesh) child.geometry.dispose()
+        if (child instanceof THREE.Sprite) {
+          child.material.map?.dispose()
+          child.material.dispose()
+        }
+      })
     }
     this.zombies = []
   }
 
-  private endGame(): void {
-    this.gameState.isGameOver = true
-    this.onGameOver?.(this.gameState)
+  // ---------- Game flow ----------
+
+  start(): void {
+    if (this.phase !== 'ready') return
+    try {
+      this.audioContext = new AudioContext()
+    } catch {}
+    this.nextQuestion()
   }
 
-  private checkCollision(newPosition: THREE.Vector3): boolean {
-    // Check collision with all objects
-    const playerRadius = 0.5
-    
-    for (const obj of this.collidableObjects) {
-      const box = new THREE.Box3().setFromObject(obj)
-      
-      // Expand box by player radius
-      box.min.x -= playerRadius
-      box.min.z -= playerRadius
-      box.max.x += playerRadius
-      box.max.z += playerRadius
-      
-      // Check if new position is inside the box (at player height)
-      if (newPosition.x >= box.min.x && newPosition.x <= box.max.x &&
-          newPosition.z >= box.min.z && newPosition.z <= box.max.z) {
-        return true // Collision detected
-      }
+  private nextQuestion(): void {
+    this.clearZombies()
+    this.onFeedback?.(null)
+    const question = this.queue.shift()
+    if (!question || this.health <= 0) {
+      this.finish()
+      return
     }
-    
-    return false // No collision
+    this.currentQuestion = question
+    this.questionElapsed = 0
+    this.hintsUsed = 0
+    for (let lane = 0; lane < question.options.length; lane++) {
+      this.zombies.push(this.createZombie(lane, question.options.length))
+    }
+    this.phase = 'question'
+    this.onQuestionChange?.(question)
+    this.emitHud(true)
   }
 
-  private updateMovement(): void {
-    // Calculate movement direction DIRECTLY from yaw (not quaternion)
-    const moveDirection = new THREE.Vector3()
-    
-    // Forward/backward (W/S) - use yaw only (ignore pitch)
-    if (this.keys['w']) {
-      moveDirection.x += -Math.sin(this.yaw)
-      moveDirection.z += -Math.cos(this.yaw)
-    }
-    if (this.keys['s']) {
-      moveDirection.x += Math.sin(this.yaw)
-      moveDirection.z += Math.cos(this.yaw)
-    }
-    
-    // Strafe left/right (A/D)
-    if (this.keys['a']) {
-      moveDirection.x += -Math.cos(this.yaw)
-      moveDirection.z += Math.sin(this.yaw)
-    }
-    if (this.keys['d']) {
-      moveDirection.x += Math.cos(this.yaw)
-      moveDirection.z += -Math.sin(this.yaw)
-    }
+  // Fires at a point on the screen, in pixels from the top left of the canvas
+  shootAt(x: number, y: number): void {
+    if (this.phase !== 'question' || this.isPaused) return
+    this.setAim(x, y)
+    this.fireEffects()
 
-    // Normalize to prevent faster diagonal movement
-    if (moveDirection.length() > 0) {
-      moveDirection.normalize()
-      moveDirection.multiplyScalar(this.moveSpeed)
-      
-      // Calculate new position
-      const newPosition = this.camera.position.clone().add(moveDirection)
-      
-      // Check collision before moving
-      if (!this.checkCollision(newPosition)) {
-        this.camera.position.copy(newPosition)
-      } else {
-        // Try sliding along walls (X and Z separately)
-        const newPosX = this.camera.position.clone()
-        newPosX.x += moveDirection.x
-        if (!this.checkCollision(newPosX)) {
-          this.camera.position.x = newPosX.x
-        }
-        
-        const newPosZ = this.camera.position.clone()
-        newPosZ.z += moveDirection.z
-        if (!this.checkCollision(newPosZ)) {
-          this.camera.position.z = newPosZ.z
-        }
-      }
-    }
-
-    // Clamp to room bounds
-    this.camera.position.x = Math.max(-14, Math.min(14, this.camera.position.x))
-    this.camera.position.z = Math.max(-14, Math.min(14, this.camera.position.z))
+    const pointer = new THREE.Vector2((x / this.width) * 2 - 1, -(y / this.height) * 2 + 1)
+    this.camera.updateMatrixWorld()
+    this.raycaster.setFromCamera(pointer, this.camera)
+    const targets = this.zombies.filter((z) => z.state === 'walking').flatMap((z) => z.hitMeshes)
+    const hit = this.raycaster.intersectObjects(targets, false)[0]
+    if (!hit) return
+    const zombie = this.zombies.find((z) => z.hitMeshes.includes(hit.object as THREE.Mesh))
+    if (zombie) this.resolveAnswer(zombie.lane)
   }
 
-  private animate = (): void => {
-    requestAnimationFrame(this.animate)
+  // Shoots the zombie carrying an answer, for players who pick from the answer list
+  shootZombie(lane: number): void {
+    const zombie = this.zombies.find((z) => z.lane === lane && z.state === 'walking')
+    if (this.phase !== 'question' || this.isPaused || !zombie) return
+    this.fireEffects()
+    this.resolveAnswer(lane)
+  }
 
-    // Update camera rotation from mouse
-    this.updateCamera()
+  // A hint removed this answer: its zombie sinks back into the ground
+  eliminateZombie(lane: number): void {
+    const zombie = this.zombies.find((z) => z.lane === lane)
+    if (this.phase !== 'question' || !zombie) return
+    zombie.state = 'sinking'
+    this.hintsUsed++
+  }
 
-    // Update movement
-    this.updateMovement()
+  private resolveAnswer(selected: number | null): void {
+    const question = this.currentQuestion
+    if (!question || this.phase !== 'question') return
 
-    // Move zombies toward player
+    const isCorrect = selected === question.correctAnswer
+    const timeSpent = Math.round(this.questionElapsed * 1000)
+    this.attempts.push({ questionId: question.id, topic: question.topic, difficulty: question.difficulty, isCorrect, timeSpent })
+    this.review.push({ question, selected, isCorrect, timeSpent })
+
+    let points = 0
+    if (isCorrect) {
+      this.correctAnswers++
+      this.streak++
+      this.maxStreak = Math.max(this.maxStreak, this.streak)
+      const timeLeftShare = Math.max(0, 1 - this.questionElapsed / this.config.secondsPerQuestion)
+      const base = DIFFICULTY_POINTS[question.difficulty] + 50 * timeLeftShare + 10 * Math.min(this.streak, 5)
+      points = Math.round(base * Math.pow(HINT_POINTS_FACTOR, this.hintsUsed))
+      this.score += points
+      this.playTone([660, 880, 1320])
+    } else {
+      this.wrongAnswers++
+      this.streak = 0
+      this.health--
+      this.playTone([180, 120])
+    }
+
+    // A first miss goes to the back of the line instead of showing the answer
+    const willRetry = !isCorrect && this.health > 0 && !this.retriedIds.has(question.id)
+    if (willRetry) {
+      this.retriedIds.add(question.id)
+      this.queue.push(question)
+      this.totalQuestions++
+    }
+
     for (const zombie of this.zombies) {
-      if (zombie.isDead) continue
-
-      // Calculate direction to player
-      const direction = new THREE.Vector3()
-      direction.subVectors(this.camera.position, zombie.mesh.position)
-      direction.y = 0
-      direction.normalize()
-
-      // Move zombie
-      zombie.mesh.position.add(direction.multiplyScalar(zombie.speed))
-
-      // Look at player
-      zombie.mesh.lookAt(this.camera.position.x, zombie.mesh.position.y, this.camera.position.z)
-
-      // FORCE update zombie matrix so it's always visible
-      zombie.mesh.updateMatrixWorld(true)
-
-      // Zombie reached player
-      const distance = zombie.mesh.position.distanceTo(this.camera.position)
-      if (distance < 2 && !zombie.isCorrect) {
-        this.gameState.health = 0
-        this.endGame()
-        return
+      if (zombie.state !== 'walking') continue
+      if (zombie.lane === selected) {
+        // A right shot blows the zombie apart; a wrong one only makes it flinch
+        zombie.state = isCorrect ? 'hit' : 'walking'
+        this.spawnParticles(zombie.group.position, isCorrect ? 0x7fae6c : 0xff3b30, isCorrect ? 40 : 12)
+        if (isCorrect) zombie.group.visible = false
+      } else if (isCorrect) {
+        zombie.state = 'sinking'
       }
-
-      // Swaying animation
-      zombie.mesh.rotation.z = Math.sin(Date.now() * 0.003) * 0.1
     }
 
-    // Move bullets
-    for (const bullet of this.bullets) {
-      bullet.mesh.position.add(bullet.velocity)
+    this.phase = 'feedback'
+    this.phaseSecondsLeft = isCorrect ? CORRECT_FEEDBACK_SECONDS : WRONG_FEEDBACK_SECONDS
+    this.onFeedback?.({ isCorrect, selected, correctAnswer: question.correctAnswer, points, willRetry })
+    this.emitHud(true)
+  }
+
+  skipFeedback(): void {
+    if (this.phase === 'feedback') this.phaseSecondsLeft = 0
+  }
+
+  private finish(): void {
+    this.phase = 'done'
+    this.currentQuestion = null
+    this.onQuestionChange?.(null)
+    this.emitHud(true)
+    this.onGameOver?.(this.generateAnalytics(), this.review, this.health > 0)
+  }
+
+  private generateAnalytics(): GameAnalytics {
+    const topicPerformance: GameAnalytics['topicPerformance'] = {}
+    this.attempts.forEach((attempt) => {
+      const perf = (topicPerformance[attempt.topic] ||= { correct: 0, total: 0, accuracy: 0 })
+      perf.total++
+      if (attempt.isCorrect) perf.correct++
+      perf.accuracy = (perf.correct / perf.total) * 100
+    })
+    const totalTime = this.attempts.reduce((sum, attempt) => sum + attempt.timeSpent, 0)
+
+    return {
+      gameId: 'zombie',
+      score: this.score,
+      accuracy: (this.correctAnswers / (this.correctAnswers + this.wrongAnswers)) * 100 || 0,
+      correctAnswers: this.correctAnswers,
+      wrongAnswers: this.wrongAnswers,
+      questionAttempts: this.attempts,
+      topicPerformance,
+      streakInfo: { maxStreak: this.maxStreak },
+      averageResponseTime: this.attempts.length > 0 ? Math.round(totalTime / this.attempts.length) : 0,
+    }
+  }
+
+  // ---------- Effects ----------
+
+  private fireEffects(): void {
+    this.recoil = 1
+    this.muzzleLight.intensity = 6
+    this.playGunshot()
+  }
+
+  private spawnParticles(at: THREE.Vector3, color: number, count: number): void {
+    const material = new THREE.MeshBasicMaterial({ color })
+    for (let i = 0; i < count; i++) {
+      const mesh = new THREE.Mesh(this.particleGeometry, material)
+      mesh.position.copy(at).setY(0.6 + Math.random() * 1.8)
+      this.scene.add(mesh)
+      this.particles.push({
+        mesh,
+        velocity: new THREE.Vector3((Math.random() - 0.5) * 7, 2 + Math.random() * 5, (Math.random() - 0.5) * 7),
+        secondsLeft: PARTICLE_SECONDS,
+      })
+    }
+  }
+
+  private updateParticles(dt: number): void {
+    for (const particle of this.particles) {
+      particle.secondsLeft -= dt
+      particle.velocity.y -= 14 * dt
+      particle.mesh.position.addScaledVector(particle.velocity, dt)
+      particle.mesh.scale.setScalar(Math.max(0, particle.secondsLeft / PARTICLE_SECONDS))
+      if (particle.secondsLeft <= 0) this.scene.remove(particle.mesh)
+    }
+    this.particles = this.particles.filter((particle) => particle.secondsLeft > 0)
+  }
+
+  // ---------- Frame update ----------
+
+  update(deltaTime: number): void {
+    if (this.isPaused) return
+    const dt = deltaTime / 1000
+    this.elapsed += dt
+
+    if (this.phase === 'question') {
+      this.questionElapsed += dt
+      if (this.questionElapsed >= this.config.secondsPerQuestion) this.resolveAnswer(null)
+    } else if (this.phase === 'feedback') {
+      this.phaseSecondsLeft -= dt
+      if (this.phaseSecondsLeft <= 0) this.nextQuestion()
     }
 
-    // Gun idle sway
-    if (this.gun) {
-      this.gun.rotation.x = Math.sin(Date.now() * 0.001) * 0.005
-      this.gun.rotation.y = -0.1 + Math.cos(Date.now() * 0.001) * 0.01
-    }
+    this.updateZombies(dt)
+    this.updateParticles(dt)
 
+    // Turn the view and the gun toward where the player is aiming
+    const yaw = -this.aim.x * AIM_YAW
+    const pitch = this.aim.y * AIM_PITCH
+    this.camera.rotation.order = 'YXZ'
+    this.camera.rotation.y += (yaw - this.camera.rotation.y) * damp(6, dt)
+    this.camera.rotation.x += (pitch - this.camera.rotation.x) * damp(6, dt)
+    this.recoil = Math.max(0, this.recoil - 6 * dt)
+    this.muzzleLight.intensity = Math.max(0, this.muzzleLight.intensity - 40 * dt)
+    this.gun.position.z = -0.7 + 0.08 * this.recoil
+    this.gun.rotation.x = 0.25 * this.recoil + Math.sin(this.elapsed * 1.2) * 0.01
+
+    this.emitHud(false)
+  }
+
+  private updateZombies(dt: number): void {
+    // The horde covers the path in exactly the time the question allows
+    const speed = (ARRIVE_Z - SPAWN_Z) / this.config.secondsPerQuestion
+    for (const zombie of this.zombies) {
+      const { group } = zombie
+      if (zombie.state === 'sinking') {
+        group.position.y -= 2.2 * dt
+        if (group.position.y < -3.6) group.visible = false
+        continue
+      }
+      if (zombie.state !== 'walking') continue
+
+      const swing = Math.sin(this.elapsed * 5 + zombie.walkOffset)
+      if (this.phase === 'question') {
+        group.position.z = Math.min(ARRIVE_Z, group.position.z + speed * dt)
+        // Drift toward the player as they close in
+        group.position.x += -group.position.x * 0.012 * speed * dt
+        zombie.leftLeg.rotation.x = swing * 0.6
+        zombie.rightLeg.rotation.x = -swing * 0.6
+      }
+      group.position.y = Math.abs(swing) * 0.06
+      group.rotation.z = swing * 0.05
+      group.lookAt(PLAYER_EYE.x, group.position.y, PLAYER_EYE.z)
+    }
+  }
+
+  private emitHud(force: boolean): void {
+    const nowMs = performance.now()
+    if (!force && nowMs - this.lastHudUpdateMs < HUD_UPDATE_INTERVAL_MS) return
+    this.lastHudUpdateMs = nowMs
+    this.onHudChange?.({
+      phase: this.phase,
+      score: this.score,
+      streak: this.streak,
+      health: this.health,
+      maxHealth: MAX_HEALTH,
+      questionNumber: Math.min(this.review.length + (this.phase === 'question' ? 1 : 0), this.totalQuestions),
+      totalQuestions: this.totalQuestions,
+      secondsLeft: Math.max(0, this.config.secondsPerQuestion - this.questionElapsed),
+      secondsTotal: this.config.secondsPerQuestion,
+      isPaused: this.isPaused,
+      isMuted: this.isMuted,
+    })
+  }
+
+  render(): void {
     this.renderer.render(this.scene, this.camera)
   }
 
-  public getCurrentQuestion(): SATQuestion | null {
-    return this.currentQuestion
+  resize(width: number, height: number): void {
+    this.width = width
+    this.height = height
+    this.renderer.setSize(width, height, false)
+    this.applyViewShift()
   }
 
-  public getGameState(): ZombieGameState {
-    return { ...this.gameState }
+  // Shifts the scene so the horde stays clear of the question panel
+  setViewShift(x: number, y = 0): void {
+    this.viewShift = { x, y }
+    this.applyViewShift()
   }
 
-  public resize(width: number, height: number): void {
-    this.camera.aspect = width / height
+  private applyViewShift(): void {
+    this.camera.aspect = this.width / this.height
+    if (this.viewShift.x || this.viewShift.y) {
+      this.camera.setViewOffset(this.width, this.height, -this.viewShift.x, -this.viewShift.y, this.width, this.height)
+    } else {
+      this.camera.clearViewOffset()
+    }
     this.camera.updateProjectionMatrix()
-    this.renderer.setSize(width, height)
   }
 
-  public dispose(): void {
+  // ---------- Input ----------
+
+  // Points the gun at a spot on the screen, in pixels from the top left of the canvas
+  setAim(x: number, y: number): void {
+    this.aim.set((x / this.width) * 2 - 1, -(y / this.height) * 2 + 1)
+  }
+
+  setPaused(paused: boolean): void {
+    if (this.phase === 'ready' || this.phase === 'done') return
+    this.isPaused = paused
+    this.emitHud(true)
+  }
+
+  // ---------- Audio ----------
+
+  setMuted(muted: boolean): void {
+    this.isMuted = muted
+    this.emitHud(true)
+  }
+
+  // Short synthesized chime, one note after another
+  private playTone(frequencies: number[]): void {
+    const ctx = this.audioContext
+    if (!ctx || this.isMuted) return
+    frequencies.forEach((frequency, i) => {
+      const startAt = ctx.currentTime + i * 0.09
+      const oscillator = ctx.createOscillator()
+      const gain = ctx.createGain()
+      // Square waves for the old arcade sound
+      oscillator.type = 'square'
+      oscillator.frequency.value = frequency
+      gain.gain.setValueAtTime(0.08, startAt)
+      gain.gain.exponentialRampToValueAtTime(0.001, startAt + 0.16)
+      oscillator.connect(gain).connect(ctx.destination)
+      oscillator.start(startAt)
+      oscillator.stop(startAt + 0.18)
+    })
+  }
+
+  // Burst of decaying noise
+  private playGunshot(): void {
+    const ctx = this.audioContext
+    if (!ctx || this.isMuted) return
+    const buffer = ctx.createBuffer(1, ctx.sampleRate * 0.2, ctx.sampleRate)
+    const samples = buffer.getChannelData(0)
+    for (let i = 0; i < samples.length; i++) {
+      samples[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / samples.length, 4)
+    }
+    const source = ctx.createBufferSource()
+    const gain = ctx.createGain()
+    gain.gain.value = 0.35
+    source.buffer = buffer
+    source.connect(gain).connect(ctx.destination)
+    source.start()
+  }
+
+  cleanup(): void {
+    this.audioContext?.close().catch(() => {})
+    this.audioContext = null
+    this.clearZombies()
+    this.scene.traverse((object) => {
+      if (object instanceof THREE.Mesh) {
+        object.geometry.dispose()
+        const materials = Array.isArray(object.material) ? object.material : [object.material]
+        materials.forEach((material) => material.dispose())
+      }
+    })
     this.renderer.dispose()
-    this.scene.clear()
-    window.removeEventListener('keydown', this.keys as any)
-    window.removeEventListener('keyup', this.keys as any)
   }
 }
