@@ -1,0 +1,12 @@
+.env
+.env.*
+__pycache__/
+*.pyc
+venv/
+.venv/
+Dockerfile
+fly.toml
+railway.json
+render.yaml
+*.sh
+database/

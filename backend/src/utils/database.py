@@ -24,7 +24,11 @@ class Database:
             # For authentication operations, we can use anon key
             # For database operations with RLS, service role key bypasses RLS
             # Prefer service role key if available, otherwise use anon key
-            supabase_key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+            supabase_key = (
+                os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+                or os.getenv("SUPABASE_SERVICE_KEY")
+                or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+            )
             
             if not supabase_url or not supabase_key:
                 raise ValueError(
