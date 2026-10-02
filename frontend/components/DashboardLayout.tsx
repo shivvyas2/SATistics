@@ -2,173 +2,132 @@
 
 import { useState } from 'react'
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
-import { games } from '@/lib/games'
-import { AuthButton } from './AuthButton'
+import { usePathname, useRouter } from 'next/navigation'
+import { apiClient } from '@/lib/api/client'
+import { clearAccountCache, useAccount } from '@/lib/useAccount'
+import { daysUntil } from '@/lib/profile'
+import { EXAMS } from '@/lib/exam'
+import { Logo } from '@/components/brand/Logo'
+import { Avatar } from '@/components/profile/ProfileFields'
+import { BookIcon, ChartIcon, CloseIcon, GamepadIcon, HomeIcon, LogoutIcon, MenuIcon, UserIcon } from '@/components/brand/Icons'
 
 interface DashboardLayoutProps {
   children: React.ReactNode
+  // Optional right-hand column, shown on wide screens
+  aside?: React.ReactNode
 }
 
-export function DashboardLayout({ children }: DashboardLayoutProps) {
-  const [sidebarOpen, setSidebarOpen] = useState(true)
-  const pathname = usePathname()
+const NAV = [
+  { href: '/dashboard', label: 'Home', Icon: HomeIcon },
+  { href: '/learn', label: 'Learn', Icon: BookIcon },
+  { href: '/games', label: 'Games', Icon: GamepadIcon },
+  { href: '/stats', label: 'Statistics', Icon: ChartIcon },
+  { href: '/profile', label: 'Profile', Icon: UserIcon },
+]
+
+export function DashboardLayout({ children, aside }: DashboardLayoutProps) {
+  const pathname = usePathname() ?? ''
+  const router = useRouter()
+  const { account } = useAccount()
+  const [menuOpen, setMenuOpen] = useState(false)
+  const profile = account?.profile
+  const name = profile?.display_name || account?.user?.email?.split('@')[0] || ''
+  const countdown = daysUntil(profile?.test_date ?? null)
+
+  const handleLogout = async () => {
+    try {
+      await apiClient.logout()
+    } catch (error) {
+      console.error('Logout error:', error)
+    } finally {
+      clearAccountCache()
+      router.push('/login')
+      router.refresh()
+    }
+  }
+
+  const isActive = (href: string) => (href === '/games' || href === '/learn' ? pathname.startsWith(href) : pathname === href)
+
+  const sidebar = (
+    <div className="flex h-full flex-col">
+      <div className="hidden lg:block">
+        <Logo href="/dashboard" />
+      </div>
+
+      {/* Who's signed in */}
+      <Link href="/profile" className="mt-8 flex flex-col items-center text-center">
+        {account ? (
+          <Avatar profile={{ display_name: name, avatar_color: profile?.avatar_color ?? '#3A33E8' }} size={76} />
+        ) : (
+          <span className="h-[76px] w-[76px] animate-pulse rounded-full border-2 border-ink/20 bg-white" />
+        )}
+        <span className="mt-3 text-lg font-extrabold leading-tight">{name || ' '}</span>
+        <span className="text-sm text-ink/55">{profile ? `@${profile.username}` : account ? 'Profile not set up' : ' '}</span>
+      </Link>
+
+      <nav aria-label="Main" className="mt-8 space-y-1.5">
+        {NAV.map(({ href, label, Icon }) => {
+          const active = isActive(href)
+          return (
+            <Link
+              key={href}
+              href={href}
+              onClick={() => setMenuOpen(false)}
+              aria-current={active ? 'page' : undefined}
+              className={`flex items-center gap-3 rounded-2xl px-4 py-3 font-bold transition-colors ${
+                active ? 'border-2 border-ink bg-ink text-white shadow-[3px_3px_0_0_#3A33E8]' : 'border-2 border-transparent hover:bg-white'
+              }`}
+            >
+              <Icon />
+              {label}
+            </Link>
+          )
+        })}
+      </nav>
+
+      {/* Goal card */}
+      <div className="mt-auto pt-8">
+        {profile ? (
+          <div className="rounded-[22px] border-2 border-dashed border-ink/40 p-4 text-center">
+            <p className="text-sm text-ink/60">{EXAMS[profile.exam].name} goal</p>
+            <p className="text-3xl font-extrabold">{profile.target_score ?? 'Not set'}</p>
+            <p className="mt-1 text-sm text-ink/60">
+              {countdown !== null && countdown >= 0
+                ? `${countdown} ${countdown === 1 ? 'day' : 'days'} to test day`
+                : `${profile.daily_minutes} min a day`}
+            </p>
+          </div>
+        ) : account?.user ? (
+          <Link href="/profile?setup=1" className="block rounded-[22px] border-2 border-ink bg-lime p-4 text-center font-bold shadow-brutal-sm">
+            Set up your profile
+          </Link>
+        ) : null}
+        <button onClick={handleLogout} className="mt-3 flex w-full items-center justify-center gap-2 rounded-2xl px-4 py-2.5 text-sm font-bold text-ink/60 hover:bg-white hover:text-ink">
+          <LogoutIcon className="h-4 w-4" />
+          Log out
+        </button>
+      </div>
+    </div>
+  )
 
   return (
-    <div className="flex h-screen bg-gray-50">
-      {/* Sidebar */}
-      <aside
-        className={`${
-          sidebarOpen ? 'w-64' : 'w-20'
-        } bg-white shadow-lg transition-all duration-300 flex flex-col`}
-      >
-        {/* Logo */}
-        <div className="h-16 flex items-center justify-between px-4 border-b border-gray-200">
-          {sidebarOpen && (
-            <h1 className="text-xl font-bold text-gray-800">SATistics</h1>
-          )}
-          <button
-            onClick={() => setSidebarOpen(!sidebarOpen)}
-            className="p-2 rounded-lg hover:bg-gray-100"
-          >
-            <svg
-              className="w-5 h-5 text-gray-600"
-              fill="none"
-              stroke="currentColor"
-              viewBox="0 0 24 24"
-            >
-              <path
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth={2}
-                d="M4 6h16M4 12h16M4 18h16"
-              />
-            </svg>
+    <div className="theme-paper paper-blobs lg:h-screen lg:p-4">
+      <div className="flex min-h-screen flex-col overflow-hidden bg-mist/80 lg:h-full lg:min-h-0 lg:flex-row lg:rounded-[32px] lg:border-2 lg:border-ink lg:shadow-brutal-lg">
+        {/* Mobile top bar */}
+        <div className="flex items-center justify-between border-b-2 border-ink px-4 py-3 lg:hidden">
+          <Logo href="/dashboard" />
+          <button onClick={() => setMenuOpen(!menuOpen)} className="arrow-btn h-10 w-10 bg-white" aria-label={menuOpen ? 'Close menu' : 'Open menu'} aria-expanded={menuOpen}>
+            {menuOpen ? <CloseIcon /> : <MenuIcon />}
           </button>
         </div>
+        {menuOpen && <div className="border-b-2 border-ink bg-mist px-4 pb-6 lg:hidden">{sidebar}</div>}
 
-        {/* Navigation */}
-        <nav className="flex-1 overflow-y-auto py-4">
-          <div className="px-2 space-y-1">
-            <Link
-              href="/dashboard"
-              className={`flex items-center px-4 py-3 rounded-lg transition-colors ${
-                pathname === '/dashboard'
-                  ? 'text-white'
-                  : 'text-gray-700 hover:bg-gray-100'
-              }`}
-              style={pathname === '/dashboard' ? { backgroundColor: '#0288D1' } : {}}
-            >
-              <svg className="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l2-2m0 0l7-7 7 7M5 10v10a1 1 0 001 1h3m10-11l2 2m-2-2v10a1 1 0 01-1 1h-3m-6 0a1 1 0 001-1v-4a1 1 0 011-1h2a1 1 0 011 1v4a1 1 0 001 1m-6 0h6" />
-              </svg>
-              {sidebarOpen && <span className="font-medium">Dashboard</span>}
-            </Link>
+        <aside className="hidden w-64 shrink-0 border-r-2 border-ink/10 p-6 lg:block">{sidebar}</aside>
 
-            <Link
-              href="/stats"
-              className={`flex items-center px-4 py-3 rounded-lg transition-colors ${
-                pathname === '/stats'
-                  ? 'text-white'
-                  : 'text-gray-700 hover:bg-gray-100'
-              }`}
-              style={pathname === '/stats' ? { backgroundColor: '#0288D1' } : {}}
-            >
-              <svg className="w-5 h-5 mr-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z" />
-              </svg>
-              {sidebarOpen && <span className="font-medium">Statistics</span>}
-            </Link>
+        <main className="min-w-0 flex-1 lg:overflow-y-auto">{children}</main>
 
-            {/* Games Section */}
-            {sidebarOpen && (
-              <div className="pt-4">
-                <div className="px-4 py-2 text-xs font-semibold text-gray-500 uppercase tracking-wider">
-                  Games
-                </div>
-              </div>
-            )}
-
-            {games.map((game) => {
-              // Remove emojis and get first letter/character for icon
-              const cleanName = game.name.replace(/[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]/gu, '').trim()
-              const displayName = cleanName.split(' ')[0]
-              const iconLetter = displayName.charAt(0).toUpperCase()
-              
-              return (
-                <Link
-                  key={game.id}
-                  href={`/games/${game.id}/select`}
-                  className={`flex items-center px-4 py-3 rounded-lg transition-colors ${
-                    pathname?.includes(`/games/${game.id}`)
-                      ? 'text-white'
-                      : 'text-gray-700 hover:bg-gray-100'
-                  }`}
-                  style={pathname?.includes(`/games/${game.id}`) ? { backgroundColor: '#0288D1' } : {}}
-                >
-                  <div className="w-8 h-8 rounded-lg flex items-center justify-center mr-3 text-sm font-bold" style={{
-                    backgroundColor: pathname?.includes(`/games/${game.id}`) ? 'rgba(255,255,255,0.2)' : '#f3f4f6',
-                    color: pathname?.includes(`/games/${game.id}`) ? '#fff' : '#6b7280'
-                  }}>
-                    {iconLetter}
-                  </div>
-                  {sidebarOpen && (
-                    <span className="font-medium text-sm">{cleanName}</span>
-                  )}
-                </Link>
-              )
-            })}
-          </div>
-        </nav>
-
-        {/* User Section */}
-        <div className="border-t border-gray-200 p-4">
-          <AuthButton />
-        </div>
-      </aside>
-
-      {/* Main Content */}
-      <main className="flex-1 overflow-y-auto bg-gray-50">
-        {/* Header Bar */}
-        <header className="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between sticky top-0 z-10">
-          <div className="flex items-center gap-4">
-            <button className="p-2 hover:bg-gray-100 rounded-lg">
-              <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-              </svg>
-            </button>
-            <div className="relative">
-              <input
-                type="text"
-                placeholder="Search..."
-                className="pl-10 pr-4 py-2 border border-gray-200 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 w-64"
-              />
-              <svg className="w-5 h-5 text-gray-400 absolute left-3 top-1/2 transform -translate-y-1/2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-              </svg>
-            </div>
-          </div>
-          <div className="flex items-center gap-4">
-            <button className="p-2 hover:bg-gray-100 rounded-lg relative">
-              <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
-              </svg>
-              <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></span>
-            </button>
-            <button className="p-2 hover:bg-gray-100 rounded-lg relative">
-              <svg className="w-5 h-5 text-gray-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-              </svg>
-              <span className="absolute top-1 right-1 w-2 h-2 bg-red-500 rounded-full"></span>
-            </button>
-            <div className="w-8 h-8 rounded-full bg-gray-300 flex items-center justify-center cursor-pointer hover:bg-gray-400">
-              <span className="text-sm font-medium text-gray-700">U</span>
-            </div>
-          </div>
-        </header>
-        {children}
-      </main>
+        {aside && <aside className="hidden w-[320px] shrink-0 overflow-y-auto border-l-2 border-ink/10 p-6 xl:block">{aside}</aside>}
+      </div>
     </div>
   )
 }
-

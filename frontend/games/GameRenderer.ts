@@ -1,7 +1,5 @@
 // GameRenderer.ts
 import { BaseGame } from './BaseGame'
-import { SubwaySurfersGame } from './subway-surfers/SubwaySurfersGame'
-import { SquidGameGame } from './squid-game/SquidGameGame'
 import { MarioGame } from './mario/MarioGame'
 import { PacManGame } from './pac-man/PacManGame'
 
@@ -15,7 +13,6 @@ export class GameRenderer {
   private game: BaseGame | null = null
   private animationFrameId: number | null = null
   private lastTime: number = 0
-  private resizeObserver: ResizeObserver | null = null
   private usesThreeJS: boolean = false
   private keydownHandler: ((e: KeyboardEvent) => void) | null = null
   private keyupHandler: ((e: KeyboardEvent) => void) | null = null
@@ -32,14 +29,6 @@ export class GameRenderer {
   async init() {
     // Initialize game with fullscreen dimensions
     switch (this.gameId) {
-      case 'subway-surfers':
-        this.game = new SubwaySurfersGame(this.canvas.width, this.canvas.height, this.canvas)
-        this.usesThreeJS = true
-        break
-      case 'squid-game':
-        this.game = new SquidGameGame(this.canvas.width, this.canvas.height, this.canvas)
-        this.usesThreeJS = true
-        break
       case 'mario':
         this.game = new MarioGame(this.canvas.width, this.canvas.height, this.canvas)
         this.usesThreeJS = true
@@ -75,17 +64,7 @@ export class GameRenderer {
 
     this.game.init()
     
-    // Setup Three.js for squid-game (needs async initialization)
-    if (this.gameId === 'squid-game' && 'setupThreeJS' in this.game) {
-      try {
-        await (this.game as any).setupThreeJS(this.canvas)
-      } catch (error) {
-        console.error('Failed to setup Three.js for squid-game:', error)
-      }
-    }
-    
     this.setupEventListeners()
-    this.setupResizeObserver()
     this.gameLoop(0)
   }
 
@@ -98,7 +77,7 @@ export class GameRenderer {
     }
 
     this.keyupHandler = (e: KeyboardEvent) => {
-      // Handle key release for games that need it (like squid game and subway-surfers)
+      // Handle key release for games that need it
       if ('handleKeyRelease' in (this.game as any)) {
         (this.game as any).handleKeyRelease(e.key)
       } else if (this.game && typeof (this.game as any).handleKeyUp === 'function') {
@@ -108,42 +87,6 @@ export class GameRenderer {
 
     window.addEventListener('keydown', this.keydownHandler)
     window.addEventListener('keyup', this.keyupHandler)
-  }
-
-  private setupResizeObserver() {
-    const handleResize = () => {
-      if (this.game) {
-        // For Three.js games, update renderer size
-        if (this.gameId === 'squid-game' && 'gameObjects' in this.game) {
-          const gameObjects = (this.game as any).gameObjects
-          if (gameObjects?.renderer) {
-            const width = this.canvas.width || window.innerWidth
-            const height = this.canvas.height || window.innerHeight
-            gameObjects.renderer.setSize(width, height)
-            gameObjects.camera.aspect = width / height
-            gameObjects.camera.updateProjectionMatrix()
-          }
-        } else if (this.gameId === 'subway-surfers' && 'renderer' in (this.game as any)) {
-          const game = this.game as any
-          if (game.renderer) {
-            const width = this.canvas.width || window.innerWidth
-            const height = this.canvas.height || window.innerHeight
-            game.renderer.setSize(width, height)
-            if (game.camera) {
-              game.camera.aspect = width / height
-              game.camera.updateProjectionMatrix()
-            }
-          }
-        }
-      }
-    }
-
-    if (typeof ResizeObserver !== 'undefined') {
-      this.resizeObserver = new ResizeObserver(handleResize)
-      this.resizeObserver.observe(this.canvas)
-    } else {
-      window.addEventListener('resize', handleResize)
-    }
   }
 
   // Expose pause toggle for UI controls
@@ -180,13 +123,7 @@ export class GameRenderer {
     }
 
     // Render game
-    if (this.gameId === 'squid-game') {
-      // Pass overlay 2D context so the game can draw UI over Three.js scene
-      this.game.render(this.ctx as any)
-    } else if (this.gameId === 'subway-surfers') {
-      // Pass overlay context for any 2D HUD the game may draw
-      this.game.render(this.ctx as any)
-    } else if (this.ctx) {
+    if (this.ctx) {
       this.game.render(this.ctx)
     }
 
@@ -196,9 +133,6 @@ export class GameRenderer {
   cleanup() {
     if (this.animationFrameId !== null) {
       cancelAnimationFrame(this.animationFrameId)
-    }
-    if (this.resizeObserver) {
-      this.resizeObserver.disconnect()
     }
     if (this.keydownHandler) {
       window.removeEventListener('keydown', this.keydownHandler)

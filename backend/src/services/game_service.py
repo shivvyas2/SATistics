@@ -44,6 +44,7 @@ class GameService:
                 attempts_data = [
                     {
                         "session_id": session_id,
+                        "user_id": user_id,
                         "question_id": attempt.questionId,
                         "topic": attempt.topic,
                         "difficulty": attempt.difficulty,

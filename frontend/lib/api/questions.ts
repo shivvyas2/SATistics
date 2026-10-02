@@ -1,42 +1,64 @@
 /**
  * Question fetching utility
- * Fetches questions from backend AI agent or falls back to local questions
+ * Fetches real exam questions from the backend AI agent for the selected
+ * exam section, or falls back to the built-in practice set
  */
 
 import { apiClient } from './client'
+import { ExamId, Pace, SectionId, gamePace, getExamPrefs, sectionLabel } from '../exam'
+import { getBankQuestions } from '../questionBank'
 
 export interface SATQuestion {
   id: number
+  // Full plain text, including any passage
   question: string
   options: string[]
   correctAnswer: number
   topic: string
-  difficulty: string
+  difficulty: 'easy' | 'medium' | 'hard'
   explanation: string
+  exam?: ExamId
+  section?: SectionId
+  skill?: string
+  passage?: string
+  // Question without its passage
+  stem?: string
+  // Sanitized HTML/MathML versions, present on official questions
+  questionHtml?: string
+  passageHtml?: string
+  optionsHtml?: string[]
+  explanationHtml?: string
+  // official, web, ai, or practice
+  source?: string
+  sourceName?: string
+  sourceUrl?: string
 }
 
 /**
- * Fetch AI-generated personalized questions
- * Falls back to local questions if backend is unavailable
+ * Fetch personalized questions for the selected exam section
+ * Falls back to the built-in practice set if the backend is unavailable
  */
 export async function fetchAIQuestions(
   limit: number = 50,
-  fallbackQuestions?: SATQuestion[]
+  fallbackQuestions?: SATQuestion[],
+  pace?: Pace
 ): Promise<SATQuestion[]> {
+  const { exam, section } = getExamPrefs()
   try {
-    console.log(`🤖 Fetching ${limit} AI-generated questions...`)
+    console.log(`🤖 Fetching ${limit} ${sectionLabel({ exam, section })} questions...`)
     
-    const response = await apiClient.getAIQuestions(limit, false)
+    const response = await apiClient.getAIQuestions(limit, true, exam, section, pace)
     
     if (response.questions && response.questions.length > 0) {
-      console.log(`✅ Got ${response.questions.length} AI questions!`)
+      console.log(`✅ Got ${response.questions.length} questions!`)
       return response.questions
     }
     
     throw new Error('No questions returned from AI')
   } catch (error) {
     console.warn('⚠️ AI questions unavailable, using fallback:', error)
-    return fallbackQuestions || []
+    const bank = getBankQuestions(exam, section, pace)
+    return bank.length > 0 ? bank : fallbackQuestions || []
   }
 }
 
@@ -49,7 +71,8 @@ export async function fetchQuestionsWithCache(
   limit: number = 50,
   fallbackQuestions?: SATQuestion[]
 ): Promise<SATQuestion[]> {
-  const cacheKey = `ai_questions_${gameId}`
+  const { exam, section } = getExamPrefs()
+  const cacheKey = `ai_questions_${gameId}_${exam}_${section}`
   
   // Check cache first (valid for 5 minutes)
   const cached = sessionStorage.getItem(cacheKey)
@@ -67,7 +90,7 @@ export async function fetchQuestionsWithCache(
   }
   
   // Fetch fresh questions
-  const questions = await fetchAIQuestions(limit, fallbackQuestions)
+  const questions = await fetchAIQuestions(limit, fallbackQuestions, gamePace(gameId))
   
   // Cache them
   try {
@@ -81,4 +104,3 @@ export async function fetchQuestionsWithCache(
   
   return questions
 }
-

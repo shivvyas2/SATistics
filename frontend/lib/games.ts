@@ -22,13 +22,13 @@ export const games: Game[] = [
   {
     id: 'subway-surfers',
     name: 'Subway Surfers',
-    description: 'Endless runner - dodge obstacles and collect coins!',
+    description: 'Quick-fire exam run - fly into the lane of the right answer before the gates arrive!',
     status: 'available',
   },
   {
     id: 'squid-game',
     name: 'Squid Game',
-    description: 'Survive the challenges inspired by the popular series!',
+    description: 'Red Light, Green Light - freeze and solve full-length exam questions, with a calculator for math!',
     status: 'available',
   },
   {

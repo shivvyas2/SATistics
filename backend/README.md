@@ -19,6 +19,10 @@ Create `.env` file:
 # OpenRouter (for Claude AI)
 OPENROUTER_API_KEY=sk-or-v1-...
 
+# Lesson videos (optional). Tried in this order; DuckDuckGo is the keyless fallback
+YOUTUBE_API_KEY=...
+SERPER_API_KEY=...
+
 # Supabase (get from Settings → API)
 NEXT_PUBLIC_SUPABASE_URL=https://xxxxx.supabase.co
 NEXT_PUBLIC_SUPABASE_ANON_KEY=eyJhbGc...
@@ -49,10 +53,10 @@ python test_supabase_agent.py
 ### **Example Usage**
 
 ```python
-from agent import SATLearningAgent
+from agent import ExamLearningAgent
 
 # Initialize agent for a user
-agent = SATLearningAgent(user_id="user-uuid-from-supabase")
+agent = ExamLearningAgent(user_id="user-uuid-from-supabase")
 
 # Get personalized questions
 questions = await agent.generate_questions(50)

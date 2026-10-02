@@ -1,16 +1,24 @@
 import type { Metadata } from 'next'
-import { Roboto } from 'next/font/google'
+import { Bricolage_Grotesque, Instrument_Serif } from 'next/font/google'
 import './globals.css'
 
-const roboto = Roboto({ 
-  weight: ['300', '400', '500', '700', '900'],
+const display = Bricolage_Grotesque({
   subsets: ['latin'],
   display: 'swap',
+  variable: '--font-display',
+})
+
+const serif = Instrument_Serif({
+  weight: '400',
+  style: ['normal', 'italic'],
+  subsets: ['latin'],
+  display: 'swap',
+  variable: '--font-serif',
 })
 
 export const metadata: Metadata = {
   title: 'SATistics',
-  description: 'SATistics - SAT practice games and analytics dashboard',
+  description: 'Train for the SAT and GRE with arcade games built on real-format questions.',
 }
 
 export default function RootLayout({
@@ -19,9 +27,8 @@ export default function RootLayout({
   children: React.ReactNode
 }) {
   return (
-    <html lang="en" className="h-full overflow-hidden">
-      <body className={`${roboto.className} h-full overflow-hidden`}>{children}</body>
+    <html lang="en" className={`${display.variable} ${serif.variable}`}>
+      <body className="font-display">{children}</body>
     </html>
   )
 }
-

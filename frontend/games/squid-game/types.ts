@@ -1,17 +1,46 @@
-export const PLAYER_STATES = {
-  IDLE: 'IDLE',
-  WALK: 'WALK',
-  RUN: 'RUN',
-  DANCE: 'DANCE',
-  DEAD: 'DEAD',
-} as const;
+import type { SATQuestion } from '@/lib/api/questions'
 
-export const DOLL_STATES = {
-  GREEN_LIGHT: 'GREEN_LIGHT',
-  RED_LIGHT: 'RED_LIGHT',
-  ELIMINATE_ALL: 'ELIMINATE_ALL',
-} as const;
+export type SquidPhase = 'loading' | 'ready' | 'green' | 'turning' | 'question' | 'feedback' | 'done'
 
-export type PlayerState = typeof PLAYER_STATES[keyof typeof PLAYER_STATES];
-export type DollState = typeof DOLL_STATES[keyof typeof DOLL_STATES];
+export type SquidOutcome = 'victory' | 'eliminated' | 'short'
 
+export interface SquidConfig {
+  questionCount: number
+  secondsPerQuestion: number
+}
+
+export interface SquidHudState {
+  phase: SquidPhase
+  loadProgress: number
+  score: number
+  lives: number
+  maxLives: number
+  // Share of the field covered, 0 at the start line and 1 at the finish
+  progress: number
+  questionNumber: number
+  totalQuestions: number
+  correctAnswers: number
+  questionSecondsLeft: number
+  questionSecondsTotal: number
+  greenSecondsLeft: number
+  greenSecondsTotal: number
+  // Set while the player is being punished for moving on red
+  wasCaughtMoving: boolean
+  isPaused: boolean
+  isMuted: boolean
+}
+
+export interface SquidFeedback {
+  isCorrect: boolean
+  // null when the question clock ran out
+  selected: number | null
+  correctAnswer: number
+  points: number
+}
+
+export interface SquidReviewItem {
+  question: SATQuestion
+  selected: number | null
+  isCorrect: boolean
+  timeSpent: number
+}

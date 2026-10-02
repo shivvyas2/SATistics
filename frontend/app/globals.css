@@ -10,24 +10,15 @@
 
 html {
   width: 100%;
-  height: 100%;
-  overflow: hidden;
-  margin: 0;
-  padding: 0;
+  min-height: 100%;
+  background: #ECEAE4;
 }
 
 body {
-  width: 100vw;
-  height: 100vh;
-  max-width: 100vw;
-  max-height: 100vh;
-  overflow: hidden;
+  min-height: 100vh;
   background: #0a0a0a;
   color: #fff;
-  margin: 0;
-  padding: 0;
   position: relative;
-  font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Helvetica Neue', Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -36,6 +27,74 @@ body {
 a {
   color: inherit;
   text-decoration: none;
+}
+
+/* SATistics theme: brutalist outlines with frosted glass panels */
+@layer components {
+  .theme-paper {
+    @apply min-h-screen bg-paper text-ink;
+  }
+
+  .brutal {
+    @apply border-2 border-ink shadow-brutal;
+  }
+
+  .glass {
+    @apply border border-white/70 bg-white/55 shadow-glass backdrop-blur-xl;
+  }
+
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 rounded-2xl border-2 border-ink px-5 py-3 text-[15px] font-bold shadow-brutal transition-[transform,box-shadow] duration-100;
+  }
+  .btn:hover {
+    @apply -translate-x-px -translate-y-px shadow-[5px_5px_0_0_#17171C];
+  }
+  .btn:active {
+    @apply translate-x-[3px] translate-y-[3px] shadow-none;
+  }
+  .btn:disabled {
+    @apply pointer-events-none opacity-50;
+  }
+  .btn-ink { @apply bg-ink text-white; }
+  .btn-lime { @apply bg-lime text-ink; }
+  .btn-cobalt { @apply bg-cobalt text-white; }
+  .btn-paper { @apply bg-mist text-ink; }
+
+  .arrow-btn {
+    @apply inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-full border-2 border-ink transition-transform duration-150;
+  }
+
+  .field {
+    @apply w-full rounded-2xl border-2 border-ink bg-white px-4 py-3 text-[15px] text-ink placeholder:text-ink/40 shadow-brutal-sm outline-none transition-shadow;
+  }
+  .field:focus {
+    @apply shadow-[3px_3px_0_0_#3A33E8];
+  }
+
+  .chip {
+    @apply inline-flex items-center gap-1.5 rounded-full border-2 border-ink px-3 py-1 text-sm font-semibold;
+  }
+}
+
+:focus-visible {
+  outline: 3px solid #3A33E8;
+  outline-offset: 3px;
+}
+
+/* Soft paper blobs behind glass panels */
+.paper-blobs {
+  background:
+    radial-gradient(40% 35% at 12% 18%, rgba(255, 255, 255, 0.9), transparent 70%),
+    radial-gradient(35% 40% at 88% 30%, rgba(255, 255, 255, 0.75), transparent 70%),
+    radial-gradient(45% 35% at 50% 95%, rgba(220, 219, 251, 0.6), transparent 70%),
+    #ECEAE4;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
 }
 
 /* Retro Game Boy Styling */
@@ -445,3 +504,29 @@ a {
   margin-top: 20px;
 }
 
+
+/* Exam question text (rich HTML/MathML from the question sources) */
+.question-content p + p {
+  margin-top: 0.6em;
+}
+
+.question-content math {
+  font-size: 1.1em;
+}
+
+.question-content table {
+  border-collapse: collapse;
+  margin: 0.5em 0;
+}
+
+.question-content th,
+.question-content td {
+  border: 1px solid currentColor;
+  padding: 0.2em 0.6em;
+}
+
+/* Thin scrollbar for dark game panels */
+.dark-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
+}

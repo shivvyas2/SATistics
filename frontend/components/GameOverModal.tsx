@@ -6,19 +6,31 @@ import Link from 'next/link'
 interface GameOverModalProps {
   analytics: GameAnalytics
   onRestart: () => void
+  title?: string
+  subtitle?: string
+  emoji?: string
+  // Extra game-specific content shown above the action buttons
+  children?: React.ReactNode
 }
 
-export function GameOverModal({ analytics, onRestart }: GameOverModalProps) {
+export function GameOverModal({
+  analytics,
+  onRestart,
+  title = 'Game Complete!',
+  subtitle = 'Great job on finishing the challenge',
+  emoji = '🎉',
+  children,
+}: GameOverModalProps) {
   return (
     <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-300">
-      <div className="bg-gradient-to-br from-gray-900 to-gray-800 rounded-2xl p-6 max-w-2xl w-full border-2 border-gray-700 shadow-2xl max-h-[90vh] overflow-y-auto">
+      <div className="bg-gradient-to-br from-gray-900 to-gray-800 rounded-2xl p-6 max-w-2xl w-full border-2 border-gray-700 shadow-2xl max-h-[90vh] overflow-y-auto dark-scroll">
         {/* Header */}
         <div className="text-center mb-6">
-          <div className="text-6xl mb-3">🎉</div>
+          <div className="text-6xl mb-3">{emoji}</div>
           <h2 className="text-4xl font-bold text-white mb-1">
-            Game Complete!
+            {title}
           </h2>
-          <p className="text-gray-400 text-sm">Great job on finishing the challenge</p>
+          <p className="text-gray-400 text-sm">{subtitle}</p>
         </div>
 
         {/* Main Stats - Compact Grid */}
@@ -50,7 +62,7 @@ export function GameOverModal({ analytics, onRestart }: GameOverModalProps) {
           <div className="space-y-2">
             {Object.entries(analytics.topicPerformance).map(([topic, perf]) => (
               <div key={topic} className="flex items-center gap-3">
-                <div className="text-white text-xs font-medium w-20">{topic}</div>
+                <div className="text-white text-xs font-medium w-32 leading-tight">{topic}</div>
                 <div className="flex-1 bg-gray-700 rounded-full h-2 overflow-hidden">
                   <div 
                     className="bg-gradient-to-r from-blue-500 to-cyan-500 h-full transition-all duration-500 rounded-full"
@@ -72,6 +84,8 @@ export function GameOverModal({ analytics, onRestart }: GameOverModalProps) {
             {(analytics.averageResponseTime / 1000).toFixed(1)}s
           </div>
         </div>
+
+        {children}
 
         {/* Action Buttons */}
         <div className="space-y-2">

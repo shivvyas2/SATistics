@@ -3,6 +3,19 @@
  * Handles all API calls to the FastAPI backend
  */
 
+import type { Profile } from '@/lib/profile'
+
+export interface Video {
+  id: string
+  title: string
+  channel: string
+  duration: string
+  url: string
+  thumbnail: string
+  published: string
+  trusted: boolean
+}
+
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
 class ApiClient {
@@ -175,13 +188,37 @@ class ApiClient {
   }
 
   // Get AI-generated personalized questions
-  async getAIQuestions(limit: number = 50, useWebSearch: boolean = true) {
+  async getAIQuestions(limit: number = 50, useWebSearch: boolean = true, exam: string = 'sat', section: string = 'quant', pace?: string) {
     const params = new URLSearchParams()
     params.append('use_agent', 'true')
     params.append('limit', limit.toString())
-    if (useWebSearch) params.append('use_web_search', 'true')
+    params.append('use_web_search', useWebSearch.toString())
+    params.append('exam', exam)
+    params.append('section', section)
+    if (pace) params.append('pace', pace)
     
     return this.request<{ questions: any[], total: number }>(`/api/questions/?${params.toString()}`)
+  }
+
+  // Profile endpoints
+  async getProfile(): Promise<Profile | null> {
+    const result = await this.request<{ profile: Profile | null }>('/api/profile')
+    return result.profile
+  }
+
+  async saveProfile(profile: Profile): Promise<Profile> {
+    const result = await this.request<{ profile: Profile }>('/api/profile', {
+      method: 'PUT',
+      body: JSON.stringify(profile),
+    })
+    return result.profile
+  }
+
+  // Lesson videos for one course topic
+  async getTopicVideos(exam: string, section: string, topic: string, limit = 6): Promise<Video[]> {
+    const params = new URLSearchParams({ exam, section, topic, limit: String(limit) })
+    const result = await this.request<{ videos: Video[] }>(`/api/learn/videos?${params.toString()}`)
+    return result.videos ?? []
   }
 
   async getTopics() {

@@ -122,6 +122,7 @@ class SupabaseAgentOps:
             for attempt in attempts:
                 attempt_data.append({
                     'session_id': session_id,
+                    'user_id': user_id,
                     'question_id': attempt.get('question_id', 0),
                     'topic': attempt.get('topic', 'Unknown'),
                     'difficulty': attempt.get('difficulty', 'medium'),

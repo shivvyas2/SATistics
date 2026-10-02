@@ -1,28 +1,56 @@
 from openai import OpenAI
-from typing import List, Dict
+from typing import List, Dict, Optional
+import asyncio
 import json
-import time
+import os
+import zlib
 from src.config import OPENROUTER_API_KEY
-from ddgs import DDGS
 from src.services.supabase_agent_ops import SupabaseAgentOps
-
-# Use OpenRouter (compatible with OpenAI API)
-client = OpenAI(
-    base_url="https://openrouter.ai/api/v1",
-    api_key=OPENROUTER_API_KEY
+from src.services.question_sources import (
+    EXAMS,
+    CollegeBoardSource,
+    WebQuestionSource,
+    is_quick_question,
+    normalize_text,
+    section_label,
 )
 
-# Initialize DuckDuckGo search with retry capability
-def get_ddg_instance():
-    """Get a fresh DuckDuckGo instance"""
-    return DDGS()
+LLM_MODEL = os.getenv("OPENROUTER_MODEL", "anthropic/claude-haiku-4.5")
+# One LLM call can't reliably return more questions than this
+MAX_LLM_QUESTIONS = 25
 
-class SATLearningAgent:
+PACE_REQUIREMENTS = {
+    "quick": "- Only short questions a prepared student can answer in under 30 seconds: no long passages, no multi-step calculations, answer choices of a few words",
+    "deep": "- Prefer questions that take real thought: reading passages, multi-step problems, medium and hard difficulty",
+}
+
+_client: Optional[OpenAI] = None
+
+def get_llm_client() -> Optional[OpenAI]:
+    """OpenRouter client (compatible with OpenAI API), or None when no API key is configured"""
+    global _client
+    if _client is None and OPENROUTER_API_KEY:
+        _client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
+            api_key=OPENROUTER_API_KEY
+        )
+    return _client
+
+def extract_json(content: str, open_char: str, close_char: str):
+    """Parse the first JSON array/object found in an LLM response"""
+    start_idx = content.find(open_char)
+    end_idx = content.rfind(close_char) + 1
+    if start_idx == -1 or end_idx <= start_idx:
+        raise ValueError("No JSON found in response")
+    return json.loads(content[start_idx:end_idx])
+
+class ExamLearningAgent:
     """
-    Adaptive SAT Learning Agent with Memory & Context
+    Adaptive SAT/GRE Learning Agent with Memory & Context
     - Analyzes user performance from Supabase
     - Identifies weak topics
-    - Generates personalized questions with Claude Haiku 4.5
+    - Pulls real exam questions from the web, weighted toward weak topics
+    - Fills gaps with exam-style questions from Claude Haiku 4.5
     - Maintains context of learning journey
     """
     
@@ -54,64 +82,10 @@ class SATLearningAgent:
         
         return analysis
     
-    def search_sat_resources(self, topic: str, num_results: int = 5, max_retries: int = 3) -> str:
-        """Search DuckDuckGo for real SAT questions and resources with retry logic"""
-        query = f"SAT {topic} practice questions examples"
-        print(f"   🦆 DuckDuckGo searching: '{query}'")
-        
-        for attempt in range(max_retries):
-            try:
-                # Create fresh instance for each attempt
-                ddg = get_ddg_instance()
-                
-                # Add delay between retries (exponential backoff)
-                if attempt > 0:
-                    wait_time = (2 ** attempt) * 2  # 4s, 8s, 16s
-                    print(f"   ⏳ Waiting {wait_time}s before retry {attempt + 1}...")
-                    time.sleep(wait_time)
-                
-                # Use the text search method with the new API
-                results = list(ddg.text(query, max_results=num_results))
-                
-                context = f"\n### Real SAT Resources for {topic}:\n"
-                found_count = 0
-                
-                if results and len(results) > 0:
-                    for i, result in enumerate(results, 1):
-                        title = result.get('title', 'No title')
-                        body = result.get('body', result.get('description', ''))
-                        if body:
-                            context += f"{i}. {title}\n   {body[:150]}...\n"
-                            found_count += 1
-                
-                if found_count > 0:
-                    print(f"   ✅ Found {found_count} resources for {topic}")
-                    return context
-                else:
-                    print(f"   ⚠️  No results found for {topic}")
-                    return ""
-                    
-            except Exception as e:
-                error_msg = str(e)
-                if "202" in error_msg or "Ratelimit" in error_msg:
-                    if attempt < max_retries - 1:
-                        print(f"   ⚠️  Rate limited, will retry...")
-                        continue
-                    else:
-                        print(f"   ⚠️  Rate limit persists after {max_retries} attempts, skipping search")
-                else:
-                    print(f"   ⚠️  Search error: {e}")
-                    if attempt < max_retries - 1:
-                        continue
-                
-                return ""
-        
-        return ""
-    
     def build_agent_context(self, analysis: Dict) -> str:
         """Builds context string for the AI agent"""
         
-        context = f"""You are an adaptive SAT learning AI agent. Your goal is to help students improve their SAT scores by generating personalized questions.
+        context = f"""You are an adaptive SAT and GRE learning AI agent. Your goal is to help students improve their scores with personalized practice questions.
 
 STUDENT PROFILE:
 - Total Questions Attempted: {analysis['total_attempts']}
@@ -131,129 +105,179 @@ TOPIC PERFORMANCE:
         
         return context
     
-    async def generate_questions(self, num_questions: int = 50, use_web_search: bool = True) -> List[Dict]:
+    async def generate_questions(
+        self,
+        num_questions: int = 50,
+        use_web_search: bool = True,
+        exam: str = "sat",
+        section: str = "quant",
+        pace: Optional[str] = None,
+    ) -> List[Dict]:
         """
-        Generates personalized SAT questions using AI agent with context
-        Can optionally search the web for real SAT question examples
+        Builds a personalized question set for one exam section.
+        SAT questions come straight from the College Board question bank.
+        GRE questions (and SAT, if the question bank is unreachable) are extracted
+        from practice pages found by web search, topped up with AI-written ones.
+        Every question carries a "source" of official, web, or ai.
+        pace matches questions to the game: "quick" for fast games (short questions
+        answerable in seconds), "deep" for slow ones (passages, multi-step problems).
         """
-        
-        # Analyze performance
-        analysis = self.analyze_performance()
-        
-        # Search for real SAT resources if enabled
-        web_context = ""
+        analysis = await asyncio.to_thread(self.analyze_performance)
+        weak_topics = analysis['weak_topics']
+        if weak_topics:
+            print(f"   📉 Focusing on weak topics: {', '.join(weak_topics[:3])}")
+
+        questions: List[Dict] = []
+        if exam == "sat":
+            try:
+                print(f"📚 Loading real {section_label(exam, section)} questions from College Board...")
+                questions = await CollegeBoardSource.fetch(section, num_questions, weak_topics, pace)
+                print(f"   ✅ Got {len(questions)} official questions")
+            except Exception as e:
+                print(f"   ⚠️  College Board question bank unavailable: {e}")
+
+        missing = num_questions - len(questions)
+        if missing > 0:
+            questions += await self._questions_from_llm(exam, section, missing, analysis, use_web_search, pace)
+
+        self.context_memory.append({
+            "analysis": analysis,
+            "exam": exam,
+            "section": section,
+            "generated_count": len(questions),
+        })
+        return questions
+
+    async def _questions_from_llm(
+        self, exam: str, section: str, count: int, analysis: Dict, use_web_search: bool, pace: Optional[str] = None
+    ) -> List[Dict]:
+        """Extracts real questions from web pages and writes exam-style ones for the remainder"""
+        client = get_llm_client()
+        if not client:
+            print("   ℹ️  OPENROUTER_API_KEY not set - skipping web extraction and AI generation")
+            return []
+
+        count = min(count, MAX_LLM_QUESTIONS)
+        label = section_label(exam, section)
+        option_count = EXAMS[exam]["sections"][section]["option_count"]
+
+        pages = []
         if use_web_search:
-            print("🔍 Searching web for real SAT questions...")
-            
-            # If user has weak topics, search those
-            if analysis['weak_topics']:
-                print(f"   📉 Focusing on weak topics: {', '.join(analysis['weak_topics'][:2])}")
-                for i, topic in enumerate(analysis['weak_topics'][:2]):  # Search top 2 weak topics
-                    if i > 0:
-                        time.sleep(3)  # 3s delay between different topic searches
-                    web_context += self.search_sat_resources(topic, num_results=3)
-            else:
-                # New user - search general SAT topics
-                print(f"   📚 New user - searching general SAT topics")
-                # Only search 1 topic for new users to avoid rate limits
-                web_context += self.search_sat_resources("Algebra", num_results=2)
-        
-        # Build context for agent
-        context = self.build_agent_context(analysis)
-        if web_context:
-            print(f"   📝 Adding web search results to Claude's context ({len(web_context)} chars)")
-            context += "\n" + web_context
+            print(f"🔍 Searching web for real {label} questions...")
+            pages = await WebQuestionSource.find_pages(exam, section, analysis['weak_topics'][:1])
+
+        sources = "".join(
+            f"\n--- SOURCE {i} ({page['url']}) ---\n{page['text']}\n" for i, page in enumerate(pages, 1)
+        )
+        if sources:
+            task = f"""TASK: Build a set of {count} {label} multiple-choice questions.
+
+1. First, extract real practice questions from the SOURCES below. Copy the question, passage,
+   and answer choices exactly as written. Only extract a question if the source also gives its
+   correct answer. Set "sourceIndex" to the source number.
+2. If the sources contain fewer than {count} usable questions, write original {label} questions
+   in the official style for the remainder. Set "sourceIndex" to 0 for these.
+
+SOURCES:
+{sources}"""
         else:
-            print(f"   ℹ️  No web search performed (use_web_search={use_web_search})")
-        
-        # Calculate distribution (focus on weak topics)
-        weak_topic_ratio = 0.6  # 60% weak topics
-        balanced_ratio = 0.3    # 30% mixed
-        strong_topic_ratio = 0.1  # 10% strong topics (to maintain)
-        
-        weak_count = int(num_questions * weak_topic_ratio)
-        balanced_count = int(num_questions * balanced_ratio)
-        strong_count = num_questions - weak_count - balanced_count
-        
-        prompt = f"""{context}
+            task = f"""TASK: Write {count} original {label} multiple-choice questions in the official style.
+Set "sourceIndex" to 0 for all of them."""
 
-TASK: Generate {num_questions} SAT questions with the following distribution:
+        prompt = f"""{self.build_agent_context(analysis)}
 
-1. {weak_count} questions on WEAK TOPICS ({', '.join(analysis['weak_topics']) if analysis['weak_topics'] else 'various topics'})
-   - Difficulty: {analysis['recommended_difficulty']} to medium
-   - Focus on building fundamentals
+{task}
 
-2. {balanced_count} questions on MIXED TOPICS
-   - Difficulty: medium
-   - Help identify new weak areas
-
-3. {strong_count} questions on STRONG TOPICS
-   - Difficulty: hard
-   - Maintain and challenge mastery
+REQUIREMENTS:
+- Single-answer multiple choice with {option_count} options (4 is fine for GRE Quantitative Comparison)
+- Match the real {label} question types, wording, and difficulty
+- Mix easy, medium, and hard; lean toward the student's weak topics
+- Skip anything that needs a figure, chart, or image
+{PACE_REQUIREMENTS.get(pace, "")}
+- "correctAnswer" is the 0-based index of the correct option
+- Put any reading passage in "passage", not in "question"
 
 QUESTION FORMAT (JSON array):
 [
   {{
-    "id": 1,
     "question": "If 2x + 5 = 15, what is the value of x?",
+    "passage": "",
     "options": ["5", "10", "7.5", "3"],
     "correctAnswer": 0,
     "topic": "Algebra",
     "difficulty": "easy",
     "explanation": "2x + 5 = 15, subtract 5: 2x = 10, divide by 2: x = 5",
-    "reasoning": "Targeting weak algebra skills"
-  }},
-  ...
+    "sourceIndex": 0
+  }}
 ]
 
-IMPORTANT:
-- Make questions educational and progressive
-- Include clear explanations
-- Vary question types within topics
-- Questions should build on each other
-- Add "reasoning" field explaining why this question helps the student
+Respond with the JSON array only:"""
 
-Generate exactly {num_questions} questions now:"""
-
-        # Call OpenRouter API with Haiku 4.5 (fastest & cheapest!)
-        print(f"   🤖 Calling Claude Haiku 4.5 via OpenRouter...")
-        response = client.chat.completions.create(
-            model="anthropic/claude-haiku-4.5",  # Latest Haiku model!
-            messages=[
-                {"role": "system", "content": "You are an expert SAT tutor AI that generates personalized practice questions. Always respond with valid JSON."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.7,
-            max_tokens=8000
-        )
-        print(f"   ✅ Claude response received!")
-        
-        # Parse response
-        content = response.choices[0].message.content
-        
-        # Extract JSON from response
+        print(f"   🤖 Calling {LLM_MODEL} via OpenRouter...")
         try:
-            # Try to find JSON array in the response
-            start_idx = content.find('[')
-            end_idx = content.rfind(']') + 1
-            if start_idx != -1 and end_idx > start_idx:
-                json_str = content[start_idx:end_idx]
-                questions = json.loads(json_str)
-                
-                # Store this interaction in context memory
-                self.context_memory.append({
-                    "analysis": analysis,
-                    "generated_count": len(questions),
-                    "timestamp": "now"
-                })
-                
-                return questions
-            else:
-                raise ValueError("No JSON array found in response")
+            response = await asyncio.to_thread(
+                client.chat.completions.create,
+                model=LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": "You are an expert SAT and GRE tutor AI that assembles practice question sets. Always respond with valid JSON."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.4,
+                max_tokens=12000
+            )
+            content = response.choices[0].message.content
+            raw_questions = extract_json(content, '[', ']')
         except Exception as e:
-            print(f"Error parsing questions: {e}")
-            print(f"Response: {content[:500]}...")
+            print(f"Error getting questions from LLM: {e}")
             return []
+
+        questions = []
+        for raw in raw_questions:
+            question = self._normalize_llm_question(raw, exam, section, pages)
+            if question and (pace != "quick" or is_quick_question(question)):
+                questions.append(question)
+        from_web = sum(1 for q in questions if q["source"] == "web")
+        print(f"   ✅ {from_web} questions from the web, {len(questions) - from_web} AI-written")
+        return questions
+
+    @staticmethod
+    def _normalize_llm_question(raw: Dict, exam: str, section: str, pages: List[Dict]) -> Optional[Dict]:
+        """Validates an LLM question; it only counts as a web question if its text is on the page"""
+        if not isinstance(raw, dict):
+            return None
+        stem = str(raw.get("question") or "").strip()
+        passage = str(raw.get("passage") or "").strip()
+        options = [str(o).strip() for o in raw.get("options") or []]
+        correct = raw.get("correctAnswer")
+        if not stem or not 2 <= len(options) <= 5 or not isinstance(correct, int) or not 0 <= correct < len(options):
+            return None
+
+        source, source_url, source_name = "ai", None, "AI-written practice question"
+        source_index = raw.get("sourceIndex")
+        if isinstance(source_index, int) and 1 <= source_index <= len(pages):
+            page = pages[source_index - 1]
+            page_text = normalize_text(page["text"])
+            if normalize_text(stem)[:50] in page_text or (passage and normalize_text(passage)[:50] in page_text):
+                source, source_url = "web", page["url"]
+                source_name = page["url"].split("/")[2].replace("www.", "")
+
+        difficulty = str(raw.get("difficulty") or "medium").lower()
+        return {
+            "id": zlib.crc32(stem.encode()) & 0x7FFFFFFF,
+            "question": f"{passage}\n\n{stem}" if passage else stem,
+            "options": options,
+            "correctAnswer": correct,
+            "topic": str(raw.get("topic") or "General"),
+            "difficulty": difficulty if difficulty in ("easy", "medium", "hard") else "medium",
+            "explanation": str(raw.get("explanation") or ""),
+            "passage": passage,
+            "stem": stem,
+            "exam": exam,
+            "section": section,
+            "source": source,
+            "sourceName": source_name,
+            "sourceUrl": source_url,
+        }
     
     def update_performance(self, question_attempts: List[Dict], game_data: Dict):
         """Updates user performance after game session in Supabase"""
@@ -286,24 +310,18 @@ Respond in JSON:
 }}
 """
         
-        response = client.chat.completions.create(
-            model="anthropic/claude-haiku-4.5",  # Latest Haiku for insights!
-            messages=[
-                {"role": "system", "content": "You are a supportive SAT learning coach."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.8,
-            max_tokens=500
-        )
-        
-        content = response.choices[0].message.content
-        
         try:
-            start_idx = content.find('{')
-            end_idx = content.rfind('}') + 1
-            json_str = content[start_idx:end_idx]
-            return json.loads(json_str)
-        except:
+            response = get_llm_client().chat.completions.create(
+                model=LLM_MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a supportive SAT and GRE learning coach."},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.8,
+                max_tokens=500
+            )
+            return extract_json(response.choices[0].message.content, '{', '}')
+        except Exception:
             return {
                 "focus_areas": analysis['weak_topics'][:3] if analysis['weak_topics'] else ["Keep practicing!"],
                 "strategy": "Continue playing games to identify your strengths and weaknesses.",

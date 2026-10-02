@@ -139,6 +139,8 @@ SUPABASE_URL=your_supabase_project_url
 SUPABASE_SERVICE_ROLE_KEY=your_service_role_key
 ALLOWED_ORIGINS=http://localhost:3000
 OPENROUTER_API_KEY=your_openrouter_key  # For AI agent
+YOUTUBE_API_KEY=your_youtube_key        # Optional: lesson videos
+SERPER_API_KEY=your_serper_key          # Optional: lesson videos fallback
 ```
 
 ### Frontend (`frontend/.env.local`)

@@ -5,8 +5,9 @@ export async function middleware(request: NextRequest) {
   const token = request.cookies.get('auth_token')?.value || 
                 request.headers.get('authorization')?.replace('Bearer ', '')
 
-  // PROTECTED ROUTES - Require authentication for dashboard and games
-  if ((request.nextUrl.pathname.startsWith('/dashboard') || request.nextUrl.pathname.startsWith('/games')) && !token) {
+  // PROTECTED ROUTES - Require authentication for the app; the landing page stays public
+  const protectedPrefixes = ['/dashboard', '/games', '/learn', '/profile', '/stats']
+  if (protectedPrefixes.some((prefix) => request.nextUrl.pathname.startsWith(prefix)) && !token) {
     const url = request.nextUrl.clone()
     url.pathname = '/login'
     url.searchParams.set('redirect', request.nextUrl.pathname)
