@@ -44,7 +44,7 @@ export function QuestionCard({ question, questionNumber, totalQuestions, activeO
         <span className="font-bold text-sky-300">
           Question {questionNumber} of {totalQuestions}
         </span>
-        <span className="truncate text-gray-400">{question.skill || question.topic}</span>
+        <span className="truncate text-gray-300">{question.skill || question.topic}</span>
         <span className="flex-none ml-auto px-2 py-0.5 rounded bg-white/10 font-bold text-gray-200">
           {question.difficulty.toUpperCase()}
         </span>
@@ -55,13 +55,13 @@ export function QuestionCard({ question, questionNumber, totalQuestions, activeO
           <QuestionContent
             html={question.passageHtml}
             text={question.passage}
-            className="font-serif text-[15px] leading-relaxed text-gray-100 border-l-2 border-sky-400/60 pl-3"
+            className="game-reading text-[17px] leading-[1.6] text-white border-l-2 border-sky-400/60 pl-3"
           />
         )}
         <QuestionContent
           html={question.questionHtml}
           text={question.stem || question.question}
-          className="text-base font-semibold leading-snug"
+          className="text-[17px] font-semibold leading-snug"
         />
 
         <div className="space-y-2">
@@ -87,8 +87,8 @@ export function QuestionCard({ question, questionNumber, totalQuestions, activeO
                 style={isActive ? { borderColor: LANE_COLORS[lane] } : undefined}
               >
                 <LaneChip lane={lane} />
-                <QuestionContent html={question.optionsHtml?.[lane]} text={option} className="flex-1 min-w-0 text-sm break-words" />
-                {isActive && <span className="flex-none text-[10px] font-bold text-gray-300">{activeLabel}</span>}
+                <QuestionContent html={question.optionsHtml?.[lane]} text={option} className="flex-1 min-w-0 text-base leading-snug break-words" />
+                {isActive && <span className="flex-none text-xs font-bold text-gray-200">{activeLabel}</span>}
                 {isCorrect && <span className="flex-none text-xs font-bold text-green-400">✓ Correct</span>}
                 {isWrongPick && <span className="flex-none text-xs font-bold text-red-400">✗ Yours</span>}
               </button>
@@ -97,7 +97,7 @@ export function QuestionCard({ question, questionNumber, totalQuestions, activeO
         </div>
 
         {feedback && !feedback.isCorrect && question.explanation && (
-          <div className="rounded-xl bg-white/5 p-3 text-sm text-gray-200">
+          <div className="rounded-xl bg-white/5 p-3 text-[15px] leading-relaxed text-gray-100">
             <p className="font-bold text-white mb-1">Why {LANE_LETTERS[feedback.correctAnswer]} is correct</p>
             <QuestionContent html={question.explanationHtml} text={question.explanation} />
           </div>

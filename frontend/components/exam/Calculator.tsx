@@ -137,14 +137,14 @@ export function Calculator({ keyboard = false, onClose }: CalculatorProps) {
   return (
     <div className="w-64 bg-gray-950/95 backdrop-blur-md rounded-2xl border border-white/15 text-white shadow-2xl p-3">
       <div className="flex items-center justify-between mb-2">
-        <span className="text-[10px] font-bold tracking-wider text-gray-400">CALCULATOR</span>
-        <button onClick={onClose} aria-label="Close calculator" className="text-gray-400 hover:text-white text-sm px-1">
+        <span className="text-xs font-semibold tracking-wide text-gray-300">CALCULATOR</span>
+        <button onClick={onClose} aria-label="Close calculator" className="text-gray-300 hover:text-white text-sm px-1">
           ✕
         </button>
       </div>
       <div className={`rounded-lg bg-black/60 px-3 py-2 mb-2 text-right border ${error ? 'border-red-500' : 'border-transparent'}`}>
         <div className="text-xl font-mono tabular-nums min-h-[28px] break-all">{expression || '0'}</div>
-        <div className="text-xs font-mono text-gray-400 min-h-[16px]">
+        <div className="text-xs font-mono text-gray-300 min-h-[16px]">
           {error ? 'Check the expression' : preview !== null ? `= ${formatResult(preview)}` : ''}
         </div>
       </div>

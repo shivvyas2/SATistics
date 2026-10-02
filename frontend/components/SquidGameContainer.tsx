@@ -171,14 +171,14 @@ export function SquidGameContainer() {
   const isClockLow = hud !== null && hud.questionSecondsLeft / hud.questionSecondsTotal < 0.2
 
   return (
-    <div className="fixed inset-0 w-screen h-screen bg-black overflow-hidden" style={{ margin: 0, padding: 0 }}>
+    <div className={`fixed inset-0 w-screen h-screen bg-black overflow-hidden game-hud`} style={{ margin: 0, padding: 0 }}>
       <canvas ref={canvasRef} className="absolute inset-0 w-full h-full" style={{ display: 'block' }} tabIndex={-1} />
 
       {isLoading && (
         <div className="absolute inset-0 bg-black flex items-center justify-center z-40">
           <div className="text-center px-6">
-            <div className="text-white text-4xl font-bold mb-4 font-mono">SQUID GAME</div>
-            <div className="text-gray-400 text-lg mb-6 font-mono">
+            <div className="text-white text-4xl font-bold mb-4 ">SQUID GAME</div>
+            <div className="text-gray-300 text-lg mb-6 ">
               {questions ? 'Loading the arena...' : `Loading ${examName} questions...`}
             </div>
             <div className="w-80 max-w-full h-4 bg-gray-800 border-2 border-gray-600 rounded overflow-hidden mx-auto">
@@ -199,7 +199,7 @@ export function SquidGameContainer() {
             <h1 className="text-3xl font-black mb-1">
               <span className="text-red-500">Red Light</span>, <span className="text-green-400">Green Light</span>
             </h1>
-            <p className="text-gray-400 text-sm mb-5">
+            <p className="text-gray-300 text-sm mb-5">
               Up to {hud.totalQuestions} full-length questions at real exam pace ({EXAMS[prefs.exam].sections[prefs.section].pacing}).
               {isQuant && ' An on-screen calculator is provided.'}
             </p>
@@ -214,7 +214,7 @@ export function SquidGameContainer() {
             >
               Start Game
             </button>
-            <Link href="/dashboard" className="block text-center text-gray-400 hover:text-white text-sm mt-3">
+            <Link href="/dashboard" className="block text-center text-gray-300 hover:text-white text-sm mt-3">
               Back to dashboard
             </Link>
           </div>
@@ -227,7 +227,7 @@ export function SquidGameContainer() {
           {/* Question Panel */}
           <div
             ref={panelRef}
-            className={`pointer-events-auto flex flex-col m-3 lg:w-[min(460px,40vw)] max-h-[60vh] lg:max-h-none ${currentQuestion ? '' : 'lg:self-start'} bg-gray-950/85 backdrop-blur-md rounded-2xl border border-white/15 text-white shadow-2xl overflow-hidden`}
+            className={`pointer-events-auto flex flex-col m-3 lg:w-[min(460px,40vw)] max-h-[60vh] lg:max-h-none ${currentQuestion ? '' : 'lg:self-start'} bg-gray-950/95 backdrop-blur-md rounded-2xl border border-white/15 text-white shadow-2xl overflow-hidden`}
           >
             {currentQuestion ? (
               <>
@@ -259,7 +259,7 @@ export function SquidGameContainer() {
                   ) : (
                     <div className="flex items-center gap-3">
                       <div className="flex-none">
-                        <div className="text-[10px] font-bold tracking-wider text-gray-400">TIME LEFT</div>
+                        <div className="text-xs font-semibold tracking-wide text-gray-300">TIME LEFT</div>
                         <div className={`text-xl font-black tabular-nums ${isClockLow ? 'text-red-400' : ''}`}>
                           {formatClock(hud.questionSecondsLeft)}
                         </div>
@@ -267,14 +267,14 @@ export function SquidGameContainer() {
                       <button
                         onClick={() => picked !== null && gameRef.current?.answer(picked)}
                         disabled={picked === null}
-                        className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:bg-white/10 disabled:text-gray-500 font-bold text-sm"
+                        className="flex-1 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-500 disabled:bg-white/10 disabled:text-gray-400 font-bold text-sm"
                       >
                         {picked === null ? 'Pick an answer (A–E)' : `Submit ${LANE_LETTERS[picked]}`}
                       </button>
                     </div>
                   )}
                   {sourceLabel(currentQuestion) && (
-                    <p className="text-[10px] text-gray-500 mt-1.5 truncate">{sourceLabel(currentQuestion)}</p>
+                    <p className="text-xs text-gray-300 mt-1.5 truncate">{sourceLabel(currentQuestion)}</p>
                   )}
                 </div>
               </>
@@ -312,31 +312,31 @@ export function SquidGameContainer() {
                   isRedLight ? 'bg-red-600/90 border-red-300/50' : 'bg-green-600/90 border-green-300/50'
                 }`}
               >
-                <div className="text-[10px] font-bold tracking-wider opacity-80">LIGHT</div>
+                <div className="text-xs font-semibold tracking-wide opacity-90">LIGHT</div>
                 <div className="text-2xl">{isRedLight ? 'RED' : 'GREEN'}</div>
               </div>
-              <div className="bg-gray-950/85 backdrop-blur-md rounded-xl border border-white/15 px-4 py-2 text-white text-center">
-                <div className="text-[10px] font-bold tracking-wider text-gray-400">LIVES</div>
+              <div className="bg-gray-950/95 backdrop-blur-md rounded-xl border border-white/15 px-4 py-2 text-white text-center">
+                <div className="text-xs font-semibold tracking-wide text-gray-300">LIVES</div>
                 <div className="text-2xl font-black tabular-nums text-rose-400">
-                  ♥ {hud.lives}<span className="text-sm text-gray-500">/{hud.maxLives}</span>
+                  ♥ {hud.lives}<span className="text-sm text-gray-400">/{hud.maxLives}</span>
                 </div>
               </div>
-              <div className="bg-gray-950/85 backdrop-blur-md rounded-xl border border-white/15 px-4 py-2 text-white text-center">
-                <div className="text-[10px] font-bold tracking-wider text-gray-400">SCORE</div>
+              <div className="bg-gray-950/95 backdrop-blur-md rounded-xl border border-white/15 px-4 py-2 text-white text-center">
+                <div className="text-xs font-semibold tracking-wide text-gray-300">SCORE</div>
                 <div className="text-2xl font-black tabular-nums">{hud.score}</div>
               </div>
               <div className="flex flex-col gap-1">
                 <button
                   onClick={() => gameRef.current?.setPaused(true)}
                   aria-label="Pause"
-                  className="flex-1 w-9 bg-gray-950/85 hover:bg-gray-800 rounded-lg border border-white/15 text-white text-sm"
+                  className="flex-1 w-9 bg-gray-950/95 hover:bg-gray-800 rounded-lg border border-white/15 text-white text-sm"
                 >
                   ⏸
                 </button>
                 <button
                   onClick={() => gameRef.current?.setMuted(!hud.isMuted)}
                   aria-label={hud.isMuted ? 'Unmute' : 'Mute'}
-                  className="flex-1 w-9 bg-gray-950/85 hover:bg-gray-800 rounded-lg border border-white/15 text-white text-sm"
+                  className="flex-1 w-9 bg-gray-950/95 hover:bg-gray-800 rounded-lg border border-white/15 text-white text-sm"
                 >
                   {hud.isMuted ? '🔇' : '🔊'}
                 </button>
@@ -345,11 +345,11 @@ export function SquidGameContainer() {
 
             {/* Distance to the finish line - Bottom Center */}
             <div className="absolute bottom-4 left-1/2 -translate-x-1/2 w-[min(360px,60%)]">
-              <div className="flex justify-between text-[10px] font-bold text-white/90 mb-1 drop-shadow">
+              <div className="flex justify-between text-xs font-bold text-white mb-1 bg-black/75 rounded-full px-3 py-1">
                 <span>START</span>
                 <span>{Math.round(hud.progress * 100)}% TO FINISH</span>
               </div>
-              <div className="h-2.5 bg-black/50 rounded-full overflow-hidden border border-white/30">
+              <div className="h-2.5 bg-black/75 rounded-full overflow-hidden border border-white/30">
                 <div className="h-full bg-rose-500 rounded-full" style={{ width: `${hud.progress * 100}%` }} />
               </div>
             </div>
@@ -362,7 +362,7 @@ export function SquidGameContainer() {
                 ) : (
                   <button
                     onClick={() => setShowCalculator(true)}
-                    className="px-4 py-2 rounded-full bg-gray-950/85 hover:bg-gray-800 border border-white/15 text-white text-sm font-bold"
+                    className="px-4 py-2 rounded-full bg-gray-950/95 hover:bg-gray-800 border border-white/15 text-white text-sm font-bold"
                   >
                     Calculator
                   </button>
@@ -377,8 +377,8 @@ export function SquidGameContainer() {
       {hud && isPlaying && hud.isPaused && (
         <div className="absolute inset-0 bg-black/80 backdrop-blur-md flex items-center justify-center z-20">
           <div className="text-center text-white">
-            <p className="text-3xl font-black mb-1">Paused</p>
-            <p className="text-gray-400 text-sm mb-5">The clock is stopped and the question is hidden.</p>
+            <p className="text-4xl font-serif italic mb-1">Paused</p>
+            <p className="text-gray-300 text-sm mb-5">The clock is stopped and the question is hidden.</p>
             <button
               onClick={() => gameRef.current?.setPaused(false)}
               className="px-8 py-3 bg-blue-600 hover:bg-blue-700 rounded-xl font-bold"

@@ -530,3 +530,15 @@ a {
   scrollbar-width: thin;
   scrollbar-color: rgba(255, 255, 255, 0.3) transparent;
 }
+
+/* Text shown on top of games: the site's display face, tuned for reading over 3D scenes */
+.game-hud {
+  font-family: var(--font-display), system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Long passages: regular weight with room to breathe */
+.game-reading {
+  font-weight: 400;
+  letter-spacing: 0.005em;
+}

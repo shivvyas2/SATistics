@@ -17,11 +17,11 @@ export function ReviewList({ review }: { review: RunnerReviewItem[] }) {
                 {isCorrect ? '✓' : '✗'} Q{index + 1}
               </span>
               <span className="truncate text-gray-300">{question.stem || question.question}</span>
-              <span className="flex-none ml-auto text-xs text-gray-500">{question.topic}</span>
+              <span className="flex-none ml-auto text-xs text-gray-400">{question.topic}</span>
             </summary>
             <div className="px-3 pb-3 text-sm text-gray-200 space-y-3">
               {question.passage && (
-                <QuestionContent html={question.passageHtml} text={question.passage} className="font-serif text-gray-300" />
+                <QuestionContent html={question.passageHtml} text={question.passage} className="game-reading text-base leading-relaxed text-gray-200" />
               )}
               <QuestionContent html={question.questionHtml} text={question.stem || question.question} />
               <ul className="space-y-1">
@@ -39,7 +39,7 @@ export function ReviewList({ review }: { review: RunnerReviewItem[] }) {
                 <QuestionContent
                   html={question.explanationHtml}
                   text={question.explanation}
-                  className="text-gray-400 border-t border-gray-700 pt-2"
+                  className="text-gray-300 border-t border-gray-700 pt-2"
                 />
               )}
             </div>

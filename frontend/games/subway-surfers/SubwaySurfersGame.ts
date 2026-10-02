@@ -51,11 +51,11 @@ const MAP_RECYCLE_MARGIN = 60
 // Meshes narrower than this sit on the rails (trains, barriers) rather than beside them
 const MAX_OBSTACLE_MESH_WIDTH = 40
 const OBSTACLES_GROUP_NAME = 'obstacles'
-const OBSTACLE_HIDE_CHANCE = 0.25
-const MIN_OBSTACLE_GAP = 25
-const MAX_OBSTACLE_GAP = 110
-// Obstacles on rails closer together than this count as the same track
-const LANE_TOLERANCE = 1.5
+const OBSTACLE_HIDE_CHANCE = 0.4
+// Obstacles only trade places with others of similar length: barriers, single wagons, coupled trains
+const OBSTACLE_LENGTH_CLASSES = [8, 20]
+// Geometry closer together than this belongs to the same train or barrier
+const ISLAND_CELL_SIZE = 0.6
 // The world shifts back by this much whenever the runner gets this far out, keeping coordinates small
 const REBASE_DISTANCE = 3000
 
@@ -88,8 +88,7 @@ export class SubwaySurfersGame extends BaseGame {
   private ground: THREE.Mesh | null = null
   // Distance between the starts of consecutive tiles
   private tilePeriod = 0
-  // Where a tile's track starts and ends, relative to the tile's position
-  private tileBackZ = 0
+  // Where a tile's track ends, relative to the tile's position
   private tileFrontZ = 0
   private trackSurfaceY = 0
   private flightAltitude = 21.0 // meters above track surface
@@ -260,7 +259,6 @@ export class SubwaySurfersGame extends BaseGame {
       const groundY = -size.y / 2
       // Estimate the actual running surface a bit above the absolute minimum
       this.trackSurfaceY = groundY + size.y * 0.33
-      this.tileBackZ = box.max.z
       this.tileFrontZ = box.min.z
       this.tilePeriod = size.z - MAP_TILE_OVERLAP
 
@@ -317,52 +315,51 @@ export class SubwaySurfersGame extends BaseGame {
     const positions = geometry.getAttribute('position')
     const triangleCount = positions.count / 3
 
-    // Vertices at the same spot belong to the same surface
-    const parent = new Int32Array(positions.count)
+    // Sort vertices into a coarse world-space grid; anything in the same or a
+    // neighboring cell is part of the same piece (body, wheels, coupled wagons)
+    const parent = new Int32Array(positions.count).map((_, i) => i)
     const find = (i: number): number => {
       while (parent[i] !== i) i = parent[i] = parent[parent[i]]
       return i
     }
-    const firstAtPosition = new Map<string, number>()
+    const union = (a: number, b: number) => {
+      parent[find(a)] = find(b)
+    }
+    const worldPositions: THREE.Vector3[] = []
+    const cells = new Map<string, number>()
     for (let i = 0; i < positions.count; i++) {
-      const key = `${positions.getX(i).toFixed(3)},${positions.getY(i).toFixed(3)},${positions.getZ(i).toFixed(3)}`
-      const first = firstAtPosition.get(key)
-      parent[i] = first ?? i
-      if (first === undefined) firstAtPosition.set(key, i)
+      const position = new THREE.Vector3().fromBufferAttribute(positions, i).applyMatrix4(mesh.matrixWorld)
+      worldPositions.push(position)
+      const key = position.clone().divideScalar(ISLAND_CELL_SIZE).floor().toArray().join(',')
+      const first = cells.get(key)
+      if (first === undefined) cells.set(key, i)
+      else union(i, first)
     }
-    for (let t = 0; t < triangleCount; t++) {
-      const root = find(t * 3)
-      parent[find(t * 3 + 1)] = root
-      parent[find(t * 3 + 2)] = root
-    }
-
-    // Connected surfaces, each with its world-space bounds
-    const surfaces = new Map<number, { triangles: number[]; box: THREE.Box3 }>()
-    const vertex = new THREE.Vector3()
-    for (let t = 0; t < triangleCount; t++) {
-      const root = find(t * 3)
-      let surface = surfaces.get(root)
-      if (!surface) surfaces.set(root, (surface = { triangles: [], box: new THREE.Box3() }))
-      surface.triangles.push(t)
-      for (let v = 0; v < 3; v++) {
-        surface.box.expandByPoint(vertex.fromBufferAttribute(positions, t * 3 + v).applyMatrix4(mesh.matrixWorld))
-      }
-    }
-
-    // A train is several touching surfaces (body, wheels, coupled wagons): merge those whose bounds meet
-    const islands = [...surfaces.values()]
-    for (let merged = true; merged; ) {
-      merged = false
-      for (let i = 0; i < islands.length; i++) {
-        for (let j = islands.length - 1; j > i; j--) {
-          if (!islands[i].box.clone().expandByScalar(0.3).intersectsBox(islands[j].box)) continue
-          islands[i].triangles.push(...islands[j].triangles)
-          islands[i].box.union(islands[j].box)
-          islands.splice(j, 1)
-          merged = true
+    for (const [key, vertex] of cells) {
+      const [x, y, z] = key.split(',').map(Number)
+      for (let dx = -1; dx <= 1; dx++) {
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dz = -1; dz <= 1; dz++) {
+            const neighbor = cells.get(`${x + dx},${y + dy},${z + dz}`)
+            if (neighbor !== undefined) union(vertex, neighbor)
+          }
         }
       }
     }
+    for (let t = 0; t < triangleCount; t++) {
+      union(t * 3 + 1, t * 3)
+      union(t * 3 + 2, t * 3)
+    }
+
+    const pieces = new Map<number, { triangles: number[]; box: THREE.Box3 }>()
+    for (let t = 0; t < triangleCount; t++) {
+      const root = find(t * 3)
+      let piece = pieces.get(root)
+      if (!piece) pieces.set(root, (piece = { triangles: [], box: new THREE.Box3() }))
+      piece.triangles.push(t)
+      for (let v = 0; v < 3; v++) piece.box.expandByPoint(worldPositions[t * 3 + v])
+    }
+    const islands = [...pieces.values()]
 
     return islands.map(({ triangles, box }) => {
       const center = box.getCenter(new THREE.Vector3())
@@ -381,33 +378,34 @@ export class SubwaySurfersGame extends BaseGame {
 
       const island = new THREE.Mesh(islandGeometry, mesh.material)
       island.position.copy(center)
-      island.userData.length = box.max.z - box.min.z
+      island.userData = {
+        length: box.max.z - box.min.z,
+        halfHeight: (box.max.y - box.min.y) / 2,
+        // The spot on the rails this piece was modeled at
+        home: { x: center.x, z: center.z, baseY: box.min.y },
+      }
       return island
     })
   }
 
-  // Lays a tile's trains and barriers out afresh, so no two stretches of track look the same
+  /**
+   * Gives a tile its own arrangement of trains and barriers, so no two stretches
+   * of track look the same. Pieces trade the spots they were modeled at (which
+   * keeps them on the rails) and a random share of them is left out.
+   */
   private randomizeObstacles(tile: THREE.Group): void {
     const obstacles = tile.getObjectByName(OBSTACLES_GROUP_NAME)?.children || []
+    const lengthClass = (obstacle: THREE.Object3D) =>
+      OBSTACLE_LENGTH_CLASSES.filter((limit) => obstacle.userData.length >= limit).length
 
-    // Group obstacles by the track they sit on
-    const lanes: THREE.Object3D[][] = []
-    for (const obstacle of [...obstacles].sort((a, b) => a.position.x - b.position.x)) {
-      const lane = lanes[lanes.length - 1]
-      if (lane && obstacle.position.x - lane[lane.length - 1].position.x < LANE_TOLERANCE) lane.push(obstacle)
-      else lanes.push([obstacle])
-    }
-
-    const randomGap = () => MIN_OBSTACLE_GAP + Math.random() * (MAX_OBSTACLE_GAP - MIN_OBSTACLE_GAP)
-    for (const lane of lanes) {
-      let cursor = this.tileBackZ - randomGap()
-      for (const obstacle of shuffle(lane)) {
-        const length: number = obstacle.userData.length
-        obstacle.visible = Math.random() > OBSTACLE_HIDE_CHANCE && cursor - length > this.tileFrontZ
-        if (!obstacle.visible) continue
-        obstacle.position.z = cursor - length / 2
-        cursor -= length + randomGap()
-      }
+    for (let i = 0; i <= OBSTACLE_LENGTH_CLASSES.length; i++) {
+      const group = obstacles.filter((obstacle) => lengthClass(obstacle) === i)
+      const homes = shuffle(group.map((obstacle) => obstacle.userData.home))
+      group.forEach((obstacle, j) => {
+        const home = homes[j]
+        obstacle.position.set(home.x, home.baseY + obstacle.userData.halfHeight, home.z)
+        obstacle.visible = Math.random() > OBSTACLE_HIDE_CHANCE
+      })
     }
   }
 
@@ -860,7 +858,7 @@ export class SubwaySurfersGame extends BaseGame {
   private recycleMapTiles(): void {
     if (this.ground) this.ground.position.z = this.characterZ
     for (const tile of this.mapTiles) {
-      if (tile.position.z + this.tileBackZ < this.characterZ + MAP_RECYCLE_MARGIN) continue
+      if (tile.position.z + this.tileFrontZ < this.characterZ + MAP_RECYCLE_MARGIN) continue
       tile.position.z = Math.min(...this.mapTiles.map((t) => t.position.z)) - this.tilePeriod
       this.randomizeObstacles(tile)
     }
