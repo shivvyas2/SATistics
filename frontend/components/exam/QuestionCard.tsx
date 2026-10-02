@@ -16,6 +16,19 @@ export function sourceLabel(question: SATQuestion): string {
   return SOURCE_LABELS[question.source || ''] || ''
 }
 
+// An answer choice: a button when it can be clicked, plain text when the game world does the picking
+function Choice({ onClick, children, ...props }: { onClick?: () => void; children: React.ReactNode; className: string; style?: React.CSSProperties; 'aria-pressed'?: boolean }) {
+  if (!onClick) {
+    const { 'aria-pressed': _pressed, ...rest } = props
+    return <div {...rest}>{children}</div>
+  }
+  return (
+    <button onClick={onClick} {...props}>
+      {children}
+    </button>
+  )
+}
+
 export interface AnswerFeedback {
   isCorrect: boolean
   selected: number | null
@@ -31,7 +44,8 @@ interface QuestionCardProps {
   activeOption: number | null
   activeLabel: string
   feedback: AnswerFeedback | null
-  onPick: (option: number) => void
+  // Called when a choice is clicked. Leave out for games where the answer is picked in the game world.
+  onPick?: (option: number) => void
   // Hints shown so far, and the choices they ruled out
   hints?: string[]
   eliminated?: number[]
@@ -60,7 +74,7 @@ export function QuestionCard({
   return (
     <>
       <div className="flex-none flex items-center gap-2 px-4 pt-3 pb-2 text-xs">
-        <span className="font-bold text-sky-300">
+        <span className="flex-none whitespace-nowrap font-bold text-sky-300">
           Question {questionNumber}
           {totalQuestions > 0 && ` of ${totalQuestions}`}
         </span>
@@ -91,10 +105,9 @@ export function QuestionCard({
             const isWrongPick = feedback && !feedback.isCorrect && feedback.selected === lane
             const isEliminated = eliminated.includes(lane)
             return (
-              <button
+              <Choice
                 key={lane}
-                onClick={() => onPick(lane)}
-                disabled={!!feedback || isEliminated}
+                onClick={onPick && !feedback && !isEliminated ? () => onPick(lane) : undefined}
                 aria-pressed={isActive}
                 className={`w-full flex items-center gap-3 text-left rounded-xl px-3 py-1.5 sm:py-2 border-2 transition-colors ${
                   isCorrect
@@ -105,7 +118,7 @@ export function QuestionCard({
                     ? 'bg-white/15'
                     : isEliminated
                     ? 'border-transparent bg-white/5 opacity-40 line-through'
-                    : 'border-transparent bg-white/5 hover:bg-white/10'
+                    : `border-transparent bg-white/5 ${onPick ? 'hover:bg-white/10' : ''}`
                 }`}
                 style={isActive ? { borderColor: LANE_COLORS[lane] } : undefined}
               >
@@ -114,7 +127,7 @@ export function QuestionCard({
                 {isActive && <span className="flex-none text-xs font-bold text-gray-200">{activeLabel}</span>}
                 {isCorrect && <span className="flex-none text-xs font-bold text-green-400">✓ Correct</span>}
                 {isWrongPick && <span className="flex-none text-xs font-bold text-red-400">✗ Yours</span>}
-              </button>
+              </Choice>
             )
           })}
         </div>

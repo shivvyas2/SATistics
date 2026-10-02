@@ -6,6 +6,19 @@ import type { WhackAMoleGame } from '@/games/whackamole/WhackAMoleGame'
 import { GameOverModal } from './GameOverModal'
 import { fetchQuestionsWithCache } from '@/lib/api/questions'
 import { satQuestions } from '@/games/whackamole/questions'
+import type { SATQuestion as ExamQuestion } from '@/lib/api/questions'
+import { getHighScore, recordHighScore } from '@/lib/arcade'
+import { GameTopBar, HUD_PANEL } from './arcade/GameHud'
+import { GameIntro, GameLoading } from './exam/GameIntro'
+import { PauseMenu } from './exam/PauseMenu'
+import { QuestionContent } from './QuestionContent'
+
+// Answer colors match the signs the moles hold up
+const MOLE_COLORS = ['#FF6B6B', '#4ECDC4', '#FFE66D', '#95E1D3']
+const LETTERS = ['A', 'B', 'C', 'D']
+
+// Mallet cursor drawn in the site palette
+const MALLET_CURSOR = `url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='32' height='32' viewBox='0 0 32 32'><g transform='rotate(-35 16 16)'><rect x='14' y='12' width='5' height='18' rx='2' fill='%23ECEAE4' stroke='%2317171C' stroke-width='2'/><rect x='6' y='3' width='20' height='10' rx='2' fill='%23D4F34A' stroke='%2317171C' stroke-width='2'/></g></svg>") 8 8, auto`
 
 interface WhackAMoleGameContainerProps {
   gameId: string
@@ -22,6 +35,14 @@ export function WhackAMoleGameContainer({ gameId }: WhackAMoleGameContainerProps
   const [showResult, setShowResult] = useState(false)
   const [gameOver, setGameOver] = useState(false)
   const [analytics, setAnalytics] = useState<GameAnalytics | null>(null)
+  const [started, setStarted] = useState(false)
+  const [paused, setPaused] = useState(false)
+  const [highScore, setHighScore] = useState(0)
+  // The game loop reads this to know whether to advance the game
+  const runningRef = useRef(false)
+  runningRef.current = started && !paused
+
+  useEffect(() => setHighScore(getHighScore('whackamole')), [])
 
   // Fetch AI questions on mount
   useEffect(() => {
@@ -40,7 +61,7 @@ export function WhackAMoleGameContainer({ gameId }: WhackAMoleGameContainerProps
   }, [])
 
   useEffect(() => {
-    if (!canvasRef.current || loading) return
+    if (!canvasRef.current || loading || !started) return
 
     const canvas = canvasRef.current
     let animationFrameId: number
@@ -74,7 +95,8 @@ export function WhackAMoleGameContainer({ gameId }: WhackAMoleGameContainerProps
       game.onGameOver = async (analyticsData) => {
         setAnalytics(analyticsData)
         setGameOver(true)
-        
+        setHighScore(recordHighScore('whackamole', analyticsData.score))
+
         // Save score to database via FastAPI
         try {
           const { apiClient } = await import('@/lib/api/client')
@@ -90,10 +112,12 @@ export function WhackAMoleGameContainer({ gameId }: WhackAMoleGameContainerProps
       const gameLoop = (currentTime: number) => {
         if (!game) return
         
-        const deltaTime = currentTime - lastTime
+        // The game starts after the intro, so time the first frame from itself, not page load
+        const deltaTime = lastTime ? currentTime - lastTime : 0
         lastTime = currentTime
 
-        game.update(deltaTime)
+        // Hold the game still while paused
+        if (runningRef.current) game.update(deltaTime)
         game.render(null as any)
 
         animationFrameId = requestAnimationFrame(gameLoop)
@@ -128,130 +152,103 @@ export function WhackAMoleGameContainer({ gameId }: WhackAMoleGameContainerProps
         game.cleanup()
       }
     }
-  }, [loading, questions])
+  }, [loading, questions, started])
 
   const handleRestart = () => {
     window.location.reload()
   }
 
-  // Show loading screen while fetching AI questions
   if (loading) {
     return (
-      <div className="fixed inset-0 w-screen h-screen bg-gradient-to-br from-green-600 via-yellow-500 to-orange-400 overflow-hidden flex items-center justify-center">
-        <div className="text-center">
-          <div className="text-6xl mb-4">🔨</div>
-          <div className="text-white text-2xl font-bold mb-2">Loading AI Questions...</div>
-          <div className="text-white/80">Generating personalized SAT questions with Claude Haiku 4.5</div>
-          <div className="mt-4">
-            <div className="w-64 h-2 bg-white/20 rounded-full overflow-hidden mx-auto">
-              <div className="h-full bg-white animate-pulse" style={{ width: '60%' }}></div>
-            </div>
-          </div>
-        </div>
+      <div className="fixed inset-0 bg-paper">
+        <GameLoading gameId="whackamole" message="Digging the mole holes..." progress={null} />
       </div>
     )
   }
 
+  const question = currentQuestion as ExamQuestion | null
+  const isPlaying = started && !paused && !gameOver
+
   return (
-    <div className="fixed inset-0 w-screen h-screen bg-black overflow-hidden" style={{ margin: 0, padding: 0 }}>
-      {/* Game Canvas with Overlays */}
-      <div className="relative w-full h-full">
-        <canvas
-          ref={canvasRef}
-          className="absolute inset-0 w-full h-full"
-          style={{ 
-            cursor: 'url("data:image/svg+xml;utf8,<svg xmlns=%27http://www.w3.org/2000/svg%27 width=%2732%27 height=%2732%27 viewBox=%270 0 32 32%27><text y=%2728%27 font-size=%2728%27>🔨</text></svg>") 8 24, auto',
-            display: 'block',
-            margin: 0,
-            padding: 0
-          }}
-          tabIndex={-1}
+    <div className="game-hud fixed inset-0 h-screen w-screen select-none overflow-hidden bg-ink">
+      <canvas
+        ref={canvasRef}
+        className="absolute inset-0 h-full w-full"
+        style={{ cursor: MALLET_CURSOR, display: 'block' }}
+        tabIndex={-1}
+      />
+
+      {!started && (
+        <GameIntro
+          gameId="whackamole"
+          kicker={highScore > 0 ? `Best score ${highScore}` : 'Arcade'}
+          title="Whack"
+          titleAccent="the answer."
+          summary={`${questions.length} quick questions. Four moles pop up, each holding one answer.`}
+          steps={[
+            { label: 'Click', text: 'Hit the mole holding the letter of the right answer. Tap works on phones.' },
+            { label: 'Streak', text: 'Right answers in a row build a streak for bonus points.' },
+            { label: 'Pause', text: 'The menu button at the top left stops the game at any time.' },
+          ]}
+          startLabel="Start whacking"
+          onStart={() => setStarted(true)}
         />
-
-        {/* Question Overlay - Top */}
-        {currentQuestion && !gameOver && (
-          <div className="absolute top-4 left-4 right-4 bg-black/80 backdrop-blur-sm rounded-lg p-4 border-2 border-white/20">
-            <div className="flex items-center gap-2 mb-2">
-              <span className="px-2 py-1 bg-blue-600 text-white rounded text-xs font-bold">
-                {currentQuestion.topic}
-              </span>
-              <span className={`px-2 py-1 rounded text-xs font-bold text-white ${
-                currentQuestion.difficulty === 'easy' ? 'bg-green-600' :
-                currentQuestion.difficulty === 'medium' ? 'bg-yellow-600' :
-                'bg-red-600'
-              }`}>
-                {currentQuestion.difficulty.toUpperCase()}
-              </span>
-            </div>
-            <h3 className="text-white font-bold text-lg leading-tight">
-              {currentQuestion.question}
-            </h3>
-          </div>
-        )}
-
-        {/* Answer Options - Compact Bottom Bar */}
-        {currentQuestion && !gameOver && (
-          <div className="absolute bottom-16 left-4 right-4 bg-black/90 backdrop-blur-sm rounded-lg p-2 border border-white/20">
-            <div className="grid grid-cols-4 gap-2 text-xs">
-              {currentQuestion.options.map((option, index) => {
-                const colors = ['bg-red-500', 'bg-cyan-500', 'bg-yellow-400', 'bg-green-400']
-                const textColors = ['text-white', 'text-white', 'text-black', 'text-black']
-                const labels = ['A', 'B', 'C', 'D']
-
-                return (
-                  <div
-                    key={index}
-                    className={`${colors[index]} ${textColors[index]} rounded px-2 py-1 text-center font-bold border border-black`}
-                  >
-                    <span className="font-black">{labels[index]}: </span>
-                    <span className="text-[10px]">{option}</span>
-                  </div>
-                )
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Instruction */}
-        <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2 bg-yellow-500 text-black px-6 py-2 rounded-full font-bold text-sm shadow-lg animate-pulse z-10">
-          🖱️ CLICK THE CORRECT MOLE!
-        </div>
-
-        {/* HUD Stats - Overlay Top Right */}
-        {gameState && !gameOver && (
-          <div className="absolute top-20 right-4 bg-black/80 backdrop-blur-sm rounded-lg px-4 py-3 border border-gray-700 flex flex-col gap-2 z-10">
-            <div className="flex items-center gap-2">
-              <span className="text-gray-400 text-sm">Score:</span>
-              <span className="text-white font-bold text-lg">{gameState.score}</span>
-            </div>
-            
-            <div className="flex items-center gap-2">
-              <span className="text-gray-400 text-sm">Streak:</span>
-              <span className="text-orange-400 font-bold text-lg">
-                {gameState.streak > 0 ? `🔥 ${gameState.streak}` : '—'}
-              </span>
-            </div>
-            
-            <div className="flex items-center gap-2">
-              <span className="text-gray-400 text-sm">Question:</span>
-              <span className="text-white font-bold text-lg">
-                {gameState.currentQuestionIndex + 1}/{gameState.totalQuestions}
-              </span>
-            </div>
-            
-            <div className="flex items-center gap-2">
-              <span className="text-gray-400 text-sm">Correct:</span>
-              <span className="text-green-400 font-bold text-lg">{gameState.correctAnswers}</span>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Game Over Modal */}
-      {gameOver && analytics && (
-        <GameOverModal analytics={analytics} onRestart={handleRestart} />
       )}
+
+      {isPlaying && gameState && (
+        <div className="pointer-events-none absolute inset-0 z-10 flex flex-col">
+          <GameTopBar
+            stats={[
+              { label: 'Score', value: gameState.score, tone: 'lime' },
+              { label: 'Best', value: Math.max(highScore, gameState.score) },
+              { label: 'Streak', value: `x${gameState.streak}`, tone: 'cobalt' },
+              { label: 'Question', value: `${gameState.currentQuestionIndex + 1}/${gameState.totalQuestions}`, tone: 'coral' },
+            ]}
+            onPause={() => setPaused(true)}
+          />
+
+          {question && (
+            <>
+              <div className={`${HUD_PANEL} mx-3 mt-3 max-h-[34vh] overflow-hidden`}>
+                <div className="flex items-center gap-2 px-4 pt-3 text-xs">
+                  <span className="rounded-full border-2 border-white/80 px-2 py-0.5 font-bold">{question.topic}</span>
+                  <span className="font-bold capitalize text-lime">{question.difficulty}</span>
+                </div>
+                <div className="dark-scroll max-h-[26vh] overflow-y-auto px-4 pb-3 pt-2">
+                  <QuestionContent
+                    html={question.questionHtml}
+                    text={question.stem || question.question}
+                    className="text-[15px] font-semibold leading-snug sm:text-[17px]"
+                  />
+                </div>
+              </div>
+
+              <div className="flex-1" />
+
+              <div className={`${HUD_PANEL} m-3 grid grid-cols-2 gap-2 p-2 lg:grid-cols-4`}>
+                {question.options.map((option, index) => (
+                  <div key={index} className="flex items-center gap-2 rounded-xl bg-white/[0.07] px-2 py-1.5">
+                    <span
+                      className="flex h-7 w-7 flex-none items-center justify-center rounded-full border-2 border-ink text-xs font-black text-ink"
+                      style={{ backgroundColor: MOLE_COLORS[index] }}
+                    >
+                      {LETTERS[index]}
+                    </span>
+                    <QuestionContent html={question.optionsHtml?.[index]} text={option} className="min-w-0 flex-1 break-words text-sm leading-snug" />
+                  </div>
+                ))}
+              </div>
+              <p className="mx-auto mb-3 rounded-full border-2 border-ink bg-mist px-4 py-1 text-sm font-bold text-ink shadow-brutal-sm">
+                Hit the mole holding the right answer
+              </p>
+            </>
+          )}
+        </div>
+      )}
+
+      {paused && !gameOver && <PauseMenu gameId="whackamole" onResume={() => setPaused(false)} />}
+
+      {gameOver && analytics && <GameOverModal analytics={analytics} onRestart={handleRestart} />}
     </div>
   )
 }
-

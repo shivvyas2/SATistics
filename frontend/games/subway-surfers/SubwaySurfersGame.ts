@@ -43,8 +43,29 @@ const HARDER_MODULE_ACCURACY = 0.6
 const DIFFICULTY_POINTS: Record<Difficulty, number> = { easy: 100, medium: 150, hard: 200 }
 // Share of a question's points kept for each answer a hint rules out
 const HINT_POINTS_FACTOR = 0.6
+// Wrong-answer fall, in meters and seconds
+const FALL_GRAVITY = 30
+const GROUND_CLEARANCE = 0.15
+const MIN_IMPACT_SECONDS = 1.2
+const MAX_IMPACT_SECONDS = 1.8
+const RISE_RATE = 2.5
+const RISE_MIN_SPEED = 4
 const HUD_UPDATE_INTERVAL_MS = 100
-const HORIZON_COLOR = 0xd6eeff
+// The sky moves from midday to sunset over the course of a run
+const SKY_STAGES = [
+  { at: 0, top: 0x3a9bf0, horizon: 0xd6eeff, sun: 0xfff1d6, sunPower: 2.6, skyLight: 0xffffff, skyPower: 2.2, sunHeight: 0.75 },
+  { at: 0.6, top: 0x4a7fd0, horizon: 0xffd29a, sun: 0xffb46b, sunPower: 2.3, skyLight: 0xffe6c7, skyPower: 1.9, sunHeight: 0.32 },
+  { at: 1, top: 0x2f3585, horizon: 0xff9a6e, sun: 0xff8a5c, sunPower: 1.8, skyLight: 0xd3c2ff, skyPower: 1.5, sunHeight: 0.12 },
+]
+const SKY_RADIUS = 900
+const CLOUD_COUNT = 16
+// Clouds wrap around once they drift this far from the runner
+const CLOUD_RANGE = 600
+// Trains start rolling toward the runner once they are this close ahead
+const TRAIN_START_DISTANCE = 260
+const TRAIN_MOVE_CHANCE = 0.55
+const MIN_TRAIN_SPEED = 7
+const MAX_TRAIN_SPEED = 15
 const MAP_TILE_COUNT = 3
 // How far the bridge at the end of one tile tucks under the start of the next
 const MAP_TILE_OVERLAP = 8
@@ -88,6 +109,14 @@ export class SubwaySurfersGame extends BaseGame {
   // World
   private mapTiles: THREE.Group[] = []
   private ground: THREE.Mesh | null = null
+  // Sky
+  private skyDome: THREE.Mesh | null = null
+  private sunSprite: THREE.Sprite | null = null
+  private sunLight: THREE.DirectionalLight | null = null
+  private skyLight: THREE.HemisphereLight | null = null
+  private clouds: THREE.Sprite[] = []
+  // 0 at midday, 1 at sunset; eases toward how far through the run the player is
+  private timeOfDay = 0
   // Distance between the starts of consecutive tiles
   private tilePeriod = 0
   // Where a tile's track ends, relative to the tile's position
@@ -110,8 +139,11 @@ export class SubwaySurfersGame extends BaseGame {
   private cameraX = LANE_CENTER_X
   private viewShift = { x: 0, y: 0 }
   // Wrong-answer tumble: falling, then impact, then back to flying
-  private fail: { stage: 'falling' | 'impact'; secondsLeft: number } | null = null
-  private cameraDip = 0
+  private fail: { stage: 'falling' | 'impact' | 'rising'; secondsLeft: number; velocity: number } | null = null
+  // Height of the character model while flying, and how far below that it currently is
+  private flightModelY = 0
+  private fallDrop = 0
+  private cameraShake = 0
 
   // Exam state
   private pool: SATQuestion[]
@@ -185,9 +217,8 @@ export class SubwaySurfersGame extends BaseGame {
 
   private setupScene(): void {
     this.scene = new THREE.Scene()
-    this.scene.background = this.createSkyTexture()
     // Fog matches the horizon so the far end of the map fades out instead of popping in
-    this.scene.fog = new THREE.Fog(HORIZON_COLOR, 140, 620)
+    this.scene.fog = new THREE.Fog(SKY_STAGES[0].horizon, 140, 620)
 
     this.camera = new THREE.PerspectiveCamera(60, this.width / this.height, 0.1, 1000)
 
@@ -195,34 +226,157 @@ export class SubwaySurfersGame extends BaseGame {
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
     this.renderer.setSize(this.width, this.height, false)
 
-    // Bright daylight: sky/ground bounce light plus a warm sun
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0xb9d6a3, 2.2))
+    // Sky bounce light plus a sun; both change color as the day goes on
+    this.skyLight = new THREE.HemisphereLight(0xffffff, 0xb9d6a3, 2.2)
+    this.scene.add(this.skyLight)
     this.scene.add(new THREE.AmbientLight(0xffffff, 1.0))
-    const sun = new THREE.DirectionalLight(0xfff1d6, 2.6)
-    sun.position.set(30, 60, 20)
-    this.scene.add(sun)
+    this.sunLight = new THREE.DirectionalLight(0xfff1d6, 2.6)
+    this.scene.add(this.sunLight)
+    this.scene.add(this.sunLight.target)
+    this.buildSky()
 
     this.gateGroup = new THREE.Group()
     this.scene.add(this.gateGroup)
   }
 
-  // Vertical gradient from deep blue overhead to a pale horizon
-  private createSkyTexture(): THREE.CanvasTexture {
+  // Sky dome, sun and clouds. They travel with the runner so they never get closer.
+  private buildSky(): void {
+    if (!this.scene) return
+    this.skyDome = new THREE.Mesh(
+      new THREE.SphereGeometry(SKY_RADIUS, 32, 16),
+      new THREE.ShaderMaterial({
+        side: THREE.BackSide,
+        depthWrite: false,
+        fog: false,
+        uniforms: { topColor: { value: new THREE.Color() }, horizonColor: { value: new THREE.Color() } },
+        vertexShader: `
+          varying float vHeight;
+          void main() {
+            vHeight = normalize(position).y;
+            gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+          }`,
+        fragmentShader: `
+          uniform vec3 topColor;
+          uniform vec3 horizonColor;
+          varying float vHeight;
+          void main() {
+            // Most of the color change happens near the horizon
+            float blend = pow(clamp(vHeight, 0.0, 1.0), 0.45);
+            gl_FragColor = vec4(mix(horizonColor, topColor, blend), 1.0);
+          }`,
+      })
+    )
+    this.skyDome.renderOrder = -2
+    this.scene.add(this.skyDome)
+
+    this.sunSprite = new THREE.Sprite(
+      new THREE.SpriteMaterial({
+        map: this.createGlowTexture('rgba(255,250,225,1)', 'rgba(255,214,140,0.55)'),
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        fog: false,
+      })
+    )
+    this.sunSprite.scale.setScalar(260)
+    this.sunSprite.renderOrder = -1
+    this.scene.add(this.sunSprite)
+
+    const cloudTexture = this.createCloudTexture()
+    for (let i = 0; i < CLOUD_COUNT; i++) {
+      const cloud = new THREE.Sprite(
+        new THREE.SpriteMaterial({ map: cloudTexture, transparent: true, opacity: 0.75 + Math.random() * 0.2, depthWrite: false, fog: false })
+      )
+      const size = 90 + Math.random() * 110
+      cloud.scale.set(size, size * 0.42, 1)
+      cloud.position.set((Math.random() - 0.5) * 2 * CLOUD_RANGE, 110 + Math.random() * 120, -Math.random() * CLOUD_RANGE)
+      // Each cloud drifts sideways at its own pace
+      cloud.userData.drift = 2 + Math.random() * 5
+      cloud.renderOrder = -1
+      this.scene.add(cloud)
+      this.clouds.push(cloud)
+    }
+    this.updateSky(0)
+  }
+
+  private createGlowTexture(inner: string, outer: string): THREE.CanvasTexture {
     const canvas = document.createElement('canvas')
-    canvas.width = 2
-    canvas.height = 256
+    canvas.width = 128
+    canvas.height = 128
     const ctx = canvas.getContext('2d')
     if (ctx) {
-      const gradient = ctx.createLinearGradient(0, 0, 0, 256)
-      gradient.addColorStop(0, '#3fa0f0')
-      gradient.addColorStop(0.55, '#a8dcff')
-      gradient.addColorStop(1, '#e3f4ff')
+      const gradient = ctx.createRadialGradient(64, 64, 0, 64, 64, 64)
+      gradient.addColorStop(0, inner)
+      gradient.addColorStop(0.18, inner)
+      gradient.addColorStop(0.4, outer)
+      gradient.addColorStop(1, 'rgba(255,255,255,0)')
       ctx.fillStyle = gradient
-      ctx.fillRect(0, 0, 2, 256)
+      ctx.fillRect(0, 0, 128, 128)
     }
-    const texture = new THREE.CanvasTexture(canvas)
-    texture.colorSpace = THREE.SRGBColorSpace
-    return texture
+    return new THREE.CanvasTexture(canvas)
+  }
+
+  // A soft cloud made of overlapping puffs
+  private createCloudTexture(): THREE.CanvasTexture {
+    const canvas = document.createElement('canvas')
+    canvas.width = 256
+    canvas.height = 128
+    const ctx = canvas.getContext('2d')
+    if (ctx) {
+      const puffs = [[70, 78, 46], [118, 62, 56], [170, 74, 48], [205, 86, 34], [44, 90, 30]]
+      for (const [x, y, radius] of puffs) {
+        const gradient = ctx.createRadialGradient(x, y, 0, x, y, radius)
+        gradient.addColorStop(0, 'rgba(255,255,255,0.95)')
+        gradient.addColorStop(0.6, 'rgba(255,255,255,0.6)')
+        gradient.addColorStop(1, 'rgba(255,255,255,0)')
+        ctx.fillStyle = gradient
+        ctx.fillRect(x - radius, y - radius, radius * 2, radius * 2)
+      }
+    }
+    return new THREE.CanvasTexture(canvas)
+  }
+
+  // Blends sky, fog and light toward the current time of day and keeps the sky around the runner
+  private updateSky(dt: number): void {
+    if (!this.scene || !this.skyDome || !this.sunSprite || !this.sunLight || !this.skyLight) return
+
+    // The day advances with the run: midday at the first question, sunset at the last
+    const progress = this.totalQuestions > 0 ? this.review.length / this.totalQuestions : 0
+    this.timeOfDay += (progress - this.timeOfDay) * Math.min(1, 0.4 * dt)
+
+    const nextIndex = Math.max(1, SKY_STAGES.findIndex((stage) => stage.at >= this.timeOfDay))
+    const from = SKY_STAGES[nextIndex - 1]
+    const to = SKY_STAGES[nextIndex]
+    const blend = THREE.MathUtils.clamp((this.timeOfDay - from.at) / (to.at - from.at), 0, 1)
+    const color = (a: number, b: number) => new THREE.Color(a).lerp(new THREE.Color(b), blend)
+    const number = (a: number, b: number) => THREE.MathUtils.lerp(a, b, blend)
+
+    const horizon = color(from.horizon, to.horizon)
+    const uniforms = (this.skyDome.material as THREE.ShaderMaterial).uniforms
+    uniforms.topColor.value.copy(color(from.top, to.top))
+    uniforms.horizonColor.value.copy(horizon)
+    ;(this.scene.fog as THREE.Fog).color.copy(horizon)
+    this.sunLight.color.copy(color(from.sun, to.sun))
+    this.sunLight.intensity = number(from.sunPower, to.sunPower)
+    this.skyLight.color.copy(color(from.skyLight, to.skyLight))
+    this.skyLight.intensity = number(from.skyPower, to.skyPower)
+    this.sunSprite.material.color.copy(color(from.sun, to.sun))
+
+    // The sun sits ahead and to the right, sinking as the day goes on
+    const sunDirection = new THREE.Vector3(0.45, number(from.sunHeight, to.sunHeight), -1).normalize()
+    const center = new THREE.Vector3(this.characterX, this.trackSurfaceY + this.flightAltitude, this.characterZ)
+    this.skyDome.position.copy(center)
+    this.sunSprite.position.copy(center).addScaledVector(sunDirection, SKY_RADIUS * 0.9)
+    // Light the scene from behind the camera so the side the player sees is never in shadow
+    const lightDirection = new THREE.Vector3(0.4, 0.6 + sunDirection.y, 0.6).normalize()
+    this.sunLight.position.copy(center).addScaledVector(lightDirection, 100)
+    this.sunLight.target.position.copy(center)
+
+    for (const cloud of this.clouds) {
+      cloud.position.x += cloud.userData.drift * dt
+      if (cloud.position.x > CLOUD_RANGE) cloud.position.x -= 2 * CLOUD_RANGE
+      // The runner overtakes clouds; ones left behind reappear far ahead
+      if (cloud.position.z > this.characterZ + 60) cloud.position.z -= CLOUD_RANGE
+    }
   }
 
   private async loadAssets(): Promise<void> {
@@ -411,6 +565,9 @@ export class SubwaySurfersGame extends BaseGame {
         const home = homes[j]
         obstacle.position.set(home.x, home.baseY + obstacle.userData.halfHeight, home.z)
         obstacle.visible = Math.random() > OBSTACLE_HIDE_CHANCE
+        // Some trains roll toward the runner; barriers stay put
+        obstacle.userData.speed =
+          i > 0 && Math.random() < TRAIN_MOVE_CHANCE ? MIN_TRAIN_SPEED + Math.random() * (MAX_TRAIN_SPEED - MIN_TRAIN_SPEED) : 0
       })
     }
   }
@@ -450,7 +607,8 @@ export class SubwaySurfersGame extends BaseGame {
     const charBox = new THREE.Box3().setFromObject(this.characterModel)
     this.characterHeight = charBox.getSize(new THREE.Vector3()).y
     const desiredBottomY = this.trackSurfaceY + this.flightAltitude + this.characterVerticalOffset
-    this.characterModel.position.set(this.characterX, desiredBottomY - charBox.min.y, this.characterZ)
+    this.flightModelY = desiredBottomY - charBox.min.y
+    this.characterModel.position.set(this.characterX, this.flightModelY, this.characterZ)
     this.scene.add(this.characterModel)
     this.playAnimation(this.characterModel, true)
   }
@@ -807,30 +965,44 @@ export class SubwaySurfersGame extends BaseGame {
     return this.playAnimation(model, loop)
   }
 
+  // A wrong answer knocks the runner out of the sky: fall, hit the tracks, then climb back up
   private startFailSequence(): void {
     this.playSfx(this.fallingSfx)
-    if (!this.fallingFBX) return
-    const duration = this.swapCharacter(this.fallingFBX, false)
-    this.fail = { stage: 'falling', secondsLeft: Math.max(0.6, duration) }
+    if (this.fallingFBX) this.swapCharacter(this.fallingFBX, true)
+    this.fail = { stage: 'falling', secondsLeft: 0, velocity: 0 }
   }
 
   private updateFailSequence(dt: number): void {
-    if (!this.fail) {
-      this.cameraDip = Math.max(0, this.cameraDip - 12 * dt)
-      return
-    }
-    this.fail.secondsLeft -= dt
-    if (this.fail.stage === 'impact') this.cameraDip = Math.min(6, this.cameraDip + 16 * dt)
-    if (this.fail.secondsLeft > 0) return
+    this.cameraShake = Math.max(0, this.cameraShake - 3 * dt)
+    const fail = this.fail
+    if (!fail || !this.characterModel) return
+    const groundDrop = this.flightModelY - (this.trackSurfaceY + GROUND_CLEARANCE)
 
-    if (this.fail.stage === 'falling' && this.fallingFlatFBX) {
-      const duration = this.swapCharacter(this.fallingFlatFBX, false)
-      this.playSfx(this.dyingSfx)
-      this.fail = { stage: 'impact', secondsLeft: Math.max(0.8, duration) }
+    if (fail.stage === 'falling') {
+      fail.velocity += FALL_GRAVITY * dt
+      this.fallDrop += fail.velocity * dt
+      if (this.fallDrop >= groundDrop) {
+        this.fallDrop = groundDrop
+        const duration = this.fallingFlatFBX ? this.swapCharacter(this.fallingFlatFBX, false) : 0
+        this.playSfx(this.dyingSfx)
+        this.cameraShake = 1
+        this.fail = { stage: 'impact', secondsLeft: THREE.MathUtils.clamp(duration, MIN_IMPACT_SECONDS, MAX_IMPACT_SECONDS), velocity: 0 }
+      }
+    } else if (fail.stage === 'impact') {
+      fail.secondsLeft -= dt
+      if (fail.secondsLeft <= 0) {
+        if (this.flyingFBX) this.swapCharacter(this.flyingFBX, true)
+        fail.stage = 'rising'
+      }
     } else {
-      if (this.flyingFBX) this.swapCharacter(this.flyingFBX, true)
-      this.fail = null
+      // Climb back to flight height, easing in at the top
+      this.fallDrop -= Math.max(RISE_MIN_SPEED, this.fallDrop * RISE_RATE) * dt
+      if (this.fallDrop <= 0) {
+        this.fallDrop = 0
+        this.fail = null
+      }
     }
+    this.characterModel.position.y = this.flightModelY - this.fallDrop
   }
 
   // ---------- Frame update ----------
@@ -846,7 +1018,9 @@ export class SubwaySurfersGame extends BaseGame {
     this.rebaseWorld()
 
     // Forward flight: cruise, dive for the gates, or stumble after a wrong answer
-    const targetSpeed = this.isDiving ? DIVE_SPEED : this.fail ? this.cruiseSpeed * 0.45 : this.cruiseSpeed
+    // Falling carries the runner forward, the crash stops them dead, then they pick up speed again
+    const failSpeed = { falling: 0.6, impact: 0, rising: 0.7 }
+    const targetSpeed = this.isDiving ? DIVE_SPEED : this.fail ? this.cruiseSpeed * failSpeed[this.fail.stage] : this.cruiseSpeed
     this.speed += (targetSpeed - this.speed) * Math.min(1, 6 * dt)
     this.characterZ -= this.speed * dt
 
@@ -877,6 +1051,8 @@ export class SubwaySurfersGame extends BaseGame {
     this.updateGates(nowMs)
     this.updateCamera(dt)
     this.recycleMapTiles()
+    this.updateTrains(dt)
+    this.updateSky(dt)
     this.emitHud(false)
   }
 
@@ -886,12 +1062,41 @@ export class SubwaySurfersGame extends BaseGame {
     this.cameraX += (this.characterX - this.cameraX) * Math.min(1, 4 * dt)
     const diveAmount = THREE.MathUtils.clamp((this.speed - this.cruiseSpeed) / (DIVE_SPEED - this.cruiseSpeed), 0, 1)
     const flightY = this.trackSurfaceY + this.flightAltitude
-    this.camera.position.set(this.cameraX, flightY + 4 - this.cameraDip, this.characterZ + 9 + diveAmount * 3)
-    this.camera.lookAt(this.cameraX, flightY, this.characterZ)
+    // Follow the runner down when they fall, and rattle on impact
+    const shake = () => (Math.random() - 0.5) * this.cameraShake
+    this.camera.position.set(
+      this.cameraX + shake(),
+      flightY + 4 - this.fallDrop * 0.93 + shake(),
+      this.characterZ + 9 + diveAmount * 3
+    )
+    this.camera.lookAt(this.cameraX, flightY - this.fallDrop, this.characterZ)
     const fov = 60 + diveAmount * 14
     if (Math.abs(this.camera.fov - fov) > 0.01) {
       this.camera.fov = fov
       this.camera.updateProjectionMatrix()
+    }
+  }
+
+  // Rolls trains toward the runner once they come into range, stopping short of anything on the same rail
+  private updateTrains(dt: number): void {
+    for (const tile of this.mapTiles) {
+      const obstacles = tile.getObjectByName(OBSTACLES_GROUP_NAME)?.children || []
+      for (const train of obstacles) {
+        if (!train.visible || !train.userData.speed) continue
+        const distanceAhead = this.characterZ - (tile.position.z + train.position.z)
+        if (distanceAhead > TRAIN_START_DISTANCE || distanceAhead < -MAP_RECYCLE_MARGIN) continue
+
+        const nextZ = train.position.z + train.userData.speed * dt
+        const isBlocked = obstacles.some(
+          (other) =>
+            other !== train &&
+            other.visible &&
+            Math.abs(other.position.x - train.position.x) < 1.5 &&
+            other.position.z > train.position.z &&
+            other.position.z - nextZ < (other.userData.length + train.userData.length) / 2 + 3
+        )
+        if (!isBlocked) train.position.z = nextZ
+      }
     }
   }
 
@@ -912,6 +1117,7 @@ export class SubwaySurfersGame extends BaseGame {
     this.gateZ += REBASE_DISTANCE
     if (this.gateGroup) this.gateGroup.position.z += REBASE_DISTANCE
     for (const tile of this.mapTiles) tile.position.z += REBASE_DISTANCE
+    for (const cloud of this.clouds) cloud.position.z += REBASE_DISTANCE
   }
 
   private emitHud(force: boolean): void {

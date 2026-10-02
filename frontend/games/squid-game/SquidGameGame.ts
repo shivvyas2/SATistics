@@ -6,6 +6,7 @@ import { BaseGame } from '../BaseGame'
 import { SquidConfig, SquidFeedback, SquidHudState, SquidOutcome, SquidPhase, SquidReviewItem } from './types'
 import type { SATQuestion } from '@/lib/api/questions'
 import type { GameAnalytics, QuestionAttempt } from '@/games/whackamole/types'
+import { LANE_COLORS, LANE_LETTERS } from '@/games/subway-surfers/types/game'
 
 type Difficulty = SATQuestion['difficulty']
 type AnimationName = 'idle' | 'run' | 'die'
@@ -34,6 +35,13 @@ interface Guard {
   shotsLeft: number
   secondsToNextShot: number
   tracerSecondsLeft: number
+}
+
+// A circle on the sand the player stands on to choose an answer
+interface AnswerPad {
+  option: number
+  disc: THREE.Mesh
+  label: THREE.Sprite
 }
 
 interface Npc extends Character {
@@ -75,6 +83,12 @@ const RUN_ANIMATION_SPEED = 4
 // Chance per red light that a contestant fails to stop in time
 const NPC_CARELESS_CHANCE = 0.05
 const ANIMATION_FADE_SECONDS = 0.2
+const PAD_RADIUS = 1.0
+const PAD_SPACING = 2.6
+// How far ahead of the player the answer pads appear
+const PAD_DISTANCE = 3.5
+// Standing on a pad this long locks the answer in
+const PAD_LOCK_SECONDS = 2.5
 const SHOTS_PER_BURST = 3
 const SECONDS_BETWEEN_SHOTS = 0.13
 const TRACER_SECONDS = 0.07
@@ -145,6 +159,9 @@ export class SquidGameGame extends BaseGame {
   private retryQueue: SATQuestion[] = []
   private retriedIds = new Set<number>()
   private hintsUsed = 0
+  private pads: AnswerPad[] = []
+  private standingPad: number | null = null
+  private standingSeconds = 0
   private currentQuestion: SATQuestion | null = null
   private questionElapsed = 0
   private nextGreenSeconds = FIRST_GREEN_SECONDS
@@ -504,6 +521,7 @@ export class SquidGameGame extends BaseGame {
     this.phaseSecondsLeft = this.nextGreenSeconds
     this.wasCaughtMoving = false
     this.currentQuestion = null
+    this.clearPads()
     this.onQuestionChange?.(null)
     this.onFeedback?.(null)
     this.playAudio(this.songAudio)
@@ -564,9 +582,109 @@ export class SquidGameGame extends BaseGame {
     this.currentQuestion = question
     this.questionElapsed = 0
     this.hintsUsed = 0
+    this.spawnPads(question.options.length)
     this.phase = 'question'
     this.onQuestionChange?.(question)
     this.emitHud(true)
+  }
+
+  // Lays one pad per answer on the sand just ahead of the player
+  private spawnPads(count: number): void {
+    this.clearPads()
+    if (!this.player) return
+    const { x, z } = this.player.model.position
+    const span = (count - 1) * PAD_SPACING
+    const limit = FIELD_HALF_WIDTH - span / 2 - PAD_RADIUS
+    const centerX = THREE.MathUtils.clamp(x, -limit, limit)
+    const padZ = Math.max(z - PAD_DISTANCE, DOLL_Z + 6)
+    const geometry = new THREE.CircleGeometry(PAD_RADIUS, 40)
+
+    for (let option = 0; option < count; option++) {
+      const disc = new THREE.Mesh(
+        geometry,
+        new THREE.MeshBasicMaterial({ color: LANE_COLORS[option], transparent: true, opacity: 0.7 })
+      )
+      disc.rotation.x = -Math.PI / 2
+      disc.position.set(centerX - span / 2 + option * PAD_SPACING, 0.04, padZ)
+      this.scene.add(disc)
+
+      const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.createLetterTexture(option), depthTest: false }))
+      label.position.set(disc.position.x, 2.7, padZ)
+      label.scale.set(1.1, 1.1, 1)
+      label.renderOrder = 10
+      this.scene.add(label)
+      this.pads.push({ option, disc, label })
+    }
+    this.standingPad = null
+    this.standingSeconds = 0
+  }
+
+  private createLetterTexture(option: number): THREE.CanvasTexture {
+    const canvas = document.createElement('canvas')
+    canvas.width = 128
+    canvas.height = 128
+    const ctx = canvas.getContext('2d')
+    if (ctx) {
+      ctx.fillStyle = LANE_COLORS[option]
+      ctx.beginPath()
+      ctx.arc(64, 64, 58, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.lineWidth = 8
+      ctx.strokeStyle = '#ffffff'
+      ctx.stroke()
+      ctx.fillStyle = '#ffffff'
+      ctx.font = 'bold 80px sans-serif'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(LANE_LETTERS[option], 64, 70)
+    }
+    return new THREE.CanvasTexture(canvas)
+  }
+
+  private clearPads(): void {
+    for (const { disc, label } of this.pads) {
+      this.scene.remove(disc, label)
+      ;(disc.material as THREE.Material).dispose()
+      label.material.map?.dispose()
+      label.material.dispose()
+    }
+    // One circle geometry is shared by a question's pads
+    this.pads[0]?.disc.geometry.dispose()
+    this.pads = []
+    this.standingPad = null
+    this.standingSeconds = 0
+  }
+
+  // A hint ruled this answer out: its pad disappears
+  eliminatePad(option: number): void {
+    const pad = this.pads.find((p) => p.option === option)
+    if (!pad) return
+    pad.disc.visible = false
+    pad.label.visible = false
+  }
+
+  // Locks in the pad the player is standing on, without waiting for the timer
+  lockIn(): void {
+    if (this.phase === 'question' && this.standingPad !== null) this.answer(this.standingPad)
+  }
+
+  // Standing on a pad picks that answer; staying there locks it in
+  private updatePads(dt: number): void {
+    if (this.phase !== 'question' || !this.player) return
+    const position = this.player.model.position
+    const pad = this.pads.find(
+      (p) => p.disc.visible && Math.hypot(p.disc.position.x - position.x, p.disc.position.z - position.z) < PAD_RADIUS
+    )
+    const standing = pad ? pad.option : null
+    this.standingSeconds = standing !== null && standing === this.standingPad ? this.standingSeconds + dt : 0
+    this.standingPad = standing
+
+    for (const p of this.pads) {
+      const material = p.disc.material as THREE.MeshBasicMaterial
+      material.opacity = p.option === standing ? 0.95 : 0.55
+      p.disc.scale.setScalar(p.option === standing ? 1 + 0.06 * Math.sin(this.elapsed * 8) : 1)
+    }
+    if (standing !== null && this.standingSeconds >= PAD_LOCK_SECONDS) this.answer(standing)
   }
 
   answer(selected: number | null): void {
@@ -602,6 +720,14 @@ export class SquidGameGame extends BaseGame {
     if (willRetry) {
       this.retriedIds.add(question.id)
       this.retryQueue.push(question)
+    }
+
+    // The chosen pad turns green or red; the right one stays hidden if the question will return
+    for (const pad of this.pads) {
+      const material = pad.disc.material as THREE.MeshBasicMaterial
+      if (pad.option === selected) material.color.set(isCorrect ? 0x16a34a : 0xdc2626)
+      else if (pad.option === question.correctAnswer && !willRetry) material.color.set(0x16a34a)
+      else material.color.set(0x6b7280)
     }
 
     this.nextGreenSeconds = isCorrect ? GREEN_SECONDS_CORRECT : GREEN_SECONDS_WRONG
@@ -646,6 +772,7 @@ export class SquidGameGame extends BaseGame {
     this.outcome = outcome
     this.songAudio?.pause()
     this.currentQuestion = null
+    this.clearPads()
     this.onQuestionChange?.(null)
     this.onFeedback?.(null)
     if (this.player) {
@@ -717,6 +844,7 @@ export class SquidGameGame extends BaseGame {
     }
 
     this.updatePlayer(dt)
+    this.updatePads(dt)
     this.updateNpcs(dt)
     this.updateDoll(dt)
     this.updateGuards(dt)
@@ -730,8 +858,8 @@ export class SquidGameGame extends BaseGame {
     player.mixer.update(dt)
     if (!player.isAlive) return
 
-    // Movement is only possible while the doll is singing or turning
-    const canMove = this.phase === 'green' || this.phase === 'turning'
+    // The player runs on green, and walks to an answer pad when a question is up
+    const canMove = this.phase === 'green' || this.phase === 'turning' || this.phase === 'question'
     const target = new THREE.Vector2()
     if (canMove) {
       const has = (...keys: string[]) => keys.some((key) => this.keysDown.has(key))
@@ -742,6 +870,11 @@ export class SquidGameGame extends BaseGame {
       if (target.lengthSq() > 0) target.normalize().multiplyScalar(this.runSpeed)
     }
     this.moveCharacter(player, target, dt)
+    // Answering is not a way to gain ground: the player can't walk past the pads
+    const padZ = this.pads[0]?.disc.position.z
+    if (this.phase === 'question' && padZ !== undefined) {
+      player.model.position.z = Math.max(player.model.position.z, padZ - PAD_RADIUS)
+    }
 
     if (this.phase === 'green' && player.model.position.z <= FINISH_Z) this.finish('victory')
   }
@@ -852,6 +985,8 @@ export class SquidGameGame extends BaseGame {
       questionSecondsTotal: this.config.secondsPerQuestion,
       greenSecondsLeft: this.phase === 'green' ? Math.max(0, this.phaseSecondsLeft) : 0,
       greenSecondsTotal: this.greenSecondsTotal,
+      standingPad: this.standingPad,
+      lockProgress: Math.min(1, this.standingSeconds / PAD_LOCK_SECONDS),
       wasCaughtMoving: this.wasCaughtMoving,
       isPaused: this.getState().isPaused,
       isMuted: this.isMuted,
@@ -898,6 +1033,8 @@ export class SquidGameGame extends BaseGame {
       this.start()
     } else if (this.phase === 'feedback' && (key === ' ' || key === 'Enter')) {
       this.skipFeedback()
+    } else if (this.phase === 'question' && key === ' ') {
+      this.lockIn()
     }
     this.keysDown.add(lower)
   }

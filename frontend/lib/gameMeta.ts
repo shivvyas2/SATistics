@@ -24,5 +24,6 @@ export const GAME_META: Record<string, GameMeta> = {
 export const GENRES: Genre[] = ['Action', 'Arcade', 'Runner', 'Survival']
 
 export function gameTitle(id: string, fallback = 'Game'): string {
+  if (id === 'mock-exam') return 'Mock exam'
   return GAME_META[id]?.title ?? fallback
 }

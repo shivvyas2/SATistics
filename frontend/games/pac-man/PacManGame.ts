@@ -2,6 +2,7 @@ import { BaseGame } from '../BaseGame';
 import * as THREE from 'three';
 import type { SATQuestion } from '@/lib/api/questions'
 import type { GameAnalytics, QuestionAttempt } from '@/games/whackamole/types'
+import { LANE_COLORS, LANE_LETTERS } from '@/games/subway-surfers/types/game'
 
 export interface PacManHudState {
   score: number
@@ -20,6 +21,16 @@ export interface PacManReviewItem {
   isCorrect: boolean
   timeSpent: number
 }
+
+// A lettered pellet in the maze; eating it gives that answer
+interface AnswerPellet {
+  option: number
+  mesh: THREE.Mesh
+  label: THREE.Sprite
+}
+
+// Answer pellets are placed at least this far from Pac-Man so they can't be eaten by accident
+const MIN_ANSWER_DISTANCE = 6
 
 // A question appears each time this many dots are eaten
 const DOTS_PER_QUESTION = 10
@@ -75,6 +86,8 @@ export class PacManGame extends BaseGame {
   private attempts: QuestionAttempt[] = []
   private review: PacManReviewItem[] = []
   private hasEnded = false
+  private answerPellets: AnswerPellet[] = []
+  private viewShift = { x: 0, y: 0 }
 
   // Callbacks
   public onHudChange?: (state: PacManHudState) => void
@@ -310,11 +323,18 @@ export class PacManGame extends BaseGame {
     if (this.state.isPaused) return
     if (!this.pacman || !this.scene) return // Safety check
     
-    // Update question timer
+    // While a question is up the ghosts hold still and Pac-Man goes for an answer pellet
     if (this.showQuestion) {
       this.questionTimer += deltaTime
-      if (this.questionTimer > this.questionSeconds * 1000) this.answer(null)
-      return // Pause game during question
+      if (this.questionTimer > this.questionSeconds * 1000) {
+        this.answer(null)
+        return
+      }
+      this.movePacman()
+      this.checkDotCollection()
+      this.checkAnswerPellets()
+      this.pacman.rotation.y += deltaTime * 0.005
+      return
     }
     
     if (this.questionCooldown > 0) {
@@ -409,7 +429,7 @@ export class PacManGame extends BaseGame {
         this.setState({ score: this.state.score + 10 })
         
         // Trigger question every 10 dots
-        if (this.dotsCollected % DOTS_PER_QUESTION === 0 && this.questionCooldown <= 0) {
+        if (this.dotsCollected % DOTS_PER_QUESTION === 0 && this.questionCooldown <= 0 && !this.showQuestion) {
           this.triggerQuestion()
         }
         
@@ -502,7 +522,84 @@ export class PacManGame extends BaseGame {
     this.showQuestion = true
     this.questionTimer = 0
     this.questionCooldown = 5000
+    this.spawnAnswerPellets(this.currentQuestion.options.length)
     this.onQuestionChange?.(this.currentQuestion)
+  }
+
+  // Drops one lettered pellet per answer into open spots around the maze
+  private spawnAnswerPellets(count: number): void {
+    const taken: { x: number; z: number }[] = []
+    const isFarEnough = (p: { x: number; z: number }) =>
+      Math.hypot(p.x - this.pacmanPos.x, p.z - this.pacmanPos.z) >= MIN_ANSWER_DISTANCE &&
+      taken.every((t) => Math.hypot(p.x - t.x, p.z - t.z) >= this.cellSize * 2)
+
+    for (let option = 0; option < count; option++) {
+      let position = this.getRandomEmptyPosition()
+      for (let tries = 0; tries < 40 && !isFarEnough(position); tries++) position = this.getRandomEmptyPosition()
+      taken.push(position)
+
+      const mesh = new THREE.Mesh(
+        new THREE.SphereGeometry(0.75, 20, 20),
+        new THREE.MeshBasicMaterial({ color: LANE_COLORS[option] })
+      )
+      mesh.position.set(position.x, 0.75, position.z)
+      const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: this.createLetterTexture(option), depthTest: false }))
+      label.position.set(position.x, 2.5, position.z)
+      label.scale.set(1.7, 1.7, 1)
+      label.renderOrder = 10
+      this.scene.add(mesh, label)
+      this.answerPellets.push({ option, mesh, label })
+    }
+  }
+
+  private createLetterTexture(option: number): THREE.CanvasTexture {
+    const canvas = document.createElement('canvas')
+    canvas.width = 128
+    canvas.height = 128
+    const ctx = canvas.getContext('2d')
+    if (ctx) {
+      ctx.fillStyle = '#000000'
+      ctx.beginPath()
+      ctx.arc(64, 64, 60, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.lineWidth = 10
+      ctx.strokeStyle = LANE_COLORS[option]
+      ctx.stroke()
+      ctx.fillStyle = '#ffffff'
+      ctx.font = 'bold 80px sans-serif'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(LANE_LETTERS[option], 64, 70)
+    }
+    return new THREE.CanvasTexture(canvas)
+  }
+
+  private clearAnswerPellets(): void {
+    for (const { mesh, label } of this.answerPellets) {
+      this.scene.remove(mesh, label)
+      mesh.geometry.dispose()
+      ;(mesh.material as THREE.Material).dispose()
+      label.material.map?.dispose()
+      label.material.dispose()
+    }
+    this.answerPellets = []
+  }
+
+  private checkAnswerPellets(): void {
+    const eaten = this.answerPellets.find(
+      (pellet) =>
+        pellet.mesh.visible &&
+        Math.hypot(pellet.mesh.position.x - this.pacmanPos.x, pellet.mesh.position.z - this.pacmanPos.z) < 1
+    )
+    if (eaten) this.answer(eaten.option)
+  }
+
+  // A hint ruled this answer out: its pellet disappears
+  eliminateAnswer(option: number): void {
+    const pellet = this.answerPellets.find((p) => p.option === option)
+    if (!pellet) return
+    pellet.mesh.visible = false
+    pellet.label.visible = false
   }
 
   // Answers the question on screen; null means time ran out
@@ -532,6 +629,7 @@ export class PacManGame extends BaseGame {
     
     this.showQuestion = false
     this.currentQuestion = null
+    this.clearAnswerPellets()
     this.onQuestionChange?.(null)
   }
 
@@ -544,6 +642,22 @@ export class PacManGame extends BaseGame {
     // Pull the camera back on tall screens so the whole maze stays in view
     this.camera.position.set(0, 35 * Math.max(1, 1.15 / this.camera.aspect), 0)
     this.camera.lookAt(0, 0, 0)
+    this.applyViewShift()
+  }
+
+  // Shifts the maze so it stays clear of the question panel
+  setViewShift(x: number, y = 0): void {
+    this.viewShift = { x, y }
+    this.applyViewShift()
+  }
+
+  private applyViewShift(): void {
+    if (!this.camera) return
+    if (this.viewShift.x || this.viewShift.y) {
+      this.camera.setViewOffset(this.width, this.height, -this.viewShift.x, -this.viewShift.y, this.width, this.height)
+    } else {
+      this.camera.clearViewOffset()
+    }
     this.camera.updateProjectionMatrix()
   }
 
@@ -657,11 +771,6 @@ export class PacManGame extends BaseGame {
   }
 
   handleInput(key: string): void {
-    // Answer questions with number keys
-    if (this.showQuestion && this.currentQuestion && key >= '1' && key <= String(this.currentQuestion.options.length)) {
-      this.answer(parseInt(key) - 1)
-      return
-    }
     
     // Movement
     switch (key.toLowerCase()) {

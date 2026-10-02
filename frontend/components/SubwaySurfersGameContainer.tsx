@@ -1,7 +1,6 @@
 'use client'
 
 import { useEffect, useRef, useState } from 'react'
-import Link from 'next/link'
 import type { SubwaySurfersGame } from '@/games/subway-surfers/SubwaySurfersGame'
 import {
   LANE_LETTERS,
@@ -15,6 +14,7 @@ import { SATQuestion, fetchAIQuestions } from '@/lib/api/questions'
 import { ExamPrefs, QUICK_SECONDS_PER_QUESTION, gamePace, getExamPrefs, sectionLabel } from '@/lib/exam'
 import { GameOverModal } from './GameOverModal'
 import { Calculator } from './exam/Calculator'
+import { GameIntro, GameLoading } from './exam/GameIntro'
 import { HintButton } from './exam/HintButton'
 import { PauseMenu } from './exam/PauseMenu'
 import { QuestionCard, sourceLabel } from './exam/QuestionCard'
@@ -160,7 +160,7 @@ export function SubwaySurfersGameContainer() {
   const isClockLow = hud !== null && sectionTotal > 0 && hud.sectionSecondsLeft / sectionTotal < 0.2
 
   return (
-    <div className={`fixed inset-0 w-screen h-screen bg-black overflow-hidden game-hud`} style={{ margin: 0, padding: 0 }}>
+    <div className={`fixed inset-0 w-screen h-screen bg-black overflow-hidden game-hud skin-subway`} style={{ margin: 0, padding: 0 }}>
       <canvas
         ref={canvasRef}
         className="absolute inset-0 w-full h-full touch-none"
@@ -172,51 +172,28 @@ export function SubwaySurfersGameContainer() {
       />
 
       {isLoading && (
-        <div className="absolute inset-0 bg-gradient-to-br from-sky-600 via-blue-700 to-indigo-900 flex items-center justify-center z-40">
-          <div className="text-center px-6">
-            <div className="text-white text-2xl font-bold mb-2">
-              {questions ? 'Loading the subway...' : `Loading ${examName} questions...`}
-            </div>
-            <div className="text-white/80 text-sm">
-              {questions ? 'Almost ready to run' : 'Finding real exam questions matched to your weak topics'}
-            </div>
-            <div className="mt-4 w-64 h-2 bg-white/20 rounded-full overflow-hidden mx-auto">
-              <div
-                className={`h-full bg-white transition-all duration-300 ${questions ? '' : 'animate-pulse'}`}
-                style={{ width: `${questions ? Math.max(10, (hud?.loadProgress || 0) * 100) : 40}%` }}
-              />
-            </div>
-          </div>
-        </div>
+        <GameLoading
+          gameId="subway-surfers"
+          message={questions ? 'Laying the tracks...' : `Finding ${examName} questions...`}
+          progress={questions ? hud?.loadProgress ?? 0 : null}
+        />
       )}
 
-      {/* Start Screen */}
       {questions && hud?.phase === 'ready' && prefs && (
-        <div className="absolute inset-0 bg-black/55 backdrop-blur-sm flex items-center justify-center z-30 p-4">
-          <div className="bg-gray-900/95 border border-white/15 rounded-2xl p-6 max-w-md w-full text-white shadow-2xl">
-            <p className="text-xs font-bold tracking-widest text-sky-400 mb-1">{examName.toUpperCase()}</p>
-            <h1 className="text-3xl font-black mb-1">Exam <span className="font-serif font-normal italic">run.</span></h1>
-            <p className="text-gray-300 text-sm mb-5">
-              {hud.totalQuestions} quick-fire questions in {hud.moduleCount} timed {hud.moduleCount === 1 ? 'module' : 'modules'},
-              about {QUICK_SECONDS_PER_QUESTION} seconds each.
-              {hud.moduleCount > 1 && ' Module 2 gets harder or easier based on how you do in Module 1.'}
-            </p>
-            <ul className="space-y-2 text-sm text-gray-200 mb-6">
-              <li><span className="font-bold text-white">Swipe</span>, tap an answer, or use <span className="font-bold text-white">← →</span> to fly into the lane of your answer</li>
-              <li><span className="font-bold text-white">Dive</span> (Space) through the gate as soon as you&apos;re sure</li>
-              <li>Stuck? Ask for a hint. Miss a question and it comes back later instead of showing the answer.</li>
-            </ul>
-            <button
-              onClick={() => gameRef.current?.start()}
-              className="w-full bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white font-bold text-lg py-3 rounded-xl transition-all shadow-lg active:scale-95"
-            >
-              Start Run
-            </button>
-            <Link href="/games" className="block text-center text-gray-300 hover:text-white text-sm mt-3">
-              Back to games
-            </Link>
-          </div>
-        </div>
+        <GameIntro
+          gameId="subway-surfers"
+          kicker={examName}
+          title="Exam"
+          titleAccent="run."
+          summary={`${hud.totalQuestions} quick-fire questions in ${hud.moduleCount} timed ${hud.moduleCount === 1 ? 'module' : 'modules'}, about ${QUICK_SECONDS_PER_QUESTION} seconds each.${hud.moduleCount > 1 ? ' Module 2 gets harder or easier based on Module 1.' : ''}`}
+          steps={[
+            { label: '← →', text: 'Steer into the lane of your answer. A and D work too, or swipe on a phone.' },
+            { label: '↑', text: 'Dive through the gate as soon as you are sure. Space and W work too.' },
+            { label: 'Hint', text: 'Stuck? Ask for one. Miss a question and it comes back later instead of showing the answer.' },
+          ]}
+          startLabel="Start run"
+          onStart={() => gameRef.current?.start()}
+        />
       )}
 
       {/* In-game HUD */}
@@ -225,8 +202,12 @@ export function SubwaySurfersGameContainer() {
           {/* Question Panel */}
           <div
             ref={panelRef}
-            className="pointer-events-auto flex flex-col m-3 lg:w-[min(440px,38vw)] max-h-[58vh] lg:max-h-none bg-gray-950/95 backdrop-blur-md rounded-2xl border border-white/15 text-white shadow-2xl overflow-hidden"
+            className="hud-panel pointer-events-auto flex flex-col m-3 lg:w-[min(440px,38vw)] max-h-[58vh] lg:max-h-none overflow-hidden"
           >
+            <div className="hud-banner flex flex-none items-center justify-between px-4 py-1.5">
+              <span>● {examName.toUpperCase()} LINE</span>
+              <span>MODULE {hud.module}/{hud.moduleCount}</span>
+            </div>
             {currentQuestion ? (
               <>
                 <QuestionCard
@@ -236,7 +217,6 @@ export function SubwaySurfersGameContainer() {
                   activeOption={hud.currentLane}
                   activeLabel="YOUR LANE"
                   feedback={feedback}
-                  onPick={(lane) => gameRef.current?.setLane(lane)}
                   hints={hints}
                   eliminated={eliminated}
                   insight={feedback?.willRetry ? insightFor(currentQuestion, feedback.selected) : null}
@@ -298,7 +278,7 @@ export function SubwaySurfersGameContainer() {
           <div className="relative flex-1 min-h-0">
             {/* Exam Status - Top Right */}
             <div className="pointer-events-auto absolute top-0 lg:top-3 right-3 flex items-stretch gap-2">
-              <div className="bg-gray-950/95 backdrop-blur-md rounded-xl border border-white/15 px-2.5 sm:px-4 py-1.5 sm:py-2 text-white text-center">
+              <div className="hud-panel px-2.5 sm:px-4 py-1.5 sm:py-2 text-center">
                 <div className="text-xs font-semibold tracking-wide text-gray-300">
                   MODULE {hud.module}/{hud.moduleCount} TIME
                 </div>
@@ -306,13 +286,13 @@ export function SubwaySurfersGameContainer() {
                   {formatClock(hud.sectionSecondsLeft)}
                 </div>
               </div>
-              <div className="bg-gray-950/95 backdrop-blur-md rounded-xl border border-white/15 px-2.5 sm:px-4 py-1.5 sm:py-2 text-white text-center">
+              <div className="hud-panel px-2.5 sm:px-4 py-1.5 sm:py-2 text-center">
                 <div className="text-xs font-semibold tracking-wide text-gray-300">SCORE</div>
                 <div className="text-lg sm:text-2xl font-black tabular-nums">{hud.score}</div>
               </div>
-              <div className="bg-gray-950/95 backdrop-blur-md rounded-xl border border-white/15 px-2.5 sm:px-4 py-1.5 sm:py-2 text-white text-center">
+              <div className="hud-panel px-2.5 sm:px-4 py-1.5 sm:py-2 text-center">
                 <div className="text-xs font-semibold tracking-wide text-gray-300">STREAK</div>
-                <div className="text-lg sm:text-2xl font-black tabular-nums text-orange-400">{hud.streak > 0 ? `🔥 ${hud.streak}` : '—'}</div>
+                <div className="text-lg sm:text-2xl font-black tabular-nums text-orange-400">{hud.streak > 0 ? `x${hud.streak}` : '—'}</div>
               </div>
               <div className="flex flex-col gap-1">
                 <button
@@ -327,7 +307,7 @@ export function SubwaySurfersGameContainer() {
                   aria-label={hud.isMuted ? 'Unmute' : 'Mute'}
                   className="flex-1 w-9 bg-gray-950/95 hover:bg-gray-800 rounded-lg border border-white/15 text-white text-sm"
                 >
-                  {hud.isMuted ? '🔇' : '🔊'}
+                  <span className={hud.isMuted ? 'line-through opacity-60' : ''}>♪</span>
                 </button>
               </div>
             </div>
@@ -358,7 +338,7 @@ export function SubwaySurfersGameContainer() {
                   {hud.isDiving ? 'Diving...' : `Lock in ${LANE_LETTERS[hud.currentLane]} — Dive`}
                 </button>
                 <p className="hidden lg:block text-white text-sm font-semibold bg-black/75 rounded-full px-4 py-1.5 whitespace-nowrap">
-                  ← → switch lane · 1–5 jump to lane · P pause
+                  ← → or A D steer · ↑ or Space dive · P pause
                 </p>
               </div>
             )}

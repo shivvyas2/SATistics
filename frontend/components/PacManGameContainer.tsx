@@ -7,15 +7,16 @@ import { SATQuestion, fetchAIQuestions } from '@/lib/api/questions'
 import { getHighScore, recordHighScore } from '@/lib/arcade'
 import { QUICK_SECONDS_PER_QUESTION, gamePace, getExamPrefs, sectionLabel } from '@/lib/exam'
 import { GameOverModal } from './GameOverModal'
-import { ArcadeFrame, ArcadeStartScreen, ArcadeTopBar } from './arcade/ArcadeFrame'
+import { GameTopBar, HUD_PANEL, Pips } from './arcade/GameHud'
+import { GameIntro, GameLoading } from './exam/GameIntro'
 import { HintButton } from './exam/HintButton'
 import { PauseMenu } from './exam/PauseMenu'
 import { QuestionCard } from './exam/QuestionCard'
 import { ReviewList } from './exam/ReviewList'
 import { useQuestionHints } from './exam/useQuestionHints'
+import { useViewShift } from './exam/useViewShift'
 
 const GAME_ID = 'pac-man'
-const ACCENT = '#facc15'
 // A drag shorter than this is a tap, not a swipe
 const SWIPE_MIN_DISTANCE = 24
 
@@ -28,6 +29,7 @@ const DIRECTIONS: Record<string, [number, number]> = {
 
 export function PacManGameContainer() {
   const canvasRef = useRef<HTMLCanvasElement>(null)
+  const panelRef = useRef<HTMLDivElement>(null)
   const gameRef = useRef<PacManGame | null>(null)
   const [examName, setExamName] = useState('')
   const [questions, setQuestions] = useState<SATQuestion[] | null>(null)
@@ -128,6 +130,11 @@ export function PacManGameContainer() {
   }, [questions])
 
   const { hints, eliminated, canHint, requestHint } = useQuestionHints(currentQuestion)
+  const handleHint = () => {
+    const option = requestHint()
+    if (option !== null) gameRef.current?.eliminateAnswer(option)
+  }
+  useViewShift(panelRef, !!currentQuestion && started && !paused && !result, (x, y) => gameRef.current?.setViewShift(x, y))
 
   // Swipe anywhere on the maze to steer
   const swipeStart = useRef<{ x: number; y: number } | null>(null)
@@ -146,7 +153,7 @@ export function PacManGameContainer() {
     <button
       onPointerDown={() => gameRef.current?.setDirection(...DIRECTIONS[key])}
       aria-label={`Move ${label}`}
-      className={`h-12 w-12 rounded-lg border-2 border-yellow-300/70 bg-black/70 text-lg text-yellow-300 touch-none active:bg-yellow-300 active:text-black ${className}`}
+      className={`h-12 w-12 rounded-xl border-2 border-ink bg-mist text-lg text-ink shadow-brutal-sm touch-none active:translate-y-0.5 active:bg-lime active:shadow-none ${className}`}
     >
       {{ up: '▲', down: '▼', left: '◀', right: '▶' }[label]}
     </button>
@@ -156,7 +163,7 @@ export function PacManGameContainer() {
   const timeShare = hud ? hud.questionSecondsLeft / hud.questionSecondsTotal : 1
 
   return (
-    <ArcadeFrame color={ACCENT}>
+    <div className="game-hud fixed inset-0 h-screen w-screen select-none overflow-hidden bg-ink">
       <canvas
         ref={canvasRef}
         className="absolute inset-0 w-full h-full touch-none"
@@ -167,79 +174,76 @@ export function PacManGameContainer() {
         onPointerCancel={() => { swipeStart.current = null }}
       />
 
-      {!questions && (
-        <div className="absolute inset-0 z-40 flex items-center justify-center bg-black">
-          <div className="text-center">
-            <p className="arcade-font arcade-glow text-lg text-yellow-300">PAC-MAN</p>
-            <p className="arcade-font arcade-blink mt-6 text-[10px] text-white">LOADING QUESTIONS...</p>
-          </div>
-        </div>
-      )}
+      {!questions && <GameLoading gameId={GAME_ID} message={examName ? `Finding ${examName} questions...` : 'Finding questions...'} progress={null} />}
 
       {questions && !started && (
-        <ArcadeStartScreen
-          title="PAC-MAN"
-          subtitle={`${examName} · a question every 10 dots`}
-          instructions={[
-            'Swipe, use the on-screen pad, or the arrow keys to steer through the maze.',
-            'Answer right and the ghosts turn blue so you can eat them. Answer wrong and you lose a life.',
-            'Stuck on a question? Ask for a hint.',
+        <GameIntro
+          gameId={GAME_ID}
+          kicker={highScore > 0 ? `${examName} · best score ${highScore}` : examName}
+          title="Pac-Man,"
+          titleAccent="but smarter."
+          summary="A question drops into the maze every 10 dots. Eat the pellet with your answer."
+          steps={[
+            { label: 'Arrows', text: 'Steer with the arrow keys or W A S D. On a phone, swipe or use the on-screen pad.' },
+            { label: 'Pellets', text: 'When a question appears, lettered pellets drop in and the ghosts freeze. Eat the one with your answer.' },
+            { label: 'Ghosts', text: 'A right answer turns the ghosts blue so you can eat them. A wrong one costs a life.' },
+            { label: 'Hint', text: 'Stuck on a question? Ask for a hint to rule out a choice.' },
           ]}
-          highScore={highScore}
+          startLabel="Start game"
           onStart={() => setStarted(true)}
         />
       )}
 
       {hud && isPlaying && (
         <div className="absolute inset-0 z-10 flex flex-col pointer-events-none">
-          <ArcadeTopBar
+          <GameTopBar
             stats={[
-              { label: '1UP', value: String(hud.score).padStart(6, '0') },
-              { label: 'HI-SCORE', value: String(Math.max(highScore, hud.score)).padStart(6, '0'), color: '#fde047' },
-              { label: 'LIVES', value: '●'.repeat(hud.lives) || '-', color: '#facc15' },
-              { label: 'LEVEL', value: hud.level, color: hud.isPowerMode ? '#60a5fa' : '#ffffff' },
+              { label: 'Score', value: hud.score, tone: 'lime' },
+              { label: 'Best', value: Math.max(highScore, hud.score) },
+              { label: 'Lives', value: <Pips filled={hud.lives} total={Math.max(3, hud.lives)} />, tone: 'coral' },
+              { label: 'Level', value: hud.level, tone: hud.isPowerMode ? 'cobalt' : 'paper' },
             ]}
             onPause={() => setPaused(true)}
           />
 
-          <div className="flex-1" />
-
-          {/* On-screen pad for touch devices */}
-          {!currentQuestion && (
-            <div className="pointer-events-auto m-4 hidden w-40 grid-cols-3 gap-1 self-end [@media(pointer:coarse)]:grid">
-              {padButton('up', 'arrowup', 'col-start-2')}
-              {padButton('left', 'arrowleft', 'col-start-1 row-start-2')}
-              {padButton('right', 'arrowright', 'col-start-3 row-start-2')}
-              {padButton('down', 'arrowdown', 'col-start-2 row-start-3')}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Question */}
-      {hud && isPlaying && currentQuestion && (
-        <div className="absolute inset-0 z-20 flex items-center justify-center bg-black/70 p-3">
-          <div className="arcade-panel flex max-h-full w-full max-w-xl flex-col overflow-hidden text-white">
-            <div className="mx-4 mt-3 h-2 flex-none overflow-hidden rounded-full border border-white/40 bg-black/70">
+          <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+            {/* Question: the maze stays in play beside it */}
+            {currentQuestion && (
               <div
-                className={`h-full ${timeShare < 0.3 ? 'bg-red-500' : 'bg-yellow-300'}`}
-                style={{ width: `${Math.max(0, Math.min(1, timeShare)) * 100}%` }}
-              />
-            </div>
-            <QuestionCard
-              question={currentQuestion}
-              questionNumber={questionsAsked}
-              totalQuestions={0}
-              activeOption={null}
-              activeLabel=""
-              feedback={null}
-              onPick={(option) => gameRef.current?.answer(option)}
-              hints={hints}
-              eliminated={eliminated}
-            />
-            <div className="flex flex-none items-center justify-between gap-3 border-t border-white/10 px-4 py-2">
-              <span className="text-sm text-gray-300">Tap an answer, or press 1–{currentQuestion.options.length}</span>
-              <HintButton hintsShown={hints.length} disabled={!canHint} onClick={requestHint} />
+                ref={panelRef}
+                className={`${HUD_PANEL} m-3 flex max-h-[44vh] flex-col overflow-hidden lg:max-h-none lg:w-[min(400px,36vw)] lg:self-start`}
+              >
+                <div className="mx-4 mt-4 h-3 flex-none overflow-hidden rounded-full border-2 border-white/80 bg-white/10">
+                  <div
+                    className={`h-full ${timeShare < 0.3 ? 'bg-coral' : 'bg-lime'}`}
+                    style={{ width: `${Math.max(0, Math.min(1, timeShare)) * 100}%` }}
+                  />
+                </div>
+                <QuestionCard
+                  question={currentQuestion}
+                  questionNumber={questionsAsked}
+                  totalQuestions={0}
+                  activeOption={null}
+                  activeLabel=""
+                  feedback={null}
+                  hints={hints}
+                  eliminated={eliminated}
+                />
+                <div className="flex flex-none items-center justify-between gap-3 border-t border-white/10 px-4 py-2">
+                  <span className="text-sm text-gray-200">Eat the pellet with the letter of your answer</span>
+                  <HintButton hintsShown={hints.length} disabled={!canHint} onClick={handleHint} />
+                </div>
+              </div>
+            )}
+
+            <div className="relative min-h-0 flex-1">
+              {/* On-screen pad for touch devices */}
+              <div className="pointer-events-auto absolute bottom-4 right-4 hidden w-40 grid-cols-3 gap-1 [@media(pointer:coarse)]:grid">
+                {padButton('up', 'arrowup', 'col-start-2')}
+                {padButton('left', 'arrowleft', 'col-start-1 row-start-2')}
+                {padButton('right', 'arrowright', 'col-start-3 row-start-2')}
+                {padButton('down', 'arrowdown', 'col-start-2 row-start-3')}
+              </div>
             </div>
           </div>
         </div>
@@ -248,10 +252,10 @@ export function PacManGameContainer() {
       {started && paused && !result && <PauseMenu gameId={GAME_ID} onResume={() => setPaused(false)} />}
 
       {result && (
-        <GameOverModal analytics={result.analytics} onRestart={() => window.location.reload()} title="Game Over" subtitle="The ghosts caught up with you" emoji="👻">
+        <GameOverModal analytics={result.analytics} onRestart={() => window.location.reload()} title="Game over" subtitle="The ghosts caught up with you">
           <ReviewList review={result.review} />
         </GameOverModal>
       )}
-    </ArcadeFrame>
+    </div>
   )
 }

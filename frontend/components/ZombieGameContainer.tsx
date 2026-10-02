@@ -205,7 +205,6 @@ export default function ZombieGameContainer() {
                   activeOption={null}
                   activeLabel=""
                   feedback={feedback}
-                  onPick={(lane) => gameRef.current?.shootZombie(lane)}
                   hints={hints}
                   eliminated={eliminated}
                   insight={feedback?.willRetry ? insightFor(currentQuestion, feedback.selected) : null}
@@ -269,7 +268,6 @@ export default function ZombieGameContainer() {
           onRestart={() => window.location.reload()}
           title={result.survived ? 'You Survived!' : 'Game Over'}
           subtitle={result.survived ? 'The horde is no match for you' : 'The zombies got you this time'}
-          emoji={result.survived ? '🏆' : '🧟'}
         >
           <ReviewList review={result.review} />
         </GameOverModal>

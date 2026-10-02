@@ -6,6 +6,12 @@ import { HeroQuestion } from '@/components/landing/HeroQuestion'
 import { COURSES } from '@/lib/courses'
 import { GAME_META } from '@/lib/gameMeta'
 import { games } from '@/lib/games'
+import { CREATOR } from '@/lib/site'
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  alternates: { canonical: '/' },
+}
 
 const STEPS = [
   {
@@ -199,9 +205,24 @@ export default function LandingPage() {
           </Link>
         </section>
 
-        <footer className="flex flex-col justify-between gap-2 border-t-2 border-ink py-6 text-sm text-ink/60 sm:flex-row">
-          <span>SATistics, practice for the SAT and GRE</span>
-          <span>satistics.tech</span>
+        <footer className="flex flex-col justify-between gap-4 border-t-2 border-ink py-6 text-sm sm:flex-row sm:items-center">
+          <p className="text-ink/60">
+            SATistics, built by{' '}
+            <Link href="/developer" rel="author" className="font-bold text-ink underline decoration-2 underline-offset-4">
+              Shiv Vyas
+            </Link>
+          </p>
+          <nav aria-label="Shiv Vyas" className="flex flex-wrap gap-x-5 gap-y-2 font-bold">
+            <a href={CREATOR.links.website} rel="me author" className="hover:text-cobalt">
+              shivvyas.com
+            </a>
+            <a href={CREATOR.links.linkedin} rel="me noopener" target="_blank" className="hover:text-cobalt">
+              LinkedIn
+            </a>
+            <Link href="/developer" className="hover:text-cobalt">
+              Developer
+            </Link>
+          </nav>
         </footer>
       </div>
     </div>

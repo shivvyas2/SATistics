@@ -2,7 +2,8 @@
 const nextConfig = {
   reactStrictMode: true,
   images: {
-    domains: [],
+    // Photos on the developer page come from shivvyas.com
+    remotePatterns: [{ protocol: 'https', hostname: 'www.shivvyas.com', pathname: '/images/**' }],
   },
   // Output configuration for Vercel
   output: 'standalone',

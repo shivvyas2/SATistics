@@ -55,3 +55,12 @@ export const BookIcon = ({ className }: IconProps) => (
 export const UploadIcon = ({ className }: IconProps) => (
   <svg {...base(className)}><path d="M12 16V4M7 9l5-5 5 5M4 16v3a1 1 0 0 0 1 1h14a1 1 0 0 0 1-1v-3" /></svg>
 )
+export const ExpandIcon = ({ className }: IconProps) => (
+  <svg {...base(className)}><path d="M9 6 3 12l6 6M3 12h8M15 6l6 6-6 6" /></svg>
+)
+export const ShrinkIcon = ({ className }: IconProps) => (
+  <svg {...base(className)}><path d="M3 6l6 6-6 6M21 6l-6 6 6 6M9 12h6" /></svg>
+)
+export const ClockIcon = ({ className }: IconProps) => (
+  <svg {...base(className)}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3 2" /></svg>
+)

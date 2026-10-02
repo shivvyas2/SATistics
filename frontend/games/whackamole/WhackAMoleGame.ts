@@ -2,6 +2,7 @@ import * as THREE from 'three'
 import { BaseGame } from '../BaseGame'
 import { SATQuestion, WhackAMoleGameState, QuestionAttempt, GameAnalytics } from './types'
 import { satQuestions } from './questions'
+import { QUICK_SECONDS_PER_QUESTION } from '@/lib/exam'
 
 interface Mole {
   mesh: THREE.Group
@@ -32,7 +33,8 @@ export class WhackAMoleGame extends BaseGame {
   private attempts: QuestionAttempt[] = []
   private selectedAnswer: number | null = null
   private popTimer: number = 0
-  private popDuration: number = 3000 // Moles stay up for 3 seconds
+  // Moles stay up long enough to read and answer a quick question
+  private popDuration: number = QUICK_SECONDS_PER_QUESTION * 1000
   
   // Callbacks
   public onQuestionChange?: (question: SATQuestion) => void

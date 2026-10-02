@@ -9,12 +9,11 @@ import { satQuestions } from '@/games/carnival/questions'
 import type { SATQuestion as ExamQuestion } from '@/lib/api/questions'
 import { getHighScore, recordHighScore } from '@/lib/arcade'
 import { strategyHint } from '@/lib/hints'
-import { ArcadeFrame, ArcadeStartScreen, ArcadeTopBar } from './arcade/ArcadeFrame'
+import { GameTopBar, HUD_PANEL, Pips } from './arcade/GameHud'
+import { GameIntro, GameLoading } from './exam/GameIntro'
 import { LaneChip } from './exam/LaneChip'
 import { PauseMenu } from './exam/PauseMenu'
 import { QuestionContent } from './QuestionContent'
-
-const ACCENT = '#f472b6'
 
 interface CarnivalGameContainerProps {
   gameId: string
@@ -157,21 +156,16 @@ export function CarnivalGameContainer({ gameId }: CarnivalGameContainerProps) {
 
   if (loading) {
     return (
-      <ArcadeFrame color={ACCENT}>
-        <div className="absolute inset-0 flex items-center justify-center">
-          <div className="text-center">
-            <p className="arcade-font arcade-glow text-lg text-pink-400">BALLOON POP</p>
-            <p className="arcade-font arcade-blink mt-6 text-[10px] text-white">LOADING QUESTIONS...</p>
-          </div>
-        </div>
-      </ArcadeFrame>
+      <div className="fixed inset-0 bg-paper">
+        <GameLoading gameId="carnival" message="Inflating the balloons..." progress={null} />
+      </div>
     )
   }
 
   const question = currentQuestion as ExamQuestion | null
 
   return (
-    <ArcadeFrame color={ACCENT}>
+    <div className="game-hud fixed inset-0 h-screen w-screen select-none overflow-hidden bg-ink">
       <canvas
         ref={canvasRef}
         className="absolute inset-0 w-full h-full cursor-crosshair touch-manipulation"
@@ -180,27 +174,30 @@ export function CarnivalGameContainer({ gameId }: CarnivalGameContainerProps) {
       />
 
       {!started && (
-        <ArcadeStartScreen
-          title="BALLOON POP"
-          subtitle={`${questions.length} quick-fire questions`}
-          instructions={[
-            'Each balloon carries one answer. Tap or click the balloon with the right one.',
-            'You get three shots per question.',
-            'Stuck? Ask for a hint.',
+        <GameIntro
+          gameId="carnival"
+          kicker={highScore > 0 ? `Best score ${highScore}` : 'Arcade'}
+          title="Balloon"
+          titleAccent="pop."
+          summary={`${questions.length} quick-fire questions. Every balloon carries one answer choice.`}
+          steps={[
+            { label: 'Aim', text: 'Tap or click the balloon whose letter matches your answer.' },
+            { label: '3 shots', text: 'You get three darts per question, so a miss is not the end.' },
+            { label: 'Hint', text: 'Stuck? Ask for a hint above the question.' },
           ]}
-          highScore={highScore}
+          startLabel="Start popping"
           onStart={() => setStarted(true)}
         />
       )}
 
       {started && !paused && !gameOver && gameState && (
         <div className="absolute inset-0 z-10 flex flex-col pointer-events-none">
-          <ArcadeTopBar
+          <GameTopBar
             stats={[
-              { label: 'SCORE', value: String(gameState.score).padStart(6, '0') },
-              { label: 'HI-SCORE', value: String(Math.max(highScore, gameState.score)).padStart(6, '0'), color: '#fde047' },
-              { label: 'SHOTS', value: '●'.repeat(gameState.bulletsRemaining) + '○'.repeat(Math.max(0, 3 - gameState.bulletsRemaining)), color: '#f472b6' },
-              { label: 'STREAK', value: `x${gameState.streak}`, color: '#fb923c' },
+              { label: 'Score', value: gameState.score, tone: 'lime' },
+              { label: 'Best', value: Math.max(highScore, gameState.score) },
+              { label: 'Shots', value: <Pips filled={gameState.bulletsRemaining} total={3} />, tone: 'coral' },
+              { label: 'Streak', value: `x${gameState.streak}`, tone: 'cobalt' },
             ]}
             onPause={() => setPaused(true)}
           />
@@ -208,16 +205,16 @@ export function CarnivalGameContainer({ gameId }: CarnivalGameContainerProps) {
           {question && (
             <>
               {/* Question - Top */}
-              <div className="arcade-panel pointer-events-auto mx-3 mt-2 flex max-h-[34vh] flex-col overflow-hidden text-white">
+              <div className={`${HUD_PANEL} mx-3 mt-3 flex max-h-[34vh] flex-col overflow-hidden`}>
                 <div className="flex flex-none items-center gap-2 px-4 pt-2 text-xs">
-                  <span className="font-bold text-pink-300">
+                  <span className="font-bold text-lime">
                     Question {gameState.currentQuestionIndex + 1} of {gameState.totalQuestions}
                   </span>
                   <span className="truncate text-gray-300">{question.skill || question.topic}</span>
                   <button
                     onClick={() => setShowHint(true)}
                     disabled={showHint}
-                    className="ml-auto flex-none rounded-lg border border-amber-300/60 bg-amber-300/15 px-3 py-1 text-xs font-bold text-amber-200 disabled:opacity-40"
+                    className="ml-auto flex-none rounded-full border-2 border-ink bg-lime px-3 py-1 text-xs font-bold text-ink disabled:opacity-40"
                   >
                     Hint
                   </button>
@@ -231,16 +228,16 @@ export function CarnivalGameContainer({ gameId }: CarnivalGameContainerProps) {
                     text={question.stem || question.question}
                     className="text-[15px] font-semibold leading-snug sm:text-[17px]"
                   />
-                  {showHint && <p className="text-sm text-amber-200">Hint: {strategyHint(question)}</p>}
+                  {showHint && <p className="text-sm text-lime-soft">Hint: {strategyHint(question)}</p>}
                 </div>
               </div>
 
               <div className="flex-1" />
 
               {/* Answers - Bottom */}
-              <div className="arcade-panel pointer-events-auto m-3 grid grid-cols-2 gap-2 p-2 text-white lg:grid-cols-4">
+              <div className={`${HUD_PANEL} m-3 grid grid-cols-2 gap-2 p-2 lg:grid-cols-4`}>
                 {question.options.map((option, index) => (
-                  <div key={index} className="flex items-center gap-2 rounded-lg bg-white/5 px-2 py-1.5">
+                  <div key={index} className="flex items-center gap-2 rounded-xl bg-white/[0.07] px-2 py-1.5">
                     <LaneChip lane={index} size="sm" />
                     <QuestionContent html={question.optionsHtml?.[index]} text={option} className="min-w-0 flex-1 break-words text-sm leading-snug" />
                   </div>
@@ -257,6 +254,6 @@ export function CarnivalGameContainer({ gameId }: CarnivalGameContainerProps) {
       {gameOver && analytics && (
         <GameOverModal analytics={analytics} onRestart={handleRestart} />
       )}
-    </ArcadeFrame>
+    </div>
   )
 }

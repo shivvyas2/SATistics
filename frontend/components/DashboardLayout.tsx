@@ -9,24 +9,27 @@ import { daysUntil } from '@/lib/profile'
 import { EXAMS } from '@/lib/exam'
 import { Logo } from '@/components/brand/Logo'
 import { Avatar } from '@/components/profile/ProfileFields'
-import { BookIcon, ChartIcon, CloseIcon, GamepadIcon, HomeIcon, LogoutIcon, MenuIcon, UploadIcon, UserIcon } from '@/components/brand/Icons'
+import { BookIcon, ChartIcon, CloseIcon, GamepadIcon, HomeIcon, LogoutIcon, ClockIcon, MenuIcon, UploadIcon, UserIcon } from '@/components/brand/Icons'
 
 interface DashboardLayoutProps {
   children: React.ReactNode
   // Optional right-hand column, shown on wide screens
   aside?: React.ReactNode
+  // Widen the right-hand column, e.g. to watch a video while reading
+  asideWide?: boolean
 }
 
 const NAV = [
   { href: '/dashboard', label: 'Home', Icon: HomeIcon },
   { href: '/learn', label: 'Learn', Icon: BookIcon },
   { href: '/games', label: 'Games', Icon: GamepadIcon },
+  { href: '/mock', label: 'Mock exam', Icon: ClockIcon },
   { href: '/materials', label: 'My material', Icon: UploadIcon },
   { href: '/stats', label: 'Statistics', Icon: ChartIcon },
   { href: '/profile', label: 'Profile', Icon: UserIcon },
 ]
 
-export function DashboardLayout({ children, aside }: DashboardLayoutProps) {
+export function DashboardLayout({ children, aside, asideWide = false }: DashboardLayoutProps) {
   const pathname = usePathname() ?? ''
   const router = useRouter()
   const { account } = useAccount()
@@ -127,7 +130,15 @@ export function DashboardLayout({ children, aside }: DashboardLayoutProps) {
 
         <main className="min-w-0 flex-1 lg:overflow-y-auto">{children}</main>
 
-        {aside && <aside className="hidden w-[320px] shrink-0 overflow-y-auto border-l-2 border-ink/10 p-6 xl:block">{aside}</aside>}
+        {aside && (
+          <aside
+            className={`hidden shrink-0 overflow-y-auto border-l-2 border-ink/10 p-6 transition-[width] duration-300 xl:block ${
+              asideWide ? 'w-[440px] 2xl:w-[560px]' : 'w-[320px]'
+            }`}
+          >
+            {aside}
+          </aside>
+        )}
       </div>
     </div>
   )

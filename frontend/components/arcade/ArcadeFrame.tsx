@@ -58,7 +58,7 @@ export function ArcadeTopBar({ stats, isMuted, onPause, onToggleMute }: ArcadeTo
       </div>
       {onToggleMute && (
         <button onClick={onToggleMute} aria-label={isMuted ? 'Unmute' : 'Mute'} className={buttonClass}>
-          {isMuted ? '🔇' : '🔊'}
+          <span className={isMuted ? 'line-through opacity-60' : ''}>♪</span>
         </button>
       )}
     </div>

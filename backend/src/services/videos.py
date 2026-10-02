@@ -3,7 +3,7 @@ Finds lesson videos for a course topic.
 Providers are tried in order: YouTube Data API (YOUTUBE_API_KEY), Serper
 (SERPER_API_KEY), then DuckDuckGo, which needs no key but rate limits.
 Results are YouTube-only (so they can be embedded) and ranked toward
-lesson-length videos from established test-prep channels.
+lesson-length videos from established test-prep channels, with GregMat first.
 """
 
 import asyncio
@@ -26,6 +26,7 @@ TRUSTED_CHANNELS = (
 )
 
 CACHE_TTL_SECONDS = 24 * 60 * 60
+GREGMAT_SLOTS = 3
 _cache: Dict[str, tuple] = {}
 
 YOUTUBE_ID = re.compile(r"(?:youtube\.com/watch\?v=|youtu\.be/)([\w-]{11})")
@@ -179,6 +180,17 @@ async def _search(client: httpx.AsyncClient, query: str) -> List[Dict]:
     return []
 
 
+def _is_gregmat(video: Dict) -> bool:
+    return "gregmat" in video["channel"].lower().replace(" ", "")
+
+
+def _mentions(video: Dict, topic: str) -> bool:
+    """Title names the topic: any meaningful topic word, ignoring plural endings"""
+    title = video["title"].lower()
+    words = [w.rstrip("s") for w in re.findall(r"[a-z]+", topic.lower()) if len(w) > 3]
+    return any(w in title for w in words)
+
+
 async def find_topic_videos(exam: str, section: str, topic: str, limit: int = 6) -> List[Dict]:
     key = f"{exam}:{section}:{topic.lower()}"
     cached = _cache.get(key)
@@ -189,19 +201,29 @@ async def find_topic_videos(exam: str, section: str, topic: str, limit: int = 6)
     section_name = EXAMS[exam]["sections"][section]["name"]
     queries = [
         f"{exam_name} {topic} lesson",
-        f"Khan Academy {exam_name} {topic}" if exam == "sat" else f"GregMat GRE {topic}",
+        f"Khan Academy {exam_name} {topic}" if exam == "sat" else f"{exam_name} {topic} strategy",
         f"{exam_name} {section_name} {topic} explained",
     ]
     # One query at a time: parallel queries get rate limited
     videos: Dict[str, Dict] = {}
     async with httpx.AsyncClient(timeout=10) as client:
+        # GregMat's walkthroughs are the most thorough, so they always get their own search.
+        # Most of his catalog is GRE, which also covers SAT math and vocab topics.
+        gregmat_query = f"GregMat GRE {topic}" if exam == "gre" else f"GregMat {topic}"
+        for video in await _search(client, gregmat_query):
+            if _is_gregmat(video) and _mentions(video, topic):
+                videos.setdefault(video["id"], video)
+        gregmat_count = len(videos)
         for query in queries:
             for video in await _search(client, query):
                 videos.setdefault(video["id"], video)
-            if len(videos) >= 15:
+            if len(videos) - gregmat_count >= 15:
                 break
 
     ranked = sorted(videos.values(), key=_score, reverse=True)
+    # Lead with up to GREGMAT_SLOTS GregMat videos, then the best of the rest
+    gregmat = [v for v in ranked if _is_gregmat(v) and _mentions(v, topic)][:GREGMAT_SLOTS]
+    ranked = gregmat + [v for v in ranked if v not in gregmat]
     # Only cache real results, so a rate-limited search is retried next time
     if ranked:
         _cache[key] = (time.time(), ranked)

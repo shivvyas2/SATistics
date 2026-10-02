@@ -24,7 +24,7 @@ class GameService:
                 "user_id": user_id,
                 "game_id": game_id,
                 "score": analytics.score,
-                "accuracy": analytics.accuracy,
+                "accuracy": self._accuracy(analytics),
                 "correct_answers": analytics.correctAnswers,
                 "wrong_answers": analytics.wrongAnswers,
                 "max_streak": analytics.streakInfo.get("maxStreak", 0),
@@ -70,6 +70,12 @@ class GameService:
                 "error": str(e)
             }
     
+    @staticmethod
+    def _accuracy(analytics: GameAnalytics) -> float:
+        """Share of questions answered correctly, from 0 to 1"""
+        total = analytics.correctAnswers + analytics.wrongAnswers
+        return analytics.correctAnswers / total if total > 0 else 0
+
     async def _update_user_stats(self, user_id: str, analytics: GameAnalytics):
         """Update or create user statistics"""
         # Get existing stats
@@ -81,9 +87,11 @@ class GameService:
         
         for topic, perf in analytics.topicPerformance.items():
             if perf.total > 0:
-                if perf.accuracy < 0.5:
+                # Games report topic accuracy as a percentage, so work from the counts
+                topic_accuracy = perf.correct / perf.total
+                if topic_accuracy < 0.5:
                     weak_topics.append(topic)
-                elif perf.accuracy >= 0.8:
+                elif topic_accuracy >= 0.8:
                     strong_topics.append(topic)
         
         total_questions = analytics.correctAnswers + analytics.wrongAnswers
@@ -100,8 +108,9 @@ class GameService:
             new_accuracy = new_total_correct / new_total_questions if new_total_questions > 0 else 0
             
             # Merge topics
-            merged_weak = list(set(existing.get("weak_topics", []) + weak_topics))
-            merged_strong = list(set(existing.get("strong_topics", []) + strong_topics))
+            # A topic moves between the lists as the player improves or slips
+            merged_weak = list((set(existing.get("weak_topics") or []) - set(strong_topics)) | set(weak_topics))
+            merged_strong = list((set(existing.get("strong_topics") or []) - set(weak_topics)) | set(strong_topics))
             
             self.db.table("user_stats").update({
                 "total_games_played": new_total_games,
@@ -123,7 +132,7 @@ class GameService:
                 "total_questions_answered": total_questions,
                 "total_correct": analytics.correctAnswers,
                 "total_wrong": analytics.wrongAnswers,
-                "overall_accuracy": analytics.accuracy,
+                "overall_accuracy": self._accuracy(analytics),
                 "weak_topics": weak_topics,
                 "strong_topics": strong_topics,
             }).execute()

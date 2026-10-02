@@ -2,8 +2,7 @@ import Link from 'next/link'
 
 export function Logo({ href = '/', inverted = false }: { href?: string; inverted?: boolean }) {
   return (
-    <Link href={href} className={`inline-flex items-center gap-2.5 text-[22px] font-extrabold tracking-tight ${inverted ? 'text-white' : 'text-ink'}`}>
-      <LogoMark className="h-8 w-8" inverted={inverted} />
+    <Link href={href} className={`inline-flex items-center text-[22px] font-extrabold tracking-tight ${inverted ? 'text-white' : 'text-ink'}`}>
       SATistics
     </Link>
   )

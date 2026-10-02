@@ -598,3 +598,37 @@ a {
     animation: none;
   }
 }
+
+/* In-game panels take their look from the game they sit in */
+.hud-panel {
+  background: var(--hud-bg, rgba(3, 7, 18, 0.95));
+  border: 2px solid var(--hud-accent, rgba(255, 255, 255, 0.15));
+  border-radius: var(--hud-radius, 16px);
+  box-shadow: var(--hud-shadow, 0 20px 40px -12px rgba(0, 0, 0, 0.6));
+  color: #fff;
+}
+
+/* Subway: station signage, yellow on deep navy with squared corners */
+.skin-subway {
+  --hud-bg: rgba(10, 18, 40, 0.96);
+  --hud-accent: #facc15;
+  --hud-radius: 10px;
+  --hud-shadow: 0 0 0 3px #0a1228, 0 14px 30px -10px rgba(0, 0, 0, 0.7);
+}
+
+/* Red Light Green Light: tracksuit green with guard pink */
+.skin-squid {
+  --hud-bg: rgba(9, 38, 33, 0.96);
+  --hud-accent: #ff2d87;
+  --hud-radius: 6px;
+  --hud-shadow: 6px 6px 0 0 rgba(255, 45, 135, 0.45);
+}
+
+/* Strip across the top of a panel, like the header of a sign */
+.hud-banner {
+  background: var(--hud-accent);
+  color: #0a0a0a;
+  font-weight: 800;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+}

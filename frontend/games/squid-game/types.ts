@@ -24,6 +24,9 @@ export interface SquidHudState {
   questionSecondsTotal: number
   greenSecondsLeft: number
   greenSecondsTotal: number
+  // The answer pad the player is standing on, and how close it is to locking in (0 to 1)
+  standingPad: number | null
+  lockProgress: number
   // Set while the player is being punished for moving on red
   wasCaughtMoving: boolean
   isPaused: boolean

@@ -1,10 +1,10 @@
 'use client'
 
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useParams, useRouter } from 'next/navigation'
 import { DashboardLayout } from '@/components/DashboardLayout'
-import { ArrowLeft, ArrowUpRight, CheckIcon, PlayIcon } from '@/components/brand/Icons'
+import { ArrowLeft, ArrowUpRight, CheckIcon, ExpandIcon, PlayIcon, ShrinkIcon } from '@/components/brand/Icons'
 import { QuickCheck } from '@/components/learn/QuickCheck'
 import { VideoMeta, VideoPlayer, VideoRow, VideosUnavailable, useTopicVideos } from '@/components/learn/Videos'
 import { courseFor } from '@/lib/courses'
@@ -33,12 +33,36 @@ export default function LessonPage() {
   return <LessonView key={lessonId(lesson.exam, lesson.topic)} lesson={lesson} />
 }
 
+// Remembered per browser so the video column stays the size the viewer picked
+const WIDE_KEY = 'lesson_video_wide'
+
+function useWideVideo() {
+  const [wide, setWide] = useState(false)
+  useEffect(() => {
+    try {
+      setWide(localStorage.getItem(WIDE_KEY) === '1')
+    } catch {
+      // Storage unavailable: start narrow
+    }
+  }, [])
+  const toggle = () => {
+    setWide(!wide)
+    try {
+      localStorage.setItem(WIDE_KEY, wide ? '0' : '1')
+    } catch {
+      // Storage unavailable: the choice lasts for this visit only
+    }
+  }
+  return [wide, toggle] as const
+}
+
 function LessonView({ lesson }: { lesson: Lesson }) {
   const router = useRouter()
   const course = courseFor(lesson.exam, lesson.section)
   const { learned, toggle } = useLearned()
   const done = learned.has(lessonId(lesson.exam, lesson.topic))
   const [stepsShown, setStepsShown] = useState(1)
+  const [wide, toggleWide] = useWideVideo()
 
   const courseLessons = LESSONS.filter((l) => l.exam === lesson.exam && l.section === lesson.section)
   const next = courseLessons[courseLessons.indexOf(lesson) + 1]
@@ -49,7 +73,7 @@ function LessonView({ lesson }: { lesson: Lesson }) {
   }
 
   return (
-    <DashboardLayout aside={<VideoPanel lesson={lesson} />}>
+    <DashboardLayout aside={<VideoPanel lesson={lesson} wide={wide} onToggleWide={toggleWide} />} asideWide={wide}>
       <article className="mx-auto max-w-3xl p-5 sm:p-8">
         <Link href="/learn" className="inline-flex items-center gap-2 text-sm font-bold text-ink/60 hover:text-ink">
           <ArrowLeft className="h-4 w-4" /> {course.title}
@@ -137,7 +161,7 @@ function LessonView({ lesson }: { lesson: Lesson }) {
   )
 }
 
-function VideoPanel({ lesson }: { lesson: Lesson }) {
+function VideoPanel({ lesson, wide, onToggleWide }: { lesson: Lesson; wide?: boolean; onToggleWide?: () => void }) {
   const { videos, failed } = useTopicVideos(lesson.exam, lesson.section, lesson.topic)
   const [selected, setSelected] = useState(0)
   const [started, setStarted] = useState(false)
@@ -145,7 +169,19 @@ function VideoPanel({ lesson }: { lesson: Lesson }) {
 
   return (
     <div>
-      <h2 className="text-xl font-extrabold">Watch</h2>
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-xl font-extrabold">Watch</h2>
+        {onToggleWide && (
+          <button
+            onClick={onToggleWide}
+            aria-pressed={wide}
+            className="inline-flex items-center gap-1.5 rounded-full border-2 border-ink bg-white px-3 py-1 text-xs font-bold hover:bg-lime-soft"
+          >
+            {wide ? <ShrinkIcon className="h-3.5 w-3.5" /> : <ExpandIcon className="h-3.5 w-3.5" />}
+            {wide ? 'Narrow' : 'Wider'}
+          </button>
+        )}
+      </div>
       <div className="mt-4">
         {videos === null ? (
           <div className="space-y-3">

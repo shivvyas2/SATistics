@@ -8,113 +8,93 @@ interface GameOverModalProps {
   onRestart: () => void
   title?: string
   subtitle?: string
+  // No longer shown; still accepted so existing callers keep compiling
   emoji?: string
   // Extra game-specific content shown above the action buttons
   children?: React.ReactNode
 }
 
+/**
+ * Results screen shown when a game ends
+ */
 export function GameOverModal({
   analytics,
   onRestart,
-  title = 'Game Complete!',
-  subtitle = 'Great job on finishing the challenge',
-  emoji = '🎉',
+  title = 'Game complete',
+  subtitle,
   children,
 }: GameOverModalProps) {
+  // Without a game-specific message, match the tone to how the round went
+  const tone =
+    analytics.accuracy >= 80
+      ? 'That was a strong round'
+      : analytics.accuracy >= 50
+      ? 'Solid. A few to go back over'
+      : 'A tough one. The review below shows what to work on'
+  const answered = analytics.correctAnswers + analytics.wrongAnswers
+  const tiles = [
+    { label: 'Score', value: analytics.score.toLocaleString(), className: 'bg-lime text-ink' },
+    { label: 'Accuracy', value: `${analytics.accuracy.toFixed(0)}%`, className: 'bg-cobalt text-white' },
+    { label: 'Correct', value: `${analytics.correctAnswers}/${answered}`, className: 'bg-white text-ink' },
+    { label: 'Best streak', value: analytics.streakInfo.maxStreak, className: 'bg-coral text-ink' },
+  ]
+  const topics = Object.entries(analytics.topicPerformance)
+
   return (
-    <div className="fixed inset-0 bg-black/80 backdrop-blur-sm flex items-center justify-center z-50 p-4 animate-in fade-in duration-300">
-      <div className="bg-gradient-to-br from-gray-900 to-gray-800 rounded-2xl p-6 max-w-2xl w-full border-2 border-gray-700 shadow-2xl max-h-[90vh] overflow-y-auto dark-scroll">
-        {/* Header */}
-        <div className="text-center mb-6">
-          <div className="text-6xl mb-3">{emoji}</div>
-          <h2 className="text-4xl font-bold text-white mb-1">
-            {title}
-          </h2>
-          <p className="text-gray-400 text-sm">{subtitle}</p>
+    <div className="game-hud fixed inset-0 z-50 flex items-center justify-center bg-ink/80 p-4 backdrop-blur-sm">
+      <div className="dark-scroll max-h-[92vh] w-full max-w-2xl overflow-y-auto rounded-[28px] border-2 border-lime bg-ink p-5 text-white shadow-[8px_8px_0_0_#D4F34A] sm:p-7">
+        <div className="mb-6 text-center">
+          <h2 className="text-4xl font-extrabold tracking-tight sm:text-5xl">{title}</h2>
+          <p className="mt-1 font-serif text-xl italic text-white/70">{subtitle ?? tone}</p>
         </div>
 
-        {/* Main Stats - Compact Grid */}
-        <div className="grid grid-cols-2 gap-3 mb-5">
-          <div className="bg-gradient-to-br from-blue-600 to-blue-700 rounded-xl p-4 text-center">
-            <div className="text-3xl font-black text-white">{analytics.score}</div>
-            <div className="text-blue-200 text-xs font-semibold mt-1">SCORE</div>
-          </div>
-          <div className="bg-gradient-to-br from-green-600 to-green-700 rounded-xl p-4 text-center">
-            <div className="text-3xl font-black text-white">{analytics.accuracy.toFixed(0)}%</div>
-            <div className="text-green-200 text-xs font-semibold mt-1">ACCURACY</div>
-          </div>
-          <div className="bg-gradient-to-br from-purple-600 to-purple-700 rounded-xl p-4 text-center">
-            <div className="text-3xl font-black text-white">{analytics.correctAnswers}</div>
-            <div className="text-purple-200 text-xs font-semibold mt-1">CORRECT</div>
-          </div>
-          <div className="bg-gradient-to-br from-orange-600 to-orange-700 rounded-xl p-4 text-center">
-            <div className="text-3xl font-black text-white">{analytics.streakInfo.maxStreak}</div>
-            <div className="text-orange-200 text-xs font-semibold mt-1">MAX STREAK</div>
-          </div>
-        </div>
+        <dl className="mb-5 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          {tiles.map((tile) => (
+            <div key={tile.label} className={`rounded-[20px] border-2 border-white/90 p-3 text-center ${tile.className}`}>
+              <dd className="text-3xl font-extrabold tabular-nums">{tile.value}</dd>
+              <dt className="mt-0.5 text-xs font-bold opacity-80">{tile.label}</dt>
+            </div>
+          ))}
+        </dl>
 
-        {/* Topic Performance - Compact */}
-        <div className="bg-gray-800/50 rounded-xl p-4 mb-5">
-          <h3 className="text-white font-bold text-sm mb-3 flex items-center gap-2">
-            <span>📊</span>
-            <span>Performance by Topic</span>
-          </h3>
-          <div className="space-y-2">
-            {Object.entries(analytics.topicPerformance).map(([topic, perf]) => (
-              <div key={topic} className="flex items-center gap-3">
-                <div className="text-white text-xs font-medium w-32 leading-tight">{topic}</div>
-                <div className="flex-1 bg-gray-700 rounded-full h-2 overflow-hidden">
-                  <div 
-                    className="bg-gradient-to-r from-blue-500 to-cyan-500 h-full transition-all duration-500 rounded-full"
-                    style={{ width: `${perf.accuracy}%` }}
-                  />
+        {topics.length > 0 && (
+          <div className="mb-5 rounded-[20px] border border-white/15 bg-white/5 p-4">
+            <h3 className="mb-3 text-sm font-bold">How you did by topic</h3>
+            <div className="space-y-2.5">
+              {topics.map(([topic, perf]) => (
+                <div key={topic} className="flex items-center gap-3">
+                  <div className="w-36 text-xs font-medium leading-tight">{topic}</div>
+                  <div className="h-2.5 flex-1 overflow-hidden rounded-full bg-white/15">
+                    <div className="h-full rounded-full bg-lime transition-all duration-500" style={{ width: `${perf.accuracy}%` }} />
+                  </div>
+                  <div className="w-10 text-right text-xs tabular-nums text-white/70">
+                    {perf.correct}/{perf.total}
+                  </div>
                 </div>
-                <div className="text-gray-400 text-xs w-16 text-right">
-                  {perf.correct}/{perf.total}
-                </div>
-              </div>
-            ))}
+              ))}
+            </div>
+            {answered > 0 && (
+              <p className="mt-3 text-xs text-white/60">
+                Average time per question: {(analytics.averageResponseTime / 1000).toFixed(1)}s
+              </p>
+            )}
           </div>
-        </div>
-
-        {/* Avg Response Time */}
-        <div className="bg-gray-800/50 rounded-xl p-3 mb-5 text-center">
-          <div className="text-gray-400 text-xs mb-1">Average Response Time</div>
-          <div className="text-2xl font-bold text-white">
-            {(analytics.averageResponseTime / 1000).toFixed(1)}s
-          </div>
-        </div>
+        )}
 
         {children}
 
-        {/* Action Buttons */}
-        <div className="space-y-2">
-          <button
-            onClick={onRestart}
-            className="w-full bg-gradient-to-r from-blue-600 to-blue-700 hover:from-blue-700 hover:to-blue-800 text-white font-bold text-lg py-3 rounded-xl transition-all shadow-lg hover:shadow-xl active:scale-95"
-          >
-            🎮 Play Again
+        <div className="grid gap-2 sm:grid-cols-3">
+          <button onClick={onRestart} className="rounded-2xl border-2 border-lime bg-lime py-3 font-bold text-ink active:translate-y-0.5">
+            Play again
           </button>
-          <Link
-            href="/stats"
-            className="block w-full bg-gradient-to-r from-purple-600 to-purple-700 hover:from-purple-700 hover:to-purple-800 text-white font-bold text-lg py-3 rounded-xl transition-all shadow-lg hover:shadow-xl active:scale-95 text-center"
-          >
-            📊 See your insights
+          <Link href="/stats" className="rounded-2xl border-2 border-white/80 py-3 text-center font-bold hover:bg-white/10">
+            Your statistics
           </Link>
-          <Link
-            href="/games"
-            className="block w-full bg-white/10 hover:bg-white/20 text-white font-bold text-lg py-3 rounded-xl transition-all active:scale-95 text-center"
-          >
+          <Link href="/games" className="rounded-2xl border-2 border-white/30 py-3 text-center font-bold text-white/80 hover:bg-white/10">
             Back to games
           </Link>
-          <div className="text-center p-2 bg-blue-900/20 border border-blue-500/30 rounded-lg">
-            <p className="text-blue-300 text-xs">
-              ✅ Score saved! Check your stats to see your progress
-            </p>
-          </div>
         </div>
       </div>
     </div>
   )
 }
-
