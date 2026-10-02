@@ -17,7 +17,7 @@ export const GAME_META: Record<string, GameMeta> = {
   whackamole: { title: 'Whack-A-Mole', genre: 'Arcade', answerBy: 'Bonk the mole holding the right answer' },
   carnival: { title: 'Balloon Pop', genre: 'Arcade', answerBy: 'Pop the right balloon, three darts a question' },
   'subway-surfers': { title: 'Subway Surfers', genre: 'Runner', answerBy: 'Switch lanes and run through the right gate' },
-  'squid-game': { title: 'Squid Game', genre: 'Survival', answerBy: 'Each right answer moves you forward, five misses and you’re out' },
+  'squid-game': { title: 'Squid Game', genre: 'Survival', answerBy: 'Each right answer moves you forward; run out of lives and you’re out' },
   'pac-man': { title: 'Pac-Man', genre: 'Arcade', answerBy: 'Run the maze and answer questions as they pop up' },
 }
 

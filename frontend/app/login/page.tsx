@@ -43,7 +43,10 @@ function LoginForm() {
         }
       }
 
-      router.push(searchParams.get('redirect') || '/dashboard')
+      // Only follow same-site paths, so a crafted link can't send people elsewhere after login
+      const redirect = searchParams.get('redirect')
+      const safeRedirect = redirect && /^\/(?![\/\\])/.test(redirect) ? redirect : '/dashboard'
+      router.push(safeRedirect)
       router.refresh()
     } catch (error: any) {
       setError(error.message || 'Login failed. Check your email and password.')

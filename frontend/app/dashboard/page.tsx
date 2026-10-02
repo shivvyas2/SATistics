@@ -54,7 +54,10 @@ export default function DashboardPage() {
   const played = new Set(records.map((r) => r.gameId))
   const unplayed = games.filter((g) => !played.has(g.id))
   // Suggest the game they come back to most, or a new one to start with
-  const nextGameId = stats?.favorite_game && games.some((g) => g.id === stats.favorite_game) ? stats.favorite_game : records[0]?.gameId ?? 'whackamole'
+  const isGame = (id: string | null | undefined): id is string => !!id && games.some((g) => g.id === id)
+  // Mock exams are saved as sessions too, but they aren't a game to send someone to
+  const lastGame = records.find((r) => isGame(r.gameId))?.gameId
+  const nextGameId = isGame(stats?.favorite_game) ? stats.favorite_game : lastGame ?? 'whackamole'
 
   // Topics they miss most, limited to the exam they're studying
   const examTopics = new Set(courses.flatMap((c) => c.topics))

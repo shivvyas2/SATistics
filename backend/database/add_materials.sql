@@ -37,8 +37,10 @@ ALTER TABLE materials ENABLE ROW LEVEL SECURITY;
 ALTER TABLE custom_questions ENABLE ROW LEVEL SECURITY;
 
 -- Uploaded material is private to the person who uploaded it
+DROP POLICY IF EXISTS "Users can manage own materials" ON materials;
 CREATE POLICY "Users can manage own materials" ON materials
   FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
 
+DROP POLICY IF EXISTS "Users can manage own custom questions" ON custom_questions;
 CREATE POLICY "Users can manage own custom questions" ON custom_questions
   FOR ALL USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
