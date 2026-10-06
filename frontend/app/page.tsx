@@ -210,6 +210,10 @@ export default function LandingPage() {
             SATistics, built by{' '}
             <Link href="/developer" rel="author" className="font-bold text-ink underline decoration-2 underline-offset-4">
               Shiv Vyas
+            </Link>{' '}
+            and{' '}
+            <Link href="/developer" className="font-bold text-ink underline decoration-2 underline-offset-4">
+              Vighanesh Gaund
             </Link>
           </p>
           <nav aria-label="Shiv Vyas" className="flex flex-wrap gap-x-5 gap-y-2 font-bold">
