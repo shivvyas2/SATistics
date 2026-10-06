@@ -95,10 +95,34 @@ export default function DeveloperPage() {
             </figure>
           </section>
 
+          <section className="grid items-center gap-10 pb-16 md:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
+            <figure className="relative mx-auto w-full max-w-xs">
+              <div className="brutal relative aspect-[4/5] overflow-hidden rounded-[32px] shadow-brutal-lg">
+                <Image
+                  src="/team/vighanesh-gaund.jpg"
+                  alt="Vighanesh Gaund"
+                  fill
+                  sizes="(min-width: 768px) 320px, 90vw"
+                  className="object-cover"
+                />
+              </div>
+            </figure>
+            <div>
+              <p className="font-bold text-cobalt">Also building SATistics</p>
+              <h2 className="mt-2 text-[clamp(2.25rem,6vw,4rem)] font-extrabold leading-[0.95] tracking-[-0.03em]">
+                Vighanesh Gaund
+              </h2>
+              <p className="mt-4 max-w-xl text-lg leading-relaxed text-ink/75">
+                Vighanesh is a developer on SATistics, working alongside Shiv to build the games, lessons and question
+                engine.
+              </p>
+            </div>
+          </section>
+
           <section className="rounded-[32px] border-2 border-ink bg-mist/70 p-5 sm:p-10">
             <div className="grid gap-8 md:grid-cols-2 md:items-center">
               <div>
-                <h2 className="text-4xl font-extrabold tracking-tight">What I built here</h2>
+                <h2 className="text-4xl font-extrabold tracking-tight">What we built here</h2>
                 <ul className="mt-6 space-y-4">
                   {BUILT.map((item) => (
                     <li key={item.title}>
@@ -160,7 +184,8 @@ export default function DeveloperPage() {
             SATistics by{' '}
             <a href={CREATOR.links.website} rel="author" className="font-bold text-ink">
               Shiv Vyas
-            </a>
+            </a>{' '}
+            and Vighanesh Gaund
           </span>
           <Link href="/" className="font-bold text-ink">
             Back to SATistics
