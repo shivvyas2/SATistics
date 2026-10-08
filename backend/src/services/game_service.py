@@ -3,9 +3,54 @@ Game score service - handles saving game sessions and analytics
 """
 
 from supabase import Client
-from src.models.schemas import GameAnalytics, SaveScoreRequest
-from typing import Dict
+from src.models.schemas import GameAnalytics, QuestionAttempt, SaveScoreRequest
+from src.utils.html_utils import sanitize_html
+from typing import Any, Dict, List, Optional
 from datetime import datetime
+
+# Fields of a question kept with each attempt for the review; anything else the client sends is dropped
+REVIEW_TEXT_FIELDS = ("question", "stem", "passage", "explanation", "topic", "skill", "difficulty", "source", "sourceName")
+REVIEW_HTML_FIELDS = ("questionHtml", "passageHtml", "explanationHtml")
+MAX_REVIEW_TEXT = 20_000
+OFFICIAL_BANK_URL = "https://satsuitequestionbank.collegeboard.org"
+
+
+def review_snapshot(question: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """The parts of a question the review shows. It comes from the browser, so HTML is sanitized again"""
+    if not isinstance(question, dict) or not isinstance(question.get("options"), list):
+        return None
+    options = [str(o)[:MAX_REVIEW_TEXT] for o in question["options"][:5]]
+    correct = question.get("correctAnswer")
+    if question.get("source") == "official":
+        # College Board's questions aren't copied into our database: the saved review keeps
+        # the answers and points to the official question bank instead
+        return {
+            "source": "official",
+            "sourceName": "College Board Educator Question Bank",
+            "sourceUrl": OFFICIAL_BANK_URL,
+            "topic": str(question.get("topic") or "")[:200],
+            "skill": str(question.get("skill") or "")[:200],
+            "difficulty": str(question.get("difficulty") or "")[:20],
+            "optionCount": len(options),
+            "correctAnswer": correct if isinstance(correct, int) and 0 <= correct < len(options) else None,
+        }
+    snapshot: Dict[str, Any] = {
+        "options": options,
+        "correctAnswer": correct if isinstance(correct, int) and 0 <= correct < len(options) else None,
+    }
+    for field in REVIEW_TEXT_FIELDS:
+        if isinstance(question.get(field), str):
+            snapshot[field] = question[field][:MAX_REVIEW_TEXT]
+    for field in REVIEW_HTML_FIELDS:
+        if isinstance(question.get(field), str) and question[field]:
+            snapshot[field] = sanitize_html(question[field][:MAX_REVIEW_TEXT])
+    for field in ("optionsHtml", "optionExplanations"):
+        values = question.get(field)
+        if isinstance(values, list) and len(values) == len(options):
+            clean = [str(v or "")[:MAX_REVIEW_TEXT] for v in values]
+            snapshot[field] = [sanitize_html(v) for v in clean] if field == "optionsHtml" else clean
+    return snapshot
+
 
 class GameService:
     def __init__(self, db: Client):
@@ -41,20 +86,7 @@ class GameService:
             
             # Insert question attempts
             if analytics.questionAttempts:
-                attempts_data = [
-                    {
-                        "session_id": session_id,
-                        "user_id": user_id,
-                        "question_id": attempt.questionId,
-                        "topic": attempt.topic,
-                        "difficulty": attempt.difficulty,
-                        "is_correct": attempt.isCorrect,
-                        "time_spent": attempt.timeSpent,
-                    }
-                    for attempt in analytics.questionAttempts
-                ]
-                
-                self.db.table("question_attempts").insert(attempts_data).execute()
+                self._save_attempts(session_id, user_id, analytics.questionAttempts)
             
             # Update user stats
             await self._update_user_stats(user_id, analytics)
@@ -70,6 +102,32 @@ class GameService:
                 "error": str(e)
             }
     
+    def _save_attempts(self, session_id: str, user_id: str, attempts: List[QuestionAttempt]) -> None:
+        rows = [
+            {
+                "session_id": session_id,
+                "user_id": user_id,
+                "question_id": attempt.questionId,
+                "topic": attempt.topic,
+                "difficulty": attempt.difficulty,
+                "is_correct": attempt.isCorrect,
+                "time_spent": attempt.timeSpent,
+                "question": review_snapshot(attempt.question),
+                "selected_answer": attempt.selected,
+                "position": position,
+            }
+            for position, attempt in enumerate(attempts)
+        ]
+        try:
+            self.db.table("question_attempts").insert(rows).execute()
+        except Exception as e:
+            # Before add_review_and_pool.sql has run, save the attempts without their review
+            print(f"Saving attempts without review data: {e}")
+            review_columns = ("question", "selected_answer", "position")
+            self.db.table("question_attempts").insert(
+                [{k: v for k, v in row.items() if k not in review_columns} for row in rows]
+            ).execute()
+
     @staticmethod
     def _accuracy(analytics: GameAnalytics) -> float:
         """Share of questions answered correctly, from 0 to 1"""

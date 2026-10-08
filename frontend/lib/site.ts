@@ -5,6 +5,8 @@
 
 export const SITE_URL = 'https://www.satistic.tech'
 export const SITE_NAME = 'SATistics'
+// Address for privacy, data and copyright requests, shown on /privacy and /terms
+export const CONTACT_EMAIL = 'shivvyas0209@gmail.com'
 export const SITE_DESCRIPTION =
   'Train for the SAT and GRE with arcade games built on real-format questions, concept lessons and videos. Built by Shiv Vyas.'
 

@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { SATQuestion, CarnivalGameState, GameAnalytics } from '@/games/carnival/types'
 import type { CarnivalGame } from '@/games/carnival/CarnivalGame'
 import { GameOverModal } from './GameOverModal'
+import { ReviewList, reviewFromAttempts } from './exam/ReviewList'
 import { fetchQuestionsWithCache } from '@/lib/api/questions'
 import { satQuestions } from '@/games/carnival/questions'
 import type { SATQuestion as ExamQuestion } from '@/lib/api/questions'
@@ -252,7 +253,9 @@ export function CarnivalGameContainer({ gameId }: CarnivalGameContainerProps) {
 
       {/* Game Over Modal */}
       {gameOver && analytics && (
-        <GameOverModal analytics={analytics} onRestart={handleRestart} />
+        <GameOverModal analytics={analytics} onRestart={handleRestart}>
+          <ReviewList review={reviewFromAttempts(analytics.questionAttempts)} />
+        </GameOverModal>
       )}
     </div>
   )

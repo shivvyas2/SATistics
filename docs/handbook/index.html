@@ -1828,13 +1828,17 @@ reset.sql                     drops and recreates game_sessions, question_attemp
                               user_stats, profiles, the set_updated_at() trigger
                               function, indexes and RLS policies; deletes every auth user
 add_materials.sql             materials and custom_questions, their indexes and RLS
+add_review_and_pool.sql       question_attempts.question, selected_answer and position for
+                              answer reviews; the question_pool table of checked AI questions
 add_profiles.sql              profiles only (already included in reset.sql)
 add_user_id_to_attempts.sql   adds question_attempts.user_id to an old schema.sql database
 schema.sql                    the original three tables, without user_id or profiles</pre>
 
 <p>
-  For a new project, run <code>reset.sql</code> and then <code>add_materials.sql</code>, in that
-  order. <code>reset.sql</code> is the complete current schema for the core tables, but it does not
+  For a new project, run <code>reset.sql</code>, then <code>add_materials.sql</code>, then
+  <code>add_review_and_pool.sql</code>, in that order. Without the last one, games still save, but
+  past games can't be reviewed from the statistics page and every AI-written question is paid for
+  again instead of reused. <code>reset.sql</code> is the complete current schema for the core tables, but it does not
   create the two tables behind "My material" uploads, and the materials pages fail with a missing
   table error until <code>add_materials.sql</code> has run. The other three files exist for
   databases created before <code>reset.sql</code> did; you do not need them on a fresh project.
@@ -1850,7 +1854,7 @@ never paste it into a SQL Editor tab without checking which project is selected.
 </div>
 
 <p>
-  Unlike <code>reset.sql</code>, <code>add_materials.sql</code> is additive and safe to run again: it uses
+  Unlike <code>reset.sql</code>, <code>add_materials.sql</code> and <code>add_review_and_pool.sql</code> are additive and safe to run again: it uses
   <code>CREATE TABLE IF NOT EXISTS</code> and <code>CREATE INDEX IF NOT EXISTS</code>, and drops each policy
   before creating it.
 </p>
@@ -3722,25 +3726,60 @@ in the frontend.</div>
 </p>
 
 <p>
-  The prompt is the student context from <code>build_agent_context</code> (accuracy, recommended
-  difficulty, weak and strong topics, per-topic accuracy), then a task. With pages, the task is to
-  copy questions from the numbered sources exactly, only where the source gives the answer, and
-  then write original ones for the rest, with <code>sourceIndex</code> recording which. Without
-  pages, it is to write them all. The requirements ask for the section's
-  <code>option_count</code>, a mix of difficulties, no figures, the pace line from
-  <code>PACE_REQUIREMENTS</code>, and passages in a separate field. The call uses temperature 0.4
-  and <code>max_tokens=12000</code>; <code>extract_json</code> parses from the first
-  <code>[</code> to the last <code>]</code>.
+  <code>_extract_from_pages</code> sends the student context from <code>build_agent_context</code>
+  and the numbered pages, and asks only for questions copied exactly from them, where the source
+  gives the answer. It runs at temperature 0.2 with <code>max_tokens=12000</code>;
+  <code>extract_json</code> parses from the first <code>[</code> to the last <code>]</code>.
+  <code>_normalize_llm_question</code> tags a question <code>web</code> only if
+  <code>sourceIndex</code> points at a real page and the first 50 normalized characters of its stem
+  or passage appear in that page's normalized text; the <code>sourceName</code> is then the page's
+  host. Anything else the model returns is dropped here, because new questions come from the
+  question writer.
 </p>
 
 <p>
-  <code>_normalize_llm_question</code> is where honesty is enforced. A question needs a stem, two
-  to five options and an integer <code>correctAnswer</code> in range. It is tagged
-  <code>web</code> only if <code>sourceIndex</code> points at a real page and the first 50
-  normalized characters of its stem or passage appear in that page's normalized text; the
-  <code>sourceName</code> is then the page's host. Otherwise it is <code>ai</code>, "AI-written
-  practice question", whatever the model claimed. Quick pace applies
-  <code>is_quick_question</code> again.
+  <code>backend/src/services/question_writer.py</code> writes the rest. <code>BLUEPRINT</code> lists
+  every skill of each exam section with its domain, a weight close to the official mix, and its
+  format rules: option count, the official stem wording, passage length, whether the text has a
+  blank, and for GRE Quantitative Comparison the four fixed choices. <code>plan</code> picks up to
+  <code>MAX_WRITE_CALLS</code> skills, weak topics three times as likely, gives each one difficulty
+  from the pace, and makes one call per skill. For SAT, <code>CollegeBoardSource.examples</code>
+  puts three real questions of the same skill and difficulty in the prompt as models. Every wrong
+  option needs a <code>distractorRationales</code> entry naming the student mistake behind it. A
+  question is dropped if it fails <code>skill_problem</code> (format rules, repeated options, "all of
+  the above", a correct option that stands out as the longest) or <code>copies_example</code> (40% or
+  more of its five-word runs taken from one example). <code>arrange_options</code> then sorts numeric
+  options ascending and shuffles the rest, so the key's position gives nothing away.
+</p>
+
+<p>
+  <code>backend/src/services/answer_check.py</code> checks every key, web and written. For math the
+  model also states <code>answerValue</code>; <code>answer_value_matches</code> evaluates it and the
+  options with a small arithmetic parser, and drops the question unless exactly the keyed option has
+  that value. <code>verify_answer_keys</code> then has <code>VERIFIER_MODEL</code> solve the set
+  three times with no key or explanation and the options shuffled. A question stays if at least two
+  solves pick the key and at most one picks or defends another option. A failed call counts as
+  disagreement. Solves run only while they can change the outcome: two run together, and the
+  third only for questions they split on, which gives the same decisions as always running three.
+  The writer asks for 40% more questions than needed to cover what these checks drop.
+  Quick pace applies <code>is_quick_question</code> again.
+</p>
+
+<p>
+  Writing and checking a question costs several LLM calls, so
+  <code>backend/src/services/question_pool.py</code> keeps every AI-written question that passes in
+  the <code>question_pool</code> table, including extras a set didn't need. Before writing anything,
+  <code>generate_questions</code> takes pooled questions the student has no attempt for, about half
+  on weak topics, and writes only what is still missing. Web questions are not pooled.
+</p>
+
+<p>
+  The writer puts math in LaTeX between single dollar signs. <code>backend/src/utils/math_text.py</code>
+  turns each field into the pair official questions arrive with: sanitized MathML HTML through
+  <code>latex2mathml</code> for screens that render it, and plain text through
+  <code>html_to_text</code> for canvas labels and the answer checks. Explanations are numbered steps,
+  and each wrong option keeps the writer's note on the mistake behind it as
+  <code>optionExplanations</code>, which <code>arrange_options</code> reorders with the options.
 </p>
 
 <h4>Sanitizing HTML</h4>
@@ -4690,8 +4729,8 @@ frontend/public/games/squid-game/audio/      Cocoma.mp3, Redlight.mp3 (GreenLigh
   earns 1.5 seconds and steps difficulty down. <code>beginQuestion</code> picks the unused question
   closest to the current difficulty, and returns a missed question after one other. The run speed
   is computed in the constructor so a player at <code>EXPECTED_ACCURACY</code> (70%) reaches the
-  finish line about when the questions run out. Lives are
-  <code>Math.max(3, Math.ceil(totalQuestions / 3))</code>. Outcomes are <code>victory</code> (crossed
+  finish line about when the questions run out. Every run starts with
+  <code>STARTING_LIVES</code>, five lives. Outcomes are <code>victory</code> (crossed
   the finish, plus <code>FINISH_BONUS</code> 500 and 100 per life), <code>eliminated</code> and
   <code>short</code> (out of questions first). Twenty-four <code>NPC_COUNT</code> contestants are
   cloned skinned meshes that occasionally fail to stop. The calculator opens by default for quant.

@@ -5,6 +5,7 @@ import { useRouter, useSearchParams } from 'next/navigation'
 import { DashboardLayout } from '@/components/DashboardLayout'
 import { FormError } from '@/components/auth/AuthShell'
 import { Avatar, GoalFields, IdentityFields, slugifyUsername, validateProfile } from '@/components/profile/ProfileFields'
+import { YourData } from '@/components/profile/YourData'
 import { apiClient } from '@/lib/api/client'
 import { useAccount } from '@/lib/useAccount'
 import { EXAMS, getExamPrefs, setExamPrefs } from '@/lib/exam'
@@ -142,6 +143,8 @@ function ProfileEditor() {
           </div>
         ))}
       </section>
+
+      <YourData />
     </div>
   )
 }

@@ -18,7 +18,7 @@ Interactive API docs run at http://localhost:8000/docs.
 | `src/api/` | One router per area: auth, profile, questions, learn, games, stats, materials, health |
 | `src/services/` | Question agent and sources, videos, material parsing, auth, scores |
 | `src/models/schemas.py` | Pydantic request and response models |
-| `database/reset.sql`, `database/add_materials.sql` | Run both, in that order, on a new Supabase project. `reset.sql` drops tables and users, so never on production |
+| `database/reset.sql`, `database/add_materials.sql`, `database/add_review_and_pool.sql` | Run all three, in that order, on a new Supabase project. `reset.sql` drops tables and users, so never on production. On an existing project, run only `add_review_and_pool.sql`; it is additive |
 | `api/index.py`, `vercel.json` | Vercel entry point |
 
 See the [engineering handbook](../docs/handbook/index.html): chapter 3 for setup and every environment variable, chapter 7 for the question engine, chapters 13 and 14 for the data model and API.

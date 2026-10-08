@@ -6,6 +6,7 @@ import { DashboardLayout } from '@/components/DashboardLayout'
 import { ClockIcon, PlayIcon } from '@/components/brand/Icons'
 import { Calculator } from '@/components/exam/Calculator'
 import { QuestionContent } from '@/components/QuestionContent'
+import { AnswerExplanation } from '@/components/exam/AnswerExplanation'
 import { GameAnalytics } from '@/games/whackamole/types'
 import { apiClient } from '@/lib/api/client'
 import { SATQuestion, fetchAIQuestions } from '@/lib/api/questions'
@@ -410,7 +411,9 @@ function Results({ exam, section, result, onAgain }: { exam: ExamId; section: Se
                         </li>
                       ))}
                     </ul>
-                    {q.explanation && <QuestionContent html={q.explanationHtml} text={q.explanation} className="text-ink/75" />}
+                    <div className="border-t-2 border-ink/10 pt-3">
+                      <AnswerExplanation question={q} selected={answers[i]} mutedClassName="text-ink/75" />
+                    </div>
                   </div>
                 </details>
               </li>
@@ -471,7 +474,15 @@ export default function MockExamPage() {
         perf.accuracy = (perf.correct / perf.total) * 100
         streak = isCorrect ? streak + 1 : 0
         maxStreak = Math.max(maxStreak, streak)
-        return { questionId: q.id, topic: q.topic, difficulty: q.difficulty, isCorrect, timeSpent: Math.round((secondsUsed / questions.length) * 1000) }
+        return {
+          questionId: q.id,
+          topic: q.topic,
+          difficulty: q.difficulty,
+          isCorrect,
+          timeSpent: Math.round((secondsUsed / questions.length) * 1000),
+          question: q,
+          selected: answers[i],
+        }
       })
       const correct = attempts.filter((a) => a.isCorrect).length
       apiClient

@@ -301,7 +301,9 @@ export class WhackAMoleGame extends BaseGame {
       topic: this.currentQuestion.topic,
       difficulty: this.currentQuestion.difficulty,
       isCorrect,
-      timeSpent
+      timeSpent,
+      question: this.currentQuestion,
+      selected: answerIndex,
     })
     
     if (isCorrect) {

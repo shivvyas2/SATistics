@@ -182,7 +182,9 @@ export default function MaterialsPage() {
         <h1 className="text-5xl font-extrabold tracking-tight">My material</h1>
         <p className="mt-2 max-w-xl text-ink/65">
           Upload a practice test or your notes. We pull the questions out, you check them, and the ones you approve
-          show up in your games alongside the official questions. Your uploads stay private to you.
+          show up in your games alongside the official questions. Other students can&rsquo;t see your uploads. To find and
+          write questions, the text is sent to our AI provider (Anthropic or OpenRouter) for processing. Only upload material
+          you have the right to use.
         </p>
 
         {error && (

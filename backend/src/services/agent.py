@@ -1,13 +1,15 @@
-from openai import OpenAI
 from typing import List, Dict, Optional
 import asyncio
 import json
-import os
+import math
 import zlib
-from src.config import OPENROUTER_API_KEY
+from src.services.llm import LLM_MODEL, PROVIDER, complete, llm_available
 from src.services.supabase_agent_ops import SupabaseAgentOps
+from src.services.answer_check import answer_value_matches, verify_answer_keys
+from src.services import question_pool
+from src.services.question_writer import write_questions
+from src.utils.math_text import has_math, html_if_math, to_plain
 from src.services.question_sources import (
-    EXAMS,
     CollegeBoardSource,
     WebQuestionSource,
     is_quick_question,
@@ -15,26 +17,32 @@ from src.services.question_sources import (
     section_label,
 )
 
-LLM_MODEL = os.getenv("OPENROUTER_MODEL", "anthropic/claude-haiku-4.5")
 # One LLM call can't reliably return more questions than this
 MAX_LLM_QUESTIONS = 25
+# Extra questions to ask for, since the answer check drops some
+VERIFY_HEADROOM = 1.4
+
+ANSWER_VALUE_REQUIREMENT = (
+    '- "answerValue" is the exact value of the correct answer as a plain expression '
+    '(like 5, 3/4, or sqrt(2)/2), worked out independently of the options; null if the answer is not a number'
+)
+
+EXPLANATION_REQUIREMENT = (
+    '- "explanation" is a worked solution a student can learn from: numbered steps on separate lines '
+    '("Step 1: ..."), each naming the rule or formula it uses and showing the work, ending with the answer. '
+    "For reading and writing questions, quote the words in the text that decide the answer and say why"
+)
+
+MATH_FORMAT_REQUIREMENT = (
+    "- Write all math (formulas, expressions, equations, fractions, exponents, roots) in LaTeX between single "
+    "dollar signs, like $\\frac{3}{4}$, $x^{2} - 5x + 6 = 0$, or $2\\sqrt{3}$, in the question, options, and "
+    'explanation. Write money as \\$12 or in words, never with a bare dollar sign'
+)
 
 PACE_REQUIREMENTS = {
     "quick": "- Only short questions a prepared student can answer in under 30 seconds: no long passages, no multi-step calculations, answer choices of a few words",
     "deep": "- Prefer questions that take real thought: reading passages, multi-step problems, medium and hard difficulty",
 }
-
-_client: Optional[OpenAI] = None
-
-def get_llm_client() -> Optional[OpenAI]:
-    """OpenRouter client (compatible with OpenAI API), or None when no API key is configured"""
-    global _client
-    if _client is None and OPENROUTER_API_KEY:
-        _client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
-            api_key=OPENROUTER_API_KEY
-        )
-    return _client
 
 def extract_json(content: str, open_char: str, close_char: str):
     """Parse the first JSON array/object found in an LLM response"""
@@ -138,7 +146,16 @@ TOPIC PERFORMANCE:
 
         missing = num_questions - len(questions)
         if missing > 0:
-            questions += await self._questions_from_llm(exam, section, missing, analysis, use_web_search, pace)
+            questions += await asyncio.to_thread(
+                question_pool.load, self.user_id, exam, section, missing, weak_topics, pace
+            )
+
+        missing = num_questions - len(questions)
+        if missing > 0:
+            fresh = await self._questions_from_llm(exam, section, missing, analysis, use_web_search, pace)
+            # Every checked question is pooled, including the extras this set doesn't need
+            await asyncio.to_thread(question_pool.save, fresh)
+            questions += fresh[:missing]
 
         self.context_memory.append({
             "analysis": analysis,
@@ -151,51 +168,61 @@ TOPIC PERFORMANCE:
     async def _questions_from_llm(
         self, exam: str, section: str, count: int, analysis: Dict, use_web_search: bool, pace: Optional[str] = None
     ) -> List[Dict]:
-        """Extracts real questions from web pages and writes exam-style ones for the remainder"""
-        client = get_llm_client()
-        if not client:
-            print("   ℹ️  OPENROUTER_API_KEY not set - skipping web extraction and AI generation")
+        """Extracts real questions from web pages, writes exam-style ones for the remainder, and checks every key"""
+        if not llm_available():
+            print("   ℹ️  No ANTHROPIC_API_KEY or OPENROUTER_API_KEY - skipping web extraction and AI generation")
             return []
 
-        count = min(count, MAX_LLM_QUESTIONS)
         label = section_label(exam, section)
-        option_count = EXAMS[exam]["sections"][section]["option_count"]
-
-        pages = []
+        extracted = []
         if use_web_search:
             print(f"🔍 Searching web for real {label} questions...")
             pages = await WebQuestionSource.find_pages(exam, section, analysis['weak_topics'][:1])
+            extracted = await self._extract_from_pages(exam, section, pages, analysis, pace)
 
+        # The format and answer checks drop some, so write extra
+        missing = max(0, count - len(extracted))
+        written = await write_questions(
+            exam, section, min(math.ceil(missing * VERIFY_HEADROOM), MAX_LLM_QUESTIONS), analysis['weak_topics'], pace
+        )
+        written = [q for q in written if pace != "quick" or is_quick_question(q)]
+
+        # Extracted keys are the LLM's reading of the page, so they're checked too.
+        # More than `count` can pass; the caller pools the extras
+        questions = await verify_answer_keys(extracted + written, label)
+        from_web = sum(1 for q in questions if q["source"] == "web")
+        print(f"   ✅ {from_web} questions from the web, {len(questions) - from_web} AI-written")
+        return questions
+
+    async def _extract_from_pages(
+        self, exam: str, section: str, pages: List[Dict], analysis: Dict, pace: Optional[str]
+    ) -> List[Dict]:
+        """Practice questions copied from the pages, only those whose text really is on the page"""
+        if not pages:
+            return []
+        label = section_label(exam, section)
         sources = "".join(
             f"\n--- SOURCE {i} ({page['url']}) ---\n{page['text']}\n" for i, page in enumerate(pages, 1)
         )
-        if sources:
-            task = f"""TASK: Build a set of {count} {label} multiple-choice questions.
-
-1. First, extract real practice questions from the SOURCES below. Copy the question, passage,
-   and answer choices exactly as written. Only extract a question if the source also gives its
-   correct answer. Set "sourceIndex" to the source number.
-2. If the sources contain fewer than {count} usable questions, write original {label} questions
-   in the official style for the remainder. Set "sourceIndex" to 0 for these.
-
-SOURCES:
-{sources}"""
-        else:
-            task = f"""TASK: Write {count} original {label} multiple-choice questions in the official style.
-Set "sourceIndex" to 0 for all of them."""
-
         prompt = f"""{self.build_agent_context(analysis)}
 
-{task}
+TASK: Extract up to {MAX_LLM_QUESTIONS} real {label} multiple-choice questions from the SOURCES below.
+Copy the question, passage, and answer choices exactly as written. Only extract a question if the source
+also gives its correct answer. Set "sourceIndex" to the source number. Do not write questions of your own.
 
 REQUIREMENTS:
-- Single-answer multiple choice with {option_count} options (4 is fine for GRE Quantitative Comparison)
-- Match the real {label} question types, wording, and difficulty
-- Mix easy, medium, and hard; lean toward the student's weak topics
+- Single-answer multiple choice only
+- Prefer the student's weak topics
 - Skip anything that needs a figure, chart, or image
 {PACE_REQUIREMENTS.get(pace, "")}
 - "correctAnswer" is the 0-based index of the correct option
+{ANSWER_VALUE_REQUIREMENT if section == "quant" else ""}
+- Copy the source's explanation when it has one. Otherwise write one:
+  {EXPLANATION_REQUIREMENT.lstrip('- ')}
 - Put any reading passage in "passage", not in "question"
+
+SOURCES:
+{sources}
 
 QUESTION FORMAT (JSON array):
 [
@@ -206,38 +233,34 @@ QUESTION FORMAT (JSON array):
     "correctAnswer": 0,
     "topic": "Algebra",
     "difficulty": "easy",
-    "explanation": "2x + 5 = 15, subtract 5: 2x = 10, divide by 2: x = 5",
-    "sourceIndex": 0
+    "explanation": "Step 1: Subtract 5 from both sides: 2x = 10.\\nStep 2: Divide both sides by 2: x = 5.",
+    "answerValue": "5",
+    "sourceIndex": 1
   }}
 ]
 
 Respond with the JSON array only:"""
 
-        print(f"   🤖 Calling {LLM_MODEL} via OpenRouter...")
+        print(f"   🤖 Extracting questions with {LLM_MODEL} via {PROVIDER}...")
         try:
-            response = await asyncio.to_thread(
-                client.chat.completions.create,
-                model=LLM_MODEL,
-                messages=[
-                    {"role": "system", "content": "You are an expert SAT and GRE tutor AI that assembles practice question sets. Always respond with valid JSON."},
-                    {"role": "user", "content": prompt}
-                ],
-                temperature=0.4,
-                max_tokens=12000
+            content = await asyncio.to_thread(
+                complete,
+                "You are an expert SAT and GRE tutor AI that assembles practice question sets. Always respond with valid JSON.",
+                prompt,
+                effort="low",
+                temperature=0.2,
             )
-            content = response.choices[0].message.content
             raw_questions = extract_json(content, '[', ']')
         except Exception as e:
-            print(f"Error getting questions from LLM: {e}")
+            print(f"Error extracting questions from the web: {e}")
             return []
 
         questions = []
         for raw in raw_questions:
             question = self._normalize_llm_question(raw, exam, section, pages)
-            if question and (pace != "quick" or is_quick_question(question)):
+            # Anything the model wrote itself goes through the question writer instead
+            if question and question["source"] == "web" and (pace != "quick" or is_quick_question(question)):
                 questions.append(question)
-        from_web = sum(1 for q in questions if q["source"] == "web")
-        print(f"   ✅ {from_web} questions from the web, {len(questions) - from_web} AI-written")
         return questions
 
     @staticmethod
@@ -245,11 +268,16 @@ Respond with the JSON array only:"""
         """Validates an LLM question; it only counts as a web question if its text is on the page"""
         if not isinstance(raw, dict):
             return None
-        stem = str(raw.get("question") or "").strip()
-        passage = str(raw.get("passage") or "").strip()
-        options = [str(o).strip() for o in raw.get("options") or []]
+        # Math arrives as LaTeX; the plain versions are what games draw and checks compare
+        raw_stem = str(raw.get("question") or "").strip()
+        raw_passage = str(raw.get("passage") or "").strip()
+        raw_options = [str(o).strip() for o in raw.get("options") or []]
+        raw_explanation = str(raw.get("explanation") or "").strip()
+        stem, passage, options = to_plain(raw_stem), to_plain(raw_passage), [to_plain(o) for o in raw_options]
         correct = raw.get("correctAnswer")
         if not stem or not 2 <= len(options) <= 5 or not isinstance(correct, int) or not 0 <= correct < len(options):
+            return None
+        if not answer_value_matches(options, correct, raw.get("answerValue")):
             return None
 
         source, source_url, source_name = "ai", None, "AI-written practice question"
@@ -269,9 +297,13 @@ Respond with the JSON array only:"""
             "correctAnswer": correct,
             "topic": str(raw.get("topic") or "General"),
             "difficulty": difficulty if difficulty in ("easy", "medium", "hard") else "medium",
-            "explanation": str(raw.get("explanation") or ""),
+            "explanation": to_plain(raw_explanation),
             "passage": passage,
             "stem": stem,
+            "questionHtml": html_if_math(raw_stem),
+            "passageHtml": html_if_math(raw_passage),
+            "optionsHtml": [html_if_math(o) or "" for o in raw_options] if any(map(has_math, raw_options)) else None,
+            "explanationHtml": html_if_math(raw_explanation),
             "exam": exam,
             "section": section,
             "source": source,
@@ -311,16 +343,14 @@ Respond in JSON:
 """
         
         try:
-            response = get_llm_client().chat.completions.create(
-                model=LLM_MODEL,
-                messages=[
-                    {"role": "system", "content": "You are a supportive SAT and GRE learning coach."},
-                    {"role": "user", "content": prompt}
-                ],
+            content = complete(
+                "You are a supportive SAT and GRE learning coach.",
+                prompt,
+                effort="low",
                 temperature=0.8,
-                max_tokens=500
+                max_tokens=500,
             )
-            return extract_json(response.choices[0].message.content, '{', '}')
+            return extract_json(content, '{', '}')
         except Exception:
             return {
                 "focus_areas": analysis['weak_topics'][:3] if analysis['weak_topics'] else ["Keep practicing!"],

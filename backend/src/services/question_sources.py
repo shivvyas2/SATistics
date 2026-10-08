@@ -13,6 +13,9 @@ import re
 import time
 from typing import Dict, List, Optional
 
+from urllib.parse import urlsplit
+from urllib.robotparser import RobotFileParser
+
 import httpx
 from ddgs import DDGS
 
@@ -43,12 +46,10 @@ QUICK_SKILLS = {"Words in Context", "Boundaries", "Form, Structure, and Sense", 
 QUICK_MAX_CHARS = {"quant": 220, "verbal": 420}
 QUICK_MAX_OPTION_CHARS = 60
 
-BROWSER_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
-    )
-}
+# Practice pages are fetched under an honest name, so site owners can see who reads them
+# and opt out in robots.txt; the URL explains the bot
+BOT_NAME = "SATisticsBot"
+BOT_HEADERS = {"User-Agent": f"{BOT_NAME}/1.0 (+https://www.satistic.tech/credits#bot)"}
 
 
 def section_label(exam: str, section: str) -> str:
@@ -195,6 +196,28 @@ class CollegeBoardSource:
         questions = [q for q in results if q and (pace != "quick" or is_quick_question(q))]
         return _balance_difficulty(questions, limit)
 
+    @classmethod
+    async def examples(cls, section: str, skill: str, difficulty: str, count: int = 3) -> List[Dict]:
+        """A few real questions of one skill and difficulty, to show the question writer; empty if unreachable"""
+        code = next(c for c, d in cls.DIFFICULTY_CODES.items() if d == difficulty)
+        try:
+            async with httpx.AsyncClient(timeout=10) as client:
+                index = await cls._get_index(client, section)
+                same_skill = [q for q in index if (q.get("skill_desc") or "").strip().lower() == skill.lower()]
+                pool = [q for q in same_skill if q.get("difficulty") == code] or same_skill
+                candidates = random.sample(pool, min(len(pool), count * 3))
+
+                async def fetch_one(entry: Dict) -> Optional[Dict]:
+                    response = await client.post(f"{cls.BASE_URL}/get-question", json={"external_id": entry["external_id"]})
+                    response.raise_for_status()
+                    return cls._normalize(entry, response.json(), section)
+
+                results = await asyncio.gather(*(fetch_one(e) for e in candidates), return_exceptions=True)
+        except Exception as e:
+            print(f"   ⚠️  No College Board examples for {skill}: {e}")
+            return []
+        return [q for q in results if isinstance(q, dict)][:count]
+
 
 def is_quick_question(question: Dict) -> bool:
     """Short enough to read and answer while a fast game keeps moving"""
@@ -220,6 +243,8 @@ class WebQuestionSource:
 
     MAX_PAGE_CHARS = 9000
     MAX_PAGES = 4
+    # robots.txt rules per site, kept for the life of the process
+    _robots: Dict[str, RobotFileParser] = {}
 
     @staticmethod
     def search(query: str, max_results: int = 6, max_retries: int = 3) -> List[Dict]:
@@ -237,7 +262,33 @@ class WebQuestionSource:
         return []
 
     @classmethod
+    async def _allowed(cls, client: httpx.AsyncClient, url: str) -> bool:
+        """Whether the site's robots.txt lets this bot read the page; unreachable rules count as no"""
+        parts = urlsplit(url)
+        root = f"{parts.scheme}://{parts.netloc}"
+        rules = cls._robots.get(root)
+        if rules is None:
+            rules = RobotFileParser()
+            try:
+                response = await client.get(f"{root}/robots.txt")
+                if response.status_code in (401, 403) or response.status_code >= 500:
+                    rules.disallow_all = True
+                elif response.status_code >= 400:
+                    rules.allow_all = True
+                else:
+                    rules.parse(response.text.splitlines())
+            except httpx.HTTPError:
+                rules.disallow_all = True
+            if len(cls._robots) > 500:
+                cls._robots.clear()
+            cls._robots[root] = rules
+        return rules.can_fetch(BOT_NAME, url)
+
+    @classmethod
     async def _read_page(cls, client: httpx.AsyncClient, url: str) -> Optional[Dict]:
+        if not await cls._allowed(client, url):
+            print(f"   🚫 robots.txt asks bots not to read {url}")
+            return None
         try:
             response = await client.get(url)
             if response.status_code != 200 or "html" not in response.headers.get("content-type", ""):
@@ -267,7 +318,7 @@ class WebQuestionSource:
                 if url and url not in urls and not url.lower().endswith(".pdf"):
                     urls.append(url)
 
-        async with httpx.AsyncClient(timeout=12, follow_redirects=True, headers=BROWSER_HEADERS) as client:
+        async with httpx.AsyncClient(timeout=12, follow_redirects=True, headers=BOT_HEADERS) as client:
             pages = await asyncio.gather(*(cls._read_page(client, url) for url in urls[:8]))
 
         found = [p for p in pages if p][: cls.MAX_PAGES]

@@ -1,3 +1,5 @@
+import type { SATQuestion as ReviewQuestion } from '@/lib/api/questions'
+
 export interface SATQuestion {
   id: number
   question: string
@@ -26,6 +28,9 @@ export interface QuestionAttempt {
   difficulty: string
   isCorrect: boolean
   timeSpent: number
+  // The question as shown and the option picked (null when time ran out), for the review
+  question?: ReviewQuestion
+  selected?: number | null
 }
 
 export interface GameAnalytics {

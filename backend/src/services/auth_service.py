@@ -4,8 +4,9 @@ Authentication service - handles Supabase authentication
 
 from supabase import Client
 from src.utils.database import Database
-from src.models.schemas import UserSignup, UserLogin
+from src.models.schemas import TERMS_VERSION, UserSignup, UserLogin
 from typing import Optional, Dict
+from datetime import datetime, timezone
 
 class AuthService:
     def __init__(self, db: Client):
@@ -24,6 +25,12 @@ class AuthService:
             response = self.db.auth.sign_up({
                 "email": user_data.email,
                 "password": user_data.password,
+                # Kept on the account as the record of consent
+                "options": {"data": {
+                    "accepted_terms_version": TERMS_VERSION,
+                    "confirmed_age_13_plus": True,
+                    "accepted_terms_at": datetime.now(timezone.utc).isoformat(),
+                }},
             })
             
             if response.user:

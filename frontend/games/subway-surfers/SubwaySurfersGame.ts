@@ -731,6 +731,8 @@ export class SubwaySurfersGame extends BaseGame {
       difficulty: question.difficulty,
       isCorrect,
       timeSpent,
+      question,
+      selected,
     })
     this.review.push({ question, selected, isCorrect, timeSpent })
     return isCorrect

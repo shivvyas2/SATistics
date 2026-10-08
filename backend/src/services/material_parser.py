@@ -13,7 +13,10 @@ import io
 import re
 from typing import Dict, List, Optional
 
+from src.services.answer_check import answer_value_matches, verify_answer_keys
 from src.services.question_sources import normalize_text, section_label
+from src.services.question_writer import arrange_options, common_problem
+from src.utils.math_text import to_plain
 
 LETTERS = "ABCDE"
 MAX_TEXT_CHARS = 400_000
@@ -117,19 +120,24 @@ async def questions_from_llm(text: str, exam: str, section: str, generate: bool)
     generate is set. Returns nothing if no LLM is configured.
     """
     # Imported here so parsing still works where the agent's dependencies aren't set up
-    from src.services.agent import LLM_MODEL, extract_json, get_llm_client
+    from src.services.agent import ANSWER_VALUE_REQUIREMENT, EXPLANATION_REQUIREMENT, MATH_FORMAT_REQUIREMENT, extract_json
+    from src.services.llm import complete, llm_available
 
-    client = get_llm_client()
-    if not client:
+    if not llm_available():
         return []
 
     label = section_label(exam, section)
-    generate_task = (
-        f"3. Then write up to 8 original {label} multiple-choice questions that test what this material teaches. "
-        'Set "fromMaterial" to false for these.'
-        if generate
-        else "3. Do not write any questions of your own."
-    )
+    if generate:
+        generate_task = (
+            f"3. Then write up to 8 original {label} multiple-choice questions that test what this material teaches. "
+            'Set "fromMaterial" to false for these.'
+            f"\n   For these, {EXPLANATION_REQUIREMENT.lstrip('- ')}"
+            f"\n   {MATH_FORMAT_REQUIREMENT.lstrip('- ')}"
+        )
+        if section == "quant":
+            generate_task += f"\n   For these, {ANSWER_VALUE_REQUIREMENT.lstrip('- ')}"
+    else:
+        generate_task = "3. Do not write any questions of your own."
     chunks = [text[i : i + LLM_CHUNK_CHARS] for i in range(0, len(text), LLM_CHUNK_CHARS)][:MAX_LLM_CHUNKS]
 
     async def read_chunk(chunk: str) -> List[Dict]:
@@ -153,6 +161,7 @@ FORMAT (JSON array):
     "topic": "Algebra",
     "difficulty": "easy",
     "explanation": "Subtract 5, then divide by 2.",
+    "answerValue": "5",
     "fromMaterial": true
   }}
 ]
@@ -162,17 +171,14 @@ MATERIAL:
 
 Respond with the JSON array only:"""
         try:
-            response = await asyncio.to_thread(
-                client.chat.completions.create,
-                model=LLM_MODEL,
-                messages=[
-                    {"role": "system", "content": "You turn study material into practice questions. Always respond with valid JSON."},
-                    {"role": "user", "content": prompt},
-                ],
+            content = await asyncio.to_thread(
+                complete,
+                "You turn study material into practice questions. Always respond with valid JSON.",
+                prompt,
+                effort="medium",
                 temperature=0.3,
-                max_tokens=12000,
             )
-            raw_questions = extract_json(response.choices[0].message.content, "[", "]")
+            raw_questions = extract_json(content, "[", "]")
         except Exception as e:
             print(f"Error reading material with LLM: {e}")
             return []
@@ -186,15 +192,20 @@ Respond with the JSON array only:"""
         return questions
 
     results = await asyncio.gather(*(read_chunk(chunk) for chunk in chunks))
-    return [question for chunk_questions in results for question in chunk_questions]
+    questions = [question for chunk_questions in results for question in chunk_questions]
+    # Extracted questions keep the material's own key; only AI-written keys need checking
+    extracted = [q for q in questions if q["origin"] == "extracted"]
+    generated = [arrange_options(q) for q in questions if q["origin"] == "generated" and not common_problem(q)]
+    return extracted + await verify_answer_keys(generated, label)
 
 
 def _normalize_llm_question(raw: Dict, chunk_text: str) -> Optional[Dict]:
     """Validates an LLM question; it only counts as extracted if its text is in the material"""
     if not isinstance(raw, dict):
         return None
-    stem = str(raw.get("question") or "").strip()
-    options = [str(o).strip() for o in raw.get("options") or []]
+    # Uploaded questions are stored and edited as text, so any LaTeX becomes readable plain math
+    stem = to_plain(str(raw.get("question") or "").strip())
+    options = [to_plain(str(o).strip()) for o in raw.get("options") or []]
     if not stem or not 2 <= len(options) <= 5:
         return None
     correct = raw.get("correctAnswer")
@@ -202,18 +213,18 @@ def _normalize_llm_question(raw: Dict, chunk_text: str) -> Optional[Dict]:
         correct = None
 
     is_extracted = bool(raw.get("fromMaterial")) and normalize_text(stem)[:50] in chunk_text
-    # A generated question is useless without its answer
-    if not is_extracted and correct is None:
+    # A generated question is useless without its answer, or with one its own math contradicts
+    if not is_extracted and (correct is None or not answer_value_matches(options, correct, raw.get("answerValue"))):
         return None
     difficulty = str(raw.get("difficulty") or "medium").lower()
     return {
         "question": stem,
-        "passage": str(raw.get("passage") or "").strip(),
+        "passage": to_plain(str(raw.get("passage") or "").strip()),
         "options": options,
         "correctAnswer": correct,
         "topic": str(raw.get("topic") or "").strip(),
         "difficulty": difficulty if difficulty in ("easy", "medium", "hard") else "medium",
-        "explanation": str(raw.get("explanation") or "").strip(),
+        "explanation": to_plain(str(raw.get("explanation") or "").strip()),
         "origin": "extracted" if is_extracted else "generated",
     }
 

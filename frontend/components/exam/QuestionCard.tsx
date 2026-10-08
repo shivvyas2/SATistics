@@ -16,6 +16,20 @@ export function sourceLabel(question: SATQuestion): string {
   return SOURCE_LABELS[question.source || ''] || ''
 }
 
+// The source label, linking to the page the question came from when there is one
+export function SourceLabel({ question, className }: { question: SATQuestion; className: string }) {
+  const label = sourceLabel(question)
+  if (!label) return null
+  if (!question.sourceUrl) return <p className={className}>{label}</p>
+  return (
+    <p className={className}>
+      <a href={question.sourceUrl} target="_blank" rel="noopener noreferrer" className="underline underline-offset-2 hover:text-white">
+        {label}
+      </a>
+    </p>
+  )
+}
+
 // An answer choice: a button when it can be clicked, plain text when the game world does the picking
 function Choice({ onClick, children, ...props }: { onClick?: () => void; children: React.ReactNode; className: string; style?: React.CSSProperties; 'aria-pressed'?: boolean }) {
   if (!onClick) {

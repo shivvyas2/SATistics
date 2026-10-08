@@ -3,6 +3,7 @@
  * Handles all API calls to the FastAPI backend
  */
 
+import type { RunnerReviewItem } from '@/games/subway-surfers/types/game'
 import type { Profile } from '@/lib/profile'
 import type { CustomQuestion, Material } from '@/lib/materials'
 
@@ -104,10 +105,11 @@ class ApiClient {
   }
 
   // Authentication endpoints
-  async signup(email: string, password: string): Promise<{ success: boolean; error?: string; access_token?: string; user?: any }> {
+  // acceptedTerms: the person confirmed they're 13 or older and agreed to the Terms and Privacy Policy
+  async signup(email: string, password: string, acceptedTerms: boolean): Promise<{ success: boolean; error?: string; access_token?: string; user?: any }> {
     const response = await this.request<{ success: boolean; error?: string; access_token?: string; user?: any }>('/api/auth/signup', {
       method: 'POST',
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email, password, accepted_terms: acceptedTerms }),
     })
     
     // If access token is returned (email confirmation disabled), store it
@@ -176,6 +178,23 @@ class ApiClient {
     } catch (error) {
       return []
     }
+  }
+
+  // Everything stored about the signed-in user, as JSON
+  async exportMyData(): Promise<unknown> {
+    return this.request('/api/profile/export')
+  }
+
+  // Deletes the account and all its data; there is no undo
+  async deleteAccount(): Promise<void> {
+    await this.request('/api/profile', { method: 'DELETE' })
+    this.setToken(null)
+  }
+
+  // Every question of one saved game with the answer picked, for the answer review
+  async getSessionReview(sessionId: string): Promise<RunnerReviewItem[]> {
+    const result = await this.request<{ items: RunnerReviewItem[] }>(`/api/stats/sessions/${encodeURIComponent(sessionId)}/review`)
+    return result.items ?? []
   }
 
   // Question endpoints

@@ -345,7 +345,7 @@ export class ZombieGame {
 
     const isCorrect = selected === question.correctAnswer
     const timeSpent = Math.round(this.questionElapsed * 1000)
-    this.attempts.push({ questionId: question.id, topic: question.topic, difficulty: question.difficulty, isCorrect, timeSpent })
+    this.attempts.push({ questionId: question.id, topic: question.topic, difficulty: question.difficulty, isCorrect, timeSpent, question, selected })
     this.review.push({ question, selected, isCorrect, timeSpent })
 
     let points = 0

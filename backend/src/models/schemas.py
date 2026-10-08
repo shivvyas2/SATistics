@@ -3,13 +3,24 @@ Pydantic schemas for request/response validation
 """
 
 from pydantic import BaseModel, EmailStr, Field, model_validator
-from typing import List, Literal, Optional, Dict
+from typing import Any, List, Literal, Optional, Dict
 from datetime import date, datetime
 
 # Authentication Schemas
+# Date of the Terms and Privacy Policy a new account agrees to; change it when either changes
+TERMS_VERSION = "2026-10-08"
+
 class UserSignup(BaseModel):
     email: EmailStr
     password: str
+    # The person confirmed they are 13 or older and agreed to the Terms and Privacy Policy
+    accepted_terms: bool = False
+
+    @model_validator(mode="after")
+    def require_terms(self):
+        if not self.accepted_terms:
+            raise ValueError("Confirm you are 13 or older and agree to the Terms and Privacy Policy to create an account.")
+        return self
 
 class UserLogin(BaseModel):
     email: EmailStr
@@ -27,6 +38,9 @@ class QuestionAttempt(BaseModel):
     difficulty: str
     isCorrect: bool
     timeSpent: int
+    # The question as shown and the option picked (None when time ran out), for reviewing the game later
+    question: Optional[Dict[str, Any]] = None
+    selected: Optional[int] = None
 
 class TopicPerformance(BaseModel):
     correct: int
@@ -94,6 +108,8 @@ class Question(BaseModel):
     passageHtml: Optional[str] = None
     optionsHtml: Optional[List[str]] = None
     explanationHtml: Optional[str] = None
+    # Why each option is wrong, in option order ("" for the correct one), when the source has it
+    optionExplanations: Optional[List[str]] = None
     source: Optional[str] = None  # official, web, or ai
     sourceName: Optional[str] = None
     sourceUrl: Optional[str] = None

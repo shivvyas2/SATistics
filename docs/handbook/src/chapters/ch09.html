@@ -183,8 +183,8 @@ frontend/public/games/squid-game/audio/      Cocoma.mp3, Redlight.mp3 (GreenLigh
   earns 1.5 seconds and steps difficulty down. <code>beginQuestion</code> picks the unused question
   closest to the current difficulty, and returns a missed question after one other. The run speed
   is computed in the constructor so a player at <code>EXPECTED_ACCURACY</code> (70%) reaches the
-  finish line about when the questions run out. Lives are
-  <code>Math.max(3, Math.ceil(totalQuestions / 3))</code>. Outcomes are <code>victory</code> (crossed
+  finish line about when the questions run out. Every run starts with
+  <code>STARTING_LIVES</code>, five lives. Outcomes are <code>victory</code> (crossed
   the finish, plus <code>FINISH_BONUS</code> 500 and 100 per life), <code>eliminated</code> and
   <code>short</code> (out of questions first). Twenty-four <code>NPC_COUNT</code> contestants are
   cloned skinned meshes that occasionally fail to stop. The calculator opens by default for quant.

@@ -28,6 +28,10 @@ export interface SATQuestion {
   passageHtml?: string
   optionsHtml?: string[]
   explanationHtml?: string
+  // Why each option is wrong, in option order ("" for the correct one), when the source has it
+  optionExplanations?: string[]
+  // Set instead of the text on saved reviews of official questions, which aren't stored
+  optionCount?: number
   // official, web, ai, or practice
   source?: string
   sourceName?: string

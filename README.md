@@ -35,7 +35,7 @@ It started at NYU Hacks as a weekend project and has grown into a complete prep 
 | Games | Three.js, HTML canvas, Yuka |
 | Backend | FastAPI (Python), Pydantic |
 | Database and auth | Supabase (Postgres, Auth, Row Level Security) |
-| AI | OpenRouter (default model Claude Haiku 4.5) |
+| AI | Anthropic API (Claude Opus 5.5 writes questions, Claude Sonnet 5.5 checks answer keys), or OpenRouter (default model Claude Haiku 4.5) |
 | Questions and search | College Board question bank (SAT), DuckDuckGo (questions and videos), optional YouTube Data API and Serper |
 | Hosting | Vercel, two projects: frontend and backend |
 
@@ -77,7 +77,7 @@ The browser never talks to Supabase directly. It signs in through the backend, k
 │   ├── src/api/              Routers: auth, profile, questions, learn, games, stats, materials, health
 │   ├── src/services/         Question agent, question sources, videos, materials, auth, scores
 │   ├── src/models/           Pydantic schemas
-│   └── database/             SQL: reset.sql, then add_materials.sql, create the schema
+│   └── database/             SQL: reset.sql, add_materials.sql, add_review_and_pool.sql create the schema
 ├── docs/
 │   ├── handbook/             The engineering handbook (HTML, PDF, EPUB) and its sources
 │   └── images/               Screenshots
@@ -88,7 +88,7 @@ The browser never talks to Supabase directly. It signs in through the backend, k
 
 You need Node.js 18 or newer, Python 3.9 or newer, and a free Supabase project.
 
-**1. Database.** In the Supabase SQL editor of a *new* project, run [`backend/database/reset.sql`](backend/database/reset.sql), then [`backend/database/add_materials.sql`](backend/database/add_materials.sql). Together they create every table, trigger and policy. `reset.sql` also drops existing tables and deletes all auth users, so never run it against a project with real users.
+**1. Database.** In the Supabase SQL editor of a *new* project, run [`backend/database/reset.sql`](backend/database/reset.sql), then [`backend/database/add_materials.sql`](backend/database/add_materials.sql), then [`backend/database/add_review_and_pool.sql`](backend/database/add_review_and_pool.sql). Together they create every table, trigger and policy. On a project that already has data, run only `add_review_and_pool.sql`: it is additive, and it turns on saved answer reviews and the shared question pool. `reset.sql` also drops existing tables and deletes all auth users, so never run it against a project with real users.
 
 **2. Backend.**
 
@@ -118,7 +118,7 @@ Open http://localhost:3000, create an account, and play.
 | Variable | Needed for | Without it |
 | --- | --- | --- |
 | `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY` | Accounts, profiles, scores, stats | The server starts and `/api/health/` works, but sign-in and every database route fail |
-| `OPENROUTER_API_KEY` | AI-written, personalized questions and parsing uploaded material | SAT questions still come from the College Board bank; GRE questions use the built-in offline bank |
+| `ANTHROPIC_API_KEY` or `OPENROUTER_API_KEY` | AI-written, personalized questions and parsing uploaded material. The Anthropic key wins when both are set | SAT questions still come from the College Board bank; GRE questions use the built-in offline bank |
 | `YOUTUBE_API_KEY` or `SERPER_API_KEY` | Reliable lesson videos | Falls back to DuckDuckGo, which rate limits |
 | `ALLOWED_ORIGINS` | Calling the API from a deployed frontend | Only localhost may call it |
 | `NEXT_PUBLIC_API_URL` (frontend) | Pointing the site at your backend | Defaults to `http://localhost:8000` |
@@ -150,6 +150,8 @@ Created by [Shiv Vyas](https://www.shivvyas.com) ([LinkedIn](https://www.linkedi
 
 SAT is a trademark of the College Board and GRE is a trademark of ETS. Neither is affiliated with or endorses this project.
 
+The games use 3D models from Sketchfab under Creative Commons licences. Each model's credit is in the `license.txt` beside it and on the site's `/credits` page (data in [`frontend/lib/credits.ts`](frontend/lib/credits.ts)).
+
 ## License
 
-[MIT](LICENSE)
+The code is [MIT](LICENSE). Third-party assets keep their own licences and are not covered by it: the 3D models under `frontend/public/games/` and `frontend/games/squid-game/assets/` (see each `license.txt`). One of them, the Red Light, Green Light game room, is CC-BY-NC-SA-4.0, so it can't be used commercially and changes to it must stay under the same licence.

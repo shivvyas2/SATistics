@@ -9,6 +9,7 @@ import { daysUntil } from '@/lib/profile'
 import { EXAMS } from '@/lib/exam'
 import { Logo } from '@/components/brand/Logo'
 import { Avatar } from '@/components/profile/ProfileFields'
+import { LegalNotice } from '@/components/LegalNotice'
 import { BookIcon, ChartIcon, CloseIcon, GamepadIcon, HomeIcon, LogoutIcon, ClockIcon, MenuIcon, UploadIcon, UserIcon } from '@/components/brand/Icons'
 
 interface DashboardLayoutProps {
@@ -128,7 +129,10 @@ export function DashboardLayout({ children, aside, asideWide = false }: Dashboar
 
         <aside className="hidden w-64 shrink-0 border-r-2 border-ink/10 p-6 lg:block">{sidebar}</aside>
 
-        <main className="min-w-0 flex-1 lg:overflow-y-auto">{children}</main>
+        <main className="min-w-0 flex-1 lg:overflow-y-auto">
+          {children}
+          <LegalNotice className="px-6 pb-6 pt-2" />
+        </main>
 
         {aside && (
           <aside

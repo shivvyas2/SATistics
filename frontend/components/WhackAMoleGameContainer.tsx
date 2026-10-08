@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import { SATQuestion, WhackAMoleGameState, GameAnalytics } from '@/games/whackamole/types'
 import type { WhackAMoleGame } from '@/games/whackamole/WhackAMoleGame'
 import { GameOverModal } from './GameOverModal'
+import { ReviewList, reviewFromAttempts } from './exam/ReviewList'
 import { fetchQuestionsWithCache } from '@/lib/api/questions'
 import { satQuestions } from '@/games/whackamole/questions'
 import type { SATQuestion as ExamQuestion } from '@/lib/api/questions'
@@ -248,7 +249,11 @@ export function WhackAMoleGameContainer({ gameId }: WhackAMoleGameContainerProps
 
       {paused && !gameOver && <PauseMenu gameId="whackamole" onResume={() => setPaused(false)} />}
 
-      {gameOver && analytics && <GameOverModal analytics={analytics} onRestart={handleRestart} />}
+      {gameOver && analytics && (
+        <GameOverModal analytics={analytics} onRestart={handleRestart}>
+          <ReviewList review={reviewFromAttempts(analytics.questionAttempts)} />
+        </GameOverModal>
+      )}
     </div>
   )
 }

@@ -1,5 +1,6 @@
 import { Logo } from '@/components/brand/Logo'
 import { GameCover } from '@/components/brand/GameCover'
+import { LegalNotice } from '@/components/LegalNotice'
 
 interface AuthShellProps {
   children: React.ReactNode
@@ -44,6 +45,7 @@ export function AuthShell({ children, title, caption }: AuthShellProps) {
           <Logo />
         </div>
         <div className="mx-auto flex w-full max-w-[440px] flex-1 flex-col justify-center py-10">{children}</div>
+        <LegalNotice className="mx-auto w-full max-w-[440px]" />
       </main>
     </div>
   )

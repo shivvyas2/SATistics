@@ -8,6 +8,8 @@ import { PlayIcon } from '@/components/brand/Icons'
 import { apiClient } from '@/lib/api/client'
 import { gameTitle } from '@/lib/gameMeta'
 import { GameSession, recordsByGame, timeAgo, useRecentSessions } from '@/lib/sessions'
+import { ReviewList } from '@/components/exam/ReviewList'
+import type { RunnerReviewItem } from '@/games/subway-surfers/types/game'
 
 interface UserStats {
   total_games_played: number
@@ -47,6 +49,44 @@ function AccuracyTrend({ sessions }: { sessions: GameSession[] }) {
         })}
       </ol>
     </section>
+  )
+}
+
+// The answers and explanations of one past game, loaded when opened
+function SessionReview({ sessionId }: { sessionId: string }) {
+  const [open, setOpen] = useState(false)
+  const [items, setItems] = useState<RunnerReviewItem[] | null>(null)
+  const [failed, setFailed] = useState(false)
+
+  const toggle = () => {
+    setOpen((current) => !current)
+    if (items === null && !failed) {
+      apiClient
+        .getSessionReview(sessionId)
+        .then(setItems)
+        .catch(() => setFailed(true))
+    }
+  }
+
+  return (
+    <div className="mt-2">
+      <button onClick={toggle} aria-expanded={open} className="text-sm font-bold text-cobalt hover:underline">
+        {open ? 'Hide answers' : 'Review answers and explanations'}
+      </button>
+      {open && (
+        <div className="mt-3">
+          {failed ? (
+            <p className="text-sm text-ink/65">Couldn&rsquo;t load this game&rsquo;s questions. Try again in a moment.</p>
+          ) : items === null ? (
+            <p className="text-sm text-ink/65">Loading questions…</p>
+          ) : items.length === 0 ? (
+            <p className="text-sm text-ink/65">Questions weren&rsquo;t saved for this game. Games played from now on keep them.</p>
+          ) : (
+            <ReviewList review={items} variant="light" />
+          )}
+        </div>
+      )}
+    </div>
   )
 }
 
@@ -179,15 +219,18 @@ export default function StatsPage() {
                   {sessions.slice(0, 15).map((session) => {
                     const accuracy = Math.round(session.accuracy * 100)
                     return (
-                      <li key={session.id} className="flex items-center gap-4 px-4 py-3">
-                        <span className="min-w-0 flex-1">
-                          <span className="block truncate font-bold">{gameTitle(session.game_id, session.game_id)}</span>
-                          <span className="text-sm text-ink/60">
-                            {session.correct_answers} right, {session.wrong_answers} wrong · {timeAgo(session.created_at)}
+                      <li key={session.id} className="px-4 py-3">
+                        <div className="flex items-center gap-4">
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-bold">{gameTitle(session.game_id, session.game_id)}</span>
+                            <span className="text-sm text-ink/60">
+                              {session.correct_answers} right, {session.wrong_answers} wrong · {timeAgo(session.created_at)}
+                            </span>
                           </span>
-                        </span>
-                        <span className={`chip tabular-nums ${accuracy >= 80 ? 'bg-lime' : accuracy >= 50 ? 'bg-white' : 'bg-coral-soft'}`}>{accuracy}%</span>
-                        <span className="w-20 text-right font-extrabold tabular-nums">{session.score.toLocaleString()}</span>
+                          <span className={`chip tabular-nums ${accuracy >= 80 ? 'bg-lime' : accuracy >= 50 ? 'bg-white' : 'bg-coral-soft'}`}>{accuracy}%</span>
+                          <span className="w-20 text-right font-extrabold tabular-nums">{session.score.toLocaleString()}</span>
+                        </div>
+                        <SessionReview sessionId={session.id} />
                       </li>
                     )
                   })}

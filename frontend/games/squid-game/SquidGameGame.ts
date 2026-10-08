@@ -101,6 +101,8 @@ const SUIT_TINTS = [0xffffff, 0xffffff, 0xd9f2e4, 0xe6e0ff, 0xfff0d6, 0xcfe8ff]
 const DIFFICULTIES: Difficulty[] = ['easy', 'medium', 'hard']
 const DIFFICULTY_POINTS: Record<Difficulty, number> = { easy: 100, medium: 150, hard: 200 }
 const FINISH_BONUS = 500
+// Every run starts with the same number of lives, however many questions it has
+const STARTING_LIVES = 5
 // Share of a question's points kept for each hint taken
 const HINT_POINTS_FACTOR = 0.6
 const HUD_UPDATE_INTERVAL_MS = 100
@@ -196,7 +198,7 @@ export class SquidGameGame extends BaseGame {
     super(width, height, canvas)
     this.pool = [...questions]
     this.totalQuestions = Math.min(config.questionCount, this.pool.length)
-    this.maxLives = Math.max(3, Math.ceil(this.totalQuestions / 3))
+    this.maxLives = STARTING_LIVES
     this.lives = this.maxLives
 
     // Pace the run so a player answering at the expected accuracy reaches the finish
@@ -693,7 +695,7 @@ export class SquidGameGame extends BaseGame {
 
     const isCorrect = selected === question.correctAnswer
     const timeSpent = Math.round(this.questionElapsed * 1000)
-    this.attempts.push({ questionId: question.id, topic: question.topic, difficulty: question.difficulty, isCorrect, timeSpent })
+    this.attempts.push({ questionId: question.id, topic: question.topic, difficulty: question.difficulty, isCorrect, timeSpent, question, selected })
     this.review.push({ question, selected, isCorrect, timeSpent })
 
     let points = 0

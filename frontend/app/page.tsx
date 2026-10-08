@@ -1,4 +1,5 @@
 import Link from 'next/link'
+import { LegalNotice } from '@/components/LegalNotice'
 import { Logo, LogoMark, BubbleRow, Pencil } from '@/components/brand/Logo'
 import { ArrowUpRight } from '@/components/brand/Icons'
 import { GameCover } from '@/components/brand/GameCover'
@@ -228,6 +229,7 @@ export default function LandingPage() {
             </Link>
           </nav>
         </footer>
+        <LegalNotice className="pb-6" />
       </div>
     </div>
   )

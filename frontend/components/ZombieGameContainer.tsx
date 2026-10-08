@@ -13,7 +13,7 @@ import { ArcadeFrame, ArcadeStartScreen, ArcadeTopBar } from './arcade/ArcadeFra
 import { Calculator } from './exam/Calculator'
 import { HintButton } from './exam/HintButton'
 import { PauseMenu } from './exam/PauseMenu'
-import { QuestionCard, sourceLabel } from './exam/QuestionCard'
+import { QuestionCard, SourceLabel } from './exam/QuestionCard'
 import { ReviewList } from './exam/ReviewList'
 import { useQuestionHints } from './exam/useQuestionHints'
 import { useViewShift } from './exam/useViewShift'
@@ -231,9 +231,7 @@ export default function ZombieGameContainer() {
                       <HintButton hintsShown={hints.length} disabled={!canHint} onClick={handleHint} />
                     </div>
                   )}
-                  {sourceLabel(currentQuestion) && (
-                    <p className="mt-1.5 truncate text-xs text-gray-300">{sourceLabel(currentQuestion)}</p>
-                  )}
+                  <SourceLabel question={currentQuestion} className="mt-1.5 truncate text-xs text-gray-300" />
                 </div>
               </div>
             )}

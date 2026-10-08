@@ -609,7 +609,7 @@ export class PacManGame extends BaseGame {
 
     const isCorrect = selected === question.correctAnswer
     const timeSpent = Math.round(this.questionTimer)
-    this.attempts.push({ questionId: question.id, topic: question.topic, difficulty: question.difficulty, isCorrect, timeSpent })
+    this.attempts.push({ questionId: question.id, topic: question.topic, difficulty: question.difficulty, isCorrect, timeSpent, question, selected })
     this.review.push({ question, selected, isCorrect, timeSpent })
 
     if (isCorrect) {

@@ -20,6 +20,7 @@ function SignupForm() {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
+  const [acceptedTerms, setAcceptedTerms] = useState(false)
   const [profile, setProfile] = useState<Profile>({
     ...EMPTY_PROFILE,
     exam: searchParams.get('exam') === 'gre' ? 'gre' : 'sat',
@@ -32,6 +33,7 @@ function SignupForm() {
     if (step === 0) {
       if (password.length < 6) return 'Passwords need at least 6 characters.'
       if (password !== confirmPassword) return 'The two passwords don’t match.'
+      if (!acceptedTerms) return 'Confirm you’re 13 or older and agree to the Terms and Privacy Policy.'
     }
     if (step >= 1) return validateProfile(profile)
     return null
@@ -40,7 +42,7 @@ function SignupForm() {
   const createAccount = async () => {
     setLoading(true)
     try {
-      const response = await apiClient.signup(email, password)
+      const response = await apiClient.signup(email, password, acceptedTerms)
       if (!response.success) throw new Error(response.error || 'Signup failed. Try again.')
 
       clearAccountCache()
@@ -143,6 +145,20 @@ function SignupForm() {
             <Field label="Confirm password" htmlFor="confirmPassword">
               <input id="confirmPassword" type="password" autoComplete="new-password" value={confirmPassword} onChange={(e) => setConfirmPassword(e.target.value)} required className="field" />
             </Field>
+            <label className="flex items-start gap-3 text-sm">
+              <input
+                type="checkbox"
+                checked={acceptedTerms}
+                onChange={(e) => setAcceptedTerms(e.target.checked)}
+                required
+                className="mt-0.5 h-5 w-5 flex-none accent-ink"
+              />
+              <span>
+                I&rsquo;m 13 or older and I agree to the{' '}
+                <Link href="/terms" target="_blank" className="font-bold underline underline-offset-2">Terms and Conditions</Link> and{' '}
+                <Link href="/privacy" target="_blank" className="font-bold underline underline-offset-2">Privacy Policy</Link>.
+              </span>
+            </label>
           </>
         )}
         {step === 1 && <IdentityFields value={profile} onChange={setProfile} />}

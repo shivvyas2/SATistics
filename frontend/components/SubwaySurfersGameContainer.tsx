@@ -17,7 +17,7 @@ import { Calculator } from './exam/Calculator'
 import { GameIntro, GameLoading } from './exam/GameIntro'
 import { HintButton } from './exam/HintButton'
 import { PauseMenu } from './exam/PauseMenu'
-import { QuestionCard, sourceLabel } from './exam/QuestionCard'
+import { QuestionCard, SourceLabel } from './exam/QuestionCard'
 import { useQuestionHints } from './exam/useQuestionHints'
 import { useViewShift } from './exam/useViewShift'
 import { insightFor } from '@/lib/hints'
@@ -253,9 +253,7 @@ export function SubwaySurfersGameContainer() {
                       <HintButton hintsShown={hints.length} disabled={!canHint || hud.isDiving} onClick={handleHint} />
                     </div>
                   )}
-                  {sourceLabel(currentQuestion) && (
-                    <p className="text-xs text-gray-300 mt-1.5 truncate">{sourceLabel(currentQuestion)}</p>
-                  )}
+                  <SourceLabel question={currentQuestion} className="text-xs text-gray-300 mt-1.5 truncate" />
                 </div>
               </>
             ) : (

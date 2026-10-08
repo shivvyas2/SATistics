@@ -14,6 +14,8 @@ else:
 
 # OpenRouter API Key (optional - only needed for AI agent)
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY")
+# Anthropic API key (optional) - when set, Claude is called directly instead of through OpenRouter
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 # Don't raise error if not set - agent will handle it gracefully
 
 # Supabase configuration (uses same as main backend)

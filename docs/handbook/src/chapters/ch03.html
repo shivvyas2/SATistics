@@ -111,13 +111,17 @@ reset.sql                     drops and recreates game_sessions, question_attemp
                               user_stats, profiles, the set_updated_at() trigger
                               function, indexes and RLS policies; deletes every auth user
 add_materials.sql             materials and custom_questions, their indexes and RLS
+add_review_and_pool.sql       question_attempts.question, selected_answer and position for
+                              answer reviews; the question_pool table of checked AI questions
 add_profiles.sql              profiles only (already included in reset.sql)
 add_user_id_to_attempts.sql   adds question_attempts.user_id to an old schema.sql database
 schema.sql                    the original three tables, without user_id or profiles</pre>
 
 <p>
-  For a new project, run <code>reset.sql</code> and then <code>add_materials.sql</code>, in that
-  order. <code>reset.sql</code> is the complete current schema for the core tables, but it does not
+  For a new project, run <code>reset.sql</code>, then <code>add_materials.sql</code>, then
+  <code>add_review_and_pool.sql</code>, in that order. Without the last one, games still save, but
+  past games can't be reviewed from the statistics page and every AI-written question is paid for
+  again instead of reused. <code>reset.sql</code> is the complete current schema for the core tables, but it does not
   create the two tables behind "My material" uploads, and the materials pages fail with a missing
   table error until <code>add_materials.sql</code> has run. The other three files exist for
   databases created before <code>reset.sql</code> did; you do not need them on a fresh project.
@@ -133,7 +137,7 @@ never paste it into a SQL Editor tab without checking which project is selected.
 </div>
 
 <p>
-  Unlike <code>reset.sql</code>, <code>add_materials.sql</code> is additive and safe to run again: it uses
+  Unlike <code>reset.sql</code>, <code>add_materials.sql</code> and <code>add_review_and_pool.sql</code> are additive and safe to run again: it uses
   <code>CREATE TABLE IF NOT EXISTS</code> and <code>CREATE INDEX IF NOT EXISTS</code>, and drops each policy
   before creating it.
 </p>
