@@ -24,6 +24,7 @@ All notable changes to SATistics are recorded here. The format follows [Keep a C
 
 ### Changed
 - Red Light, Green Light always starts with 5 lives.
+- Red Light, Green Light is an enclosed hall: tall walls carrying one long painted sky-and-hills mural per side with no repeats, with its painted sky recolored sky blue and continued on the ceiling, and a higher chase camera that keeps the field centered.
 - Sessions renew themselves: login keeps a refresh token, the app refreshes shortly before the access token expires or after a 401, and tabs share one session. If a session can't be renewed, the app signs out and returns to sign-in with a notice instead of showing empty pages.
 - The web question finder identifies itself as SATisticsBot, obeys robots.txt, and links each question's source page.
 - Saved game reviews keep no College Board question text; official questions show the answers and link to the question bank.

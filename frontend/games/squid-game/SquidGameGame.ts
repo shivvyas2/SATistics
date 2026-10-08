@@ -3,6 +3,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { FBXLoader } from 'three/examples/jsm/loaders/FBXLoader.js'
 import { clone as cloneSkinned } from 'three/examples/jsm/utils/SkeletonUtils.js'
 import { BaseGame } from '../BaseGame'
+import { PAINTING_ASPECT, createWallPainting } from './wallPainting'
 import { SquidConfig, SquidFeedback, SquidHudState, SquidOutcome, SquidPhase, SquidReviewItem } from './types'
 import type { SATQuestion } from '@/lib/api/questions'
 import type { GameAnalytics, QuestionAttempt } from '@/games/whackamole/types'
@@ -63,6 +64,17 @@ const NPC_COUNT = 24
 const PLAYER_HEIGHT = 1.8
 const GUARD_HEIGHT = 2.0
 const DOLL_HEIGHT = 7
+// Tall enough that the arena feels like an enclosed hall
+const WALL_HEIGHT = 14
+// The painted sky's blue, shown until the wall painting has loaded
+const PAINTED_SKY = 0x3a9cff
+// Chase camera: how high and far behind the player it sits, and where it aims
+const CAMERA_HEIGHT = 5.6
+const CAMERA_BEHIND = 10.5
+const CAMERA_LOOK_HEIGHT = 1.4
+const CAMERA_LOOK_AHEAD = 22
+// Share of the player's sideways movement the camera follows
+const CAMERA_SIDE_FOLLOW = 0.75
 
 const FIRST_GREEN_SECONDS = 4
 const GREEN_SECONDS_CORRECT = 4
@@ -222,11 +234,12 @@ export class SquidGameGame extends BaseGame {
     this.renderer.shadowMap.type = THREE.PCFSoftShadowMap
 
     this.scene = new THREE.Scene()
-    this.scene.background = new THREE.Color(0xbfe3ff)
-    this.scene.fog = new THREE.Fog(0xbfe3ff, 90, 190)
+    // Replaced by the painted sky's own color once the wall painting is ready
+    this.scene.background = new THREE.Color(PAINTED_SKY)
+    this.scene.fog = new THREE.Fog(PAINTED_SKY, 110, 220)
 
     this.camera = new THREE.PerspectiveCamera(45, this.width / this.height, 0.1, 250)
-    this.camera.position.set(0, 4.2, START_Z + 9)
+    this.camera.position.set(0, CAMERA_HEIGHT, START_Z + CAMERA_BEHIND)
 
     this.scene.add(new THREE.HemisphereLight(0xffffff, 0xd9c49a, 2.0))
     const sun = new THREE.DirectionalLight(0xfff4e0, 2.4)
@@ -252,18 +265,48 @@ export class SquidGameGame extends BaseGame {
     ground.receiveShadow = true
     this.scene.add(ground)
 
-    const wallTexture = textureLoader.load(`${ASSETS}/squid-textures/textures/walls_baseColor.png`)
-    wallTexture.colorSpace = THREE.SRGBColorSpace
-    const wallMaterial = new THREE.MeshLambertMaterial({ map: wallTexture })
+    // The arena is an enclosed hall: walls painted with sky and hills, one long painting per
+    // side, under a ceiling in the same painted sky color
+    const walls: { material: THREE.MeshLambertMaterial; length: number; mirrored: boolean }[] = []
     const addWall = (width: number, x: number, z: number, isSide: boolean) => {
-      const wall = new THREE.Mesh(new THREE.BoxGeometry(width, 10, 2), wallMaterial)
-      wall.position.set(x, 5, z)
+      const material = new THREE.MeshLambertMaterial({ color: PAINTED_SKY })
+      const wall = new THREE.Mesh(new THREE.BoxGeometry(width, WALL_HEIGHT, 2), material)
+      wall.position.set(x, WALL_HEIGHT / 2, z)
+      wall.receiveShadow = true
       if (isSide) wall.rotation.y = Math.PI / 2
       this.scene.add(wall)
+      // The two side walls show the painting in opposite directions so they don't match
+      walls.push({ material, length: width, mirrored: x > 0 })
     }
     addWall(30, 0, -67, false)
     addWall(150, -16, 0, true)
     addWall(150, 16, 0, true)
+
+    const ceilingMaterial = new THREE.MeshBasicMaterial({ color: PAINTED_SKY })
+    const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(34, 150), ceilingMaterial)
+    ceiling.rotation.x = Math.PI / 2
+    ceiling.position.y = WALL_HEIGHT
+    this.scene.add(ceiling)
+
+    createWallPainting(`${ASSETS}/squid-textures/textures/walls_baseColor.png`, this.renderer.capabilities.maxTextureSize)
+      .then(({ texture, skyTop }) => {
+        if (this.disposed) return texture.dispose()
+        for (const wall of walls) {
+          const map = texture.clone()
+          // Side walls take the whole painting once; the short back wall shows a stretch of it
+          const share = Math.min(1, wall.length / WALL_HEIGHT / PAINTING_ASPECT)
+          map.wrapS = THREE.RepeatWrapping
+          map.repeat.x = wall.mirrored ? -share : share
+          map.offset.x = wall.mirrored ? 1 : share < 1 ? 0.3 : 0
+          wall.material.map = map
+          wall.material.color.set(0xffffff)
+          wall.material.needsUpdate = true
+        }
+        ceilingMaterial.color.copy(skyTop)
+        ;(this.scene.background as THREE.Color).copy(skyTop)
+        this.scene.fog?.color.copy(skyTop)
+      })
+      .catch((error) => console.warn('Squid game wall painting failed to load:', error))
 
     // Finish line
     const finishLine = new THREE.Mesh(new THREE.PlaneGeometry(30, 0.5), new THREE.MeshBasicMaterial({ color: 0xe11d48 }))
@@ -962,10 +1005,10 @@ export class SquidGameGame extends BaseGame {
   private updateCamera(dt: number): void {
     if (!this.player) return
     const { x, z } = this.player.model.position
-    // Trail behind the player, drifting sideways less than they do
-    const target = new THREE.Vector3(x * 0.6, 4.2, z + 9)
+    // Trail behind the player, drifting sideways less than they do, so the field stays centered
+    const target = new THREE.Vector3(x * CAMERA_SIDE_FOLLOW, CAMERA_HEIGHT, z + CAMERA_BEHIND)
     this.camera.position.lerp(target, damp(4, dt))
-    this.camera.lookAt(this.camera.position.x, 1.6, this.camera.position.z - 17)
+    this.camera.lookAt(this.camera.position.x * 0.5, CAMERA_LOOK_HEIGHT, this.camera.position.z - CAMERA_LOOK_AHEAD)
   }
 
   private emitHud(force: boolean): void {
