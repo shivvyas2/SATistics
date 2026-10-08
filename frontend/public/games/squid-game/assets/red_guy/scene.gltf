@@ -347,22 +347,28 @@
   ],
   "images": [
     {
-      "uri": "textures/lambert4SG_baseColor.png"
+      "uri": "textures/lambert4SG_baseColor.jpg",
+      "mimeType": "image/jpeg"
     },
     {
-      "uri": "textures/lambert4SG_metallicRoughness.png"
+      "uri": "textures/lambert4SG_metallicRoughness.jpg",
+      "mimeType": "image/jpeg"
     },
     {
-      "uri": "textures/lambert4SG_normal.png"
+      "uri": "textures/lambert4SG_normal.jpg",
+      "mimeType": "image/jpeg"
     },
     {
-      "uri": "textures/lambert5SG_baseColor.png"
+      "uri": "textures/lambert5SG_baseColor.jpg",
+      "mimeType": "image/jpeg"
     },
     {
-      "uri": "textures/lambert5SG_metallicRoughness.png"
+      "uri": "textures/lambert5SG_metallicRoughness.jpg",
+      "mimeType": "image/jpeg"
     },
     {
-      "uri": "textures/lambert5SG_normal.png"
+      "uri": "textures/lambert5SG_normal.jpg",
+      "mimeType": "image/jpeg"
     }
   ],
   "materials": [

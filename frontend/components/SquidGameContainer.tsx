@@ -6,6 +6,7 @@ import { SquidFeedback, SquidHudState, SquidOutcome, SquidReviewItem } from '@/g
 import { LANE_LETTERS } from '@/games/subway-surfers/types/game'
 import { GameAnalytics } from '@/games/whackamole/types'
 import { SATQuestion, fetchAIQuestions } from '@/lib/api/questions'
+import { preloadGame } from '@/lib/preload'
 import { EXAMS, ExamPrefs, gamePace, getExamPrefs, sectionLabel } from '@/lib/exam'
 import { GameOverModal } from './GameOverModal'
 import { Calculator } from './exam/Calculator'
@@ -48,6 +49,8 @@ export function SquidGameContainer() {
     const examPrefs = getExamPrefs()
     setPrefs(examPrefs)
     let cancelled = false
+    // Download the game while its questions load
+    preloadGame('squid-game')
     fetchAIQuestions(examPrefs.questionCount * 2, undefined, gamePace('squid-game')).then((loaded) => {
       if (!cancelled) setQuestions(loaded)
     })

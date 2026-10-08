@@ -5,6 +5,7 @@ import type { ZombieGame } from '@/games/zombie/ZombieGame'
 import { ZombieFeedback, ZombieHudState, ZombieReviewItem } from '@/games/zombie/types'
 import { GameAnalytics } from '@/games/whackamole/types'
 import { SATQuestion, fetchAIQuestions } from '@/lib/api/questions'
+import { preloadGame } from '@/lib/preload'
 import { getHighScore, recordHighScore } from '@/lib/arcade'
 import { ExamPrefs, QUICK_SECONDS_PER_QUESTION, gamePace, getExamPrefs, sectionLabel } from '@/lib/exam'
 import { insightFor } from '@/lib/hints'
@@ -39,6 +40,8 @@ export default function ZombieGameContainer() {
     setPrefs(examPrefs)
     setHighScore(getHighScore(GAME_ID))
     let cancelled = false
+    // Download the game while its questions load
+    preloadGame(GAME_ID)
     fetchAIQuestions(examPrefs.questionCount, undefined, gamePace(GAME_ID)).then((loaded) => {
       if (!cancelled) setQuestions(loaded)
     })

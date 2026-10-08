@@ -23,6 +23,7 @@ All notable changes to SATistics are recorded here. The format follows [Keep a C
 - Sign-in, sign-up and session refresh run on separate Supabase clients. Signing in on the shared client switched all later database queries to that user's token.
 
 ### Changed
+- Games start faster. Official SAT questions are fetched in right-sized rounds with a cache (about twice as fast), AI question writing no longer happens while a player waits (short sets are topped up from the built-in bank and the shared pool refills in the background through `POST /api/questions/refill`), 3D games download while their questions load, and the Red Light, Green Light guard and sand textures shrank from 45 MB to 1 MB with no visible change.
 - Red Light, Green Light always starts with 5 lives.
 - Red Light, Green Light is an enclosed hall: tall walls carrying one long painted sky-and-hills mural per side with no repeats, with its painted sky recolored sky blue and continued on the ceiling, and a higher chase camera that keeps the field centered.
 - Sessions renew themselves: login keeps a refresh token, the app refreshes shortly before the access token expires or after a 401, and tabs share one session. If a session can't be renewed, the app signs out and returns to sign-in with a notice instead of showing empty pages.

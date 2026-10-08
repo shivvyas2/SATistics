@@ -318,7 +318,21 @@ in the frontend.</div>
   <code>backend/src/services/question_pool.py</code> keeps every AI-written question that passes in
   the <code>question_pool</code> table, including extras a set didn't need. Before writing anything,
   <code>generate_questions</code> takes pooled questions the student has no attempt for, about half
-  on weak topics, and writes only what is still missing. Web questions are not pooled.
+  on weak topics. Writing and checking take about a minute, so it no longer does that while a
+  player waits: unless <code>wait_for_ai</code> is set, a short set comes back as it is.
+  <code>fetchAIQuestions</code> fills the gap from the built-in bank and sends
+  <code>POST /api/questions/refill</code> without waiting; <code>refill_pool</code> writes, checks
+  and pools new questions for next time. Web questions are not pooled.
+</p>
+
+<p>
+  <code>CollegeBoardSource.fetch</code> fetches candidates in up to <code>MAX_ROUNDS</code> rounds,
+  each sized by <code>USABLE_SHARE</code>, the measured share that survives the figure,
+  free-response and quick-pace filters (about 95% for Reading and Writing, 45 to 55% otherwise),
+  sixteen at a time, with question details cached in <code>_detail_cache</code>. The index loads
+  while <code>analyze_performance</code> reads the student's history. On the client,
+  <code>preloadGame</code> in <code>lib/preload.ts</code> downloads a 3D game's code and models
+  while its questions load.
 </p>
 
 <p>

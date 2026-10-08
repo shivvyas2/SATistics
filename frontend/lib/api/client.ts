@@ -309,6 +309,15 @@ class ApiClient {
     return this.request<{ questions: any[], total: number }>(`/api/questions/?${params.toString()}`)
   }
 
+  // Writes new checked questions into the shared pool after a set came back short. Takes about
+  // a minute; callers don't wait for it
+  async refillQuestionPool(exam: string, section: string, pace: string | undefined, count: number) {
+    return this.request<{ added: number }>('/api/questions/refill', {
+      method: 'POST',
+      body: JSON.stringify({ exam, section, pace: pace ?? null, count: Math.min(25, Math.max(1, count)) }),
+    })
+  }
+
   // Profile endpoints
   async getProfile(): Promise<Profile | null> {
     const result = await this.request<{ profile: Profile | null }>('/api/profile')

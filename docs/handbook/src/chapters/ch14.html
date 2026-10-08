@@ -173,6 +173,7 @@ curl -s "$API/api/stats/sessions?limit=5" -H "Authorization: Bearer $TOKEN"</cod
 <thead><tr><th>Route</th><th>Auth</th><th>Input</th><th>Returns</th><th>Errors</th><th>Caller</th></tr></thead>
 <tbody>
 <tr><td><code>GET /api/questions/</code></td><td>Optional (<code>get_current_user_optional</code>)</td><td>Query, below</td><td><code>QuestionResponse</code>: <code>{questions: Question[], total}</code></td><td>422; 500 with the exception text</td><td><code>apiClient.getAIQuestions</code> via <code>fetchAIQuestions</code> and <code>fetchQuestionsWithCache</code> in <code>lib/api/questions.ts</code></td></tr>
+<tr><td><code>POST /api/questions/refill</code></td><td>Required</td><td><code>RefillRequest</code>: <code>exam</code>, <code>section</code>, <code>pace</code>, <code>count</code> (1 to 25)</td><td><code>{added}</code>, or <code>{added: 0, skipped}</code> within <code>REFILL_COOLDOWN_SECONDS</code> (120) of the user's last refill</td><td>401; 422</td><td><code>apiClient.refillQuestionPool</code>, fired without waiting by <code>fetchAIQuestions</code> when a set comes back short</td></tr>
 <tr><td><code>GET /api/questions/topics</code></td><td>Required</td><td>None</td><td><code>{topics: string[]}</code>, distinct topics across <i>all</i> users' attempts</td><td>401; 500</td><td><code>apiClient.getTopics</code>, which nothing calls</td></tr>
 </tbody></table></div>
 
@@ -184,7 +185,8 @@ curl -s "$API/api/stats/sessions?limit=5" -H "Authorization: Bearer $TOKEN"</cod
 <tr><td><code>exam</code></td><td><code>"sat" | "gre"</code></td><td><code>sat</code></td><td></td></tr>
 <tr><td><code>section</code></td><td><code>"quant" | "verbal"</code></td><td><code>quant</code></td><td></td></tr>
 <tr><td><code>pace</code></td><td><code>"quick" | "deep"</code> or absent</td><td>absent</td><td>Quick keeps only short questions; deep is passed through to the sources</td></tr>
-<tr><td><code>use_web_search</code></td><td>bool</td><td><code>true</code></td><td>Lets the agent search the web for GRE (and fallback SAT) questions</td></tr>
+<tr><td><code>use_web_search</code></td><td>bool</td><td><code>true</code></td><td>With <code>wait_for_ai</code>, lets the agent search the web for questions</td></tr>
+<tr><td><code>wait_for_ai</code></td><td>bool</td><td><code>false</code></td><td>When true, missing questions are found on the web and written during the request, which can take a minute. When false, the set comes back short and the client tops it up and asks for a refill</td></tr>
 <tr><td><code>include_custom</code></td><td>bool</td><td><code>true</code></td><td>For a signed-in user, up to <code>limit // 2</code> of their approved custom questions are mixed in</td></tr>
 <tr><td><code>topic</code>, <code>difficulty</code></td><td>str</td><td>absent</td><td>Accepted and ignored</td></tr>
 </tbody></table></div>

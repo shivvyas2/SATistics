@@ -5,7 +5,7 @@
  */
 
 import { apiClient } from './client'
-import { ExamId, Pace, SectionId, gamePace, getExamPrefs, sectionLabel } from '../exam'
+import { ExamId, Pace, SectionId, gamePace, getExamPrefs } from '../exam'
 import { getBankQuestions } from '../questionBank'
 
 export interface SATQuestion {
@@ -48,22 +48,33 @@ export async function fetchAIQuestions(
   pace?: Pace
 ): Promise<SATQuestion[]> {
   const { exam, section } = getExamPrefs()
+  let questions: SATQuestion[] = []
   try {
-    console.log(`🤖 Fetching ${limit} ${sectionLabel({ exam, section })} questions...`)
-    
     const response = await apiClient.getAIQuestions(limit, true, exam, section, pace)
-    
-    if (response.questions && response.questions.length > 0) {
-      console.log(`✅ Got ${response.questions.length} questions!`)
-      return response.questions
-    }
-    
-    throw new Error('No questions returned from AI')
+    questions = response.questions ?? []
   } catch (error) {
-    console.warn('⚠️ AI questions unavailable, using fallback:', error)
-    const bank = getBankQuestions(exam, section, pace)
-    return bank.length > 0 ? bank : fallbackQuestions || []
+    console.warn('⚠️ Questions unavailable, using the built-in set:', error)
   }
+
+  const missing = limit - questions.length
+  if (missing > 0) {
+    // The server doesn't make players wait while new questions are written: it returns what it
+    // has, the built-in set fills the gap now, and the shared pool is refilled for next time
+    if (apiClient.getToken()) apiClient.refillQuestionPool(exam, section, pace, missing).catch(() => {})
+    const have = new Set(questions.map((q) => q.id))
+    const bank = getBankQuestions(exam, section, pace).filter((q) => !have.has(q.id))
+    questions = [...questions, ...shuffled(bank).slice(0, missing)]
+  }
+  return questions.length > 0 ? questions : fallbackQuestions || []
+}
+
+function shuffled<T>(items: T[]): T[] {
+  const copy = [...items]
+  for (let i = copy.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1))
+    ;[copy[i], copy[j]] = [copy[j], copy[i]]
+  }
+  return copy
 }
 
 /**

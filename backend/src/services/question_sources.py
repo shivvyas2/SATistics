@@ -8,6 +8,7 @@ Question sources for the learning agent
 """
 
 import asyncio
+import math
 import random
 import re
 import time
@@ -72,7 +73,16 @@ class CollegeBoardSource:
     }
     DIFFICULTY_CODES = {"E": "easy", "M": "medium", "H": "hard"}
     INDEX_TTL_SECONDS = 6 * 60 * 60
-    MAX_CONCURRENT_REQUESTS = 8
+    MAX_CONCURRENT_REQUESTS = 16
+    # Share of candidates that survive the filters, measured on the live bank
+    USABLE_SHARE = {
+        ("quant", None): 0.55, ("quant", "deep"): 0.55, ("quant", "quick"): 0.45,
+        ("verbal", None): 0.95, ("verbal", "deep"): 0.95, ("verbal", "quick"): 0.55,
+    }
+    MAX_ROUNDS = 3
+    # Question details already fetched, by external_id; they don't change
+    DETAIL_CACHE_SIZE = 4000
+    _detail_cache: Dict[str, Dict] = {}
 
     _index_cache: Dict[str, tuple] = {}
 
@@ -167,33 +177,61 @@ class CollegeBoardSource:
         }
 
     @classmethod
+    async def warm(cls, section: str) -> None:
+        """Loads the question index ahead of time, while other work runs"""
+        try:
+            async with httpx.AsyncClient(timeout=20) as client:
+                await cls._get_index(client, section)
+        except Exception:
+            pass
+
+    @classmethod
+    async def _detail(cls, client: httpx.AsyncClient, external_id: str) -> Dict:
+        cached = cls._detail_cache.get(external_id)
+        if cached is not None:
+            return cached
+        response = await client.post(f"{cls.BASE_URL}/get-question", json={"external_id": external_id})
+        response.raise_for_status()
+        detail = response.json()
+        if len(cls._detail_cache) > cls.DETAIL_CACHE_SIZE:
+            cls._detail_cache.clear()
+        cls._detail_cache[external_id] = detail
+        return detail
+
+    @classmethod
     async def fetch(
         cls, section: str, limit: int, weak_topics: Optional[List[str]] = None, pace: Optional[str] = None
     ) -> List[Dict]:
+        """
+        Up to `limit` usable questions. Figure-based, free-response and (for quick games) long
+        items get dropped, so candidates are fetched in rounds sized by how many usually survive,
+        rather than over-fetching everything up front
+        """
         semaphore = asyncio.Semaphore(cls.MAX_CONCURRENT_REQUESTS)
+        usable_share = cls.USABLE_SHARE.get((section, pace), 0.5)
+        questions: List[Dict] = []
 
         async with httpx.AsyncClient(timeout=20) as client:
             index = [q for q in await cls._get_index(client, section) if cls._fits_pace(q, section, pace)]
-            # Free-response, figure-based, and (for quick games) long items get dropped, so fetch extra
-            oversample = 5 if pace == "quick" else 4
-            candidates = cls._pick_candidates(index, limit * oversample, weak_topics or [])
 
             async def fetch_one(entry: Dict) -> Optional[Dict]:
                 async with semaphore:
                     try:
-                        response = await client.post(
-                            f"{cls.BASE_URL}/get-question",
-                            json={"external_id": entry["external_id"]},
-                        )
-                        response.raise_for_status()
-                        return cls._normalize(entry, response.json(), section)
+                        return cls._normalize(entry, await cls._detail(client, entry["external_id"]), section)
                     except Exception as e:
                         print(f"   ⚠️  Could not load question {entry.get('questionId')}: {e}")
                         return None
 
-            results = await asyncio.gather(*(fetch_one(entry) for entry in candidates))
+            for _ in range(cls.MAX_ROUNDS):
+                missing = limit - len(questions)
+                if missing <= 0 or not index:
+                    break
+                candidates = cls._pick_candidates(index, math.ceil(missing / usable_share * 1.25) + 2, weak_topics or [])
+                tried = {c["external_id"] for c in candidates}
+                index = [q for q in index if q["external_id"] not in tried]
+                results = await asyncio.gather(*(fetch_one(entry) for entry in candidates))
+                questions += [q for q in results if q and (pace != "quick" or is_quick_question(q))]
 
-        questions = [q for q in results if q and (pace != "quick" or is_quick_question(q))]
         return _balance_difficulty(questions, limit)
 
     @classmethod
@@ -208,9 +246,7 @@ class CollegeBoardSource:
                 candidates = random.sample(pool, min(len(pool), count * 3))
 
                 async def fetch_one(entry: Dict) -> Optional[Dict]:
-                    response = await client.post(f"{cls.BASE_URL}/get-question", json={"external_id": entry["external_id"]})
-                    response.raise_for_status()
-                    return cls._normalize(entry, response.json(), section)
+                    return cls._normalize(entry, await cls._detail(client, entry["external_id"]), section)
 
                 results = await asyncio.gather(*(fetch_one(e) for e in candidates), return_exceptions=True)
         except Exception as e:

@@ -126,6 +126,13 @@ class Question(BaseModel):
     sourceName: Optional[str] = None
     sourceUrl: Optional[str] = None
 
+class RefillRequest(BaseModel):
+    exam: Literal["sat", "gre"]
+    section: Literal["quant", "verbal"]
+    pace: Optional[Literal["quick", "deep"]] = None
+    # How many questions the short set was missing
+    count: int = Field(10, ge=1, le=25)
+
 class QuestionResponse(BaseModel):
     questions: List[Question]
     total: int

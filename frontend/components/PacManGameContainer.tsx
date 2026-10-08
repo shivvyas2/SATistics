@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { PacManGame, PacManHudState, PacManReviewItem } from '@/games/pac-man/PacManGame'
 import { GameAnalytics } from '@/games/whackamole/types'
 import { SATQuestion, fetchAIQuestions } from '@/lib/api/questions'
+import { preloadGame } from '@/lib/preload'
 import { getHighScore, recordHighScore } from '@/lib/arcade'
 import { QUICK_SECONDS_PER_QUESTION, gamePace, getExamPrefs, sectionLabel } from '@/lib/exam'
 import { GameOverModal } from './GameOverModal'
@@ -48,6 +49,8 @@ export function PacManGameContainer() {
     setExamName(sectionLabel(getExamPrefs()))
     setHighScore(getHighScore(GAME_ID))
     let cancelled = false
+    // Download the game while its questions load
+    preloadGame(GAME_ID)
     fetchAIQuestions(20, undefined, gamePace(GAME_ID)).then((loaded) => {
       if (!cancelled) setQuestions(loaded)
     })

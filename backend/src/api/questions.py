@@ -5,7 +5,7 @@ Supports both static questions and AI-generated personalized questions
 
 from fastapi import APIRouter, HTTPException, Depends, Query
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from src.models.schemas import QuestionResponse, Question
+from src.models.schemas import QuestionResponse, Question, RefillRequest
 from src.utils.database import get_db
 from src.api.auth import get_current_user
 from src.services.agent import ExamLearningAgent
@@ -14,6 +14,7 @@ from supabase import Client
 from typing import Literal, Optional
 import asyncio
 import random
+import time
 
 router = APIRouter()
 security = HTTPBearer(auto_error=False)
@@ -46,6 +47,7 @@ async def get_questions(
     section: Literal["quant", "verbal"] = Query("quant", description="Exam section"),
     pace: Optional[Literal["quick", "deep"]] = Query(None, description="quick for fast games, deep for slow ones"),
     include_custom: bool = Query(True, description="Mix in approved questions from the user's own material"),
+    wait_for_ai: bool = Query(False, description="Write missing questions now (slow) instead of returning a short set"),
     current_user: Optional[dict] = Depends(get_current_user_optional)
 ):
     """Get questions from the question bank
@@ -78,7 +80,8 @@ async def get_questions(
                     use_web_search=use_web_search,
                     exam=exam,
                     section=section,
-                    pace=pace
+                    pace=pace,
+                    wait_for_ai=wait_for_ai,
                 )
                 questions = [Question(**q) for q in custom + generated_questions]
                 random.shuffle(questions)
@@ -116,3 +119,24 @@ async def get_topics(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+
+# When each user last asked for a refill; writing questions costs AI credits
+_last_refill: dict = {}
+REFILL_COOLDOWN_SECONDS = 120
+
+
+@router.post("/refill")
+async def refill_question_pool(request: RefillRequest, current_user: dict = Depends(get_current_user)):
+    """
+    Writes and checks new AI questions into the shared pool, for sets that came back short.
+    Takes about a minute; the client doesn't wait for it before starting a game
+    """
+    user_id = str(current_user["id"])
+    now = time.time()
+    if now - _last_refill.get(user_id, 0) < REFILL_COOLDOWN_SECONDS:
+        return {"added": 0, "skipped": "A refill ran moments ago"}
+    _last_refill[user_id] = now
+    agent = ExamLearningAgent(user_id)
+    added = await agent.refill_pool(request.exam, request.section, request.pace, request.count)
+    return {"added": added}

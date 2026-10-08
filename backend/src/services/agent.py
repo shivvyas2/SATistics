@@ -120,17 +120,23 @@ TOPIC PERFORMANCE:
         exam: str = "sat",
         section: str = "quant",
         pace: Optional[str] = None,
+        wait_for_ai: bool = False,
     ) -> List[Dict]:
         """
         Builds a personalized question set for one exam section.
-        SAT questions come straight from the College Board question bank.
-        GRE questions (and SAT, if the question bank is unreachable) are extracted
-        from practice pages found by web search, topped up with AI-written ones.
+        SAT questions come straight from the College Board question bank, then checked
+        AI-written questions from the shared pool. Writing new questions takes a minute, so by
+        default the set comes back short instead and the caller refills the pool separately
+        (refill_pool). With wait_for_ai, the rest is found on the web and written here.
         Every question carries a "source" of official, web, or ai.
         pace matches questions to the game: "quick" for fast games (short questions
         answerable in seconds), "deep" for slow ones (passages, multi-step problems).
         """
+        # Load the College Board index while the student's history is read
+        warming = asyncio.create_task(CollegeBoardSource.warm(section)) if exam == "sat" else None
         analysis = await asyncio.to_thread(self.analyze_performance)
+        if warming:
+            await warming
         weak_topics = analysis['weak_topics']
         if weak_topics:
             print(f"   📉 Focusing on weak topics: {', '.join(weak_topics[:3])}")
@@ -151,7 +157,7 @@ TOPIC PERFORMANCE:
             )
 
         missing = num_questions - len(questions)
-        if missing > 0:
+        if missing > 0 and wait_for_ai:
             fresh = await self._questions_from_llm(exam, section, missing, analysis, use_web_search, pace)
             # Every checked question is pooled, including the extras this set doesn't need
             await asyncio.to_thread(question_pool.save, fresh)
@@ -164,6 +170,19 @@ TOPIC PERFORMANCE:
             "generated_count": len(questions),
         })
         return questions
+
+    async def refill_pool(self, exam: str, section: str, pace: Optional[str], count: int) -> int:
+        """Writes and checks new questions for the shared pool; returns how many passed"""
+        if not llm_available():
+            return 0
+        analysis = await asyncio.to_thread(self.analyze_performance)
+        written = await write_questions(
+            exam, section, min(math.ceil(count * VERIFY_HEADROOM), MAX_LLM_QUESTIONS), analysis['weak_topics'], pace
+        )
+        written = [q for q in written if pace != "quick" or is_quick_question(q)]
+        checked = await verify_answer_keys(written, section_label(exam, section))
+        await asyncio.to_thread(question_pool.save, checked)
+        return len(checked)
 
     async def _questions_from_llm(
         self, exam: str, section: str, count: int, analysis: Dict, use_web_search: bool, pace: Optional[str] = None

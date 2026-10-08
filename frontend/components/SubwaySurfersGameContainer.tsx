@@ -11,6 +11,7 @@ import {
 } from '@/games/subway-surfers/types/game'
 import { GameAnalytics } from '@/games/whackamole/types'
 import { SATQuestion, fetchAIQuestions } from '@/lib/api/questions'
+import { preloadGame } from '@/lib/preload'
 import { ExamPrefs, QUICK_SECONDS_PER_QUESTION, gamePace, getExamPrefs, sectionLabel } from '@/lib/exam'
 import { GameOverModal } from './GameOverModal'
 import { Calculator } from './exam/Calculator'
@@ -50,6 +51,8 @@ export function SubwaySurfersGameContainer() {
     const examPrefs = getExamPrefs()
     setPrefs(examPrefs)
     let cancelled = false
+    // Download the game while its questions load
+    preloadGame('subway-surfers')
     fetchAIQuestions(examPrefs.questionCount * 2, undefined, gamePace('subway-surfers')).then((loaded) => {
       if (!cancelled) setQuestions(loaded)
     })
