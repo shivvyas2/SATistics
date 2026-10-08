@@ -30,6 +30,18 @@ class TokenResponse(BaseModel):
     access_token: str
     token_type: str = "bearer"
     user: dict
+    # Exchanged at /api/auth/refresh for a new access token before this one expires
+    refresh_token: Optional[str] = None
+    # When the access token expires, in Unix seconds
+    expires_at: Optional[int] = None
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+class SessionTokens(BaseModel):
+    access_token: str
+    refresh_token: str
+    expires_at: Optional[int] = None
 
 # Game Schemas
 class QuestionAttempt(BaseModel):

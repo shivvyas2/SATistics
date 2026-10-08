@@ -6,6 +6,7 @@
 import type { RunnerReviewItem } from '@/games/subway-surfers/types/game'
 import type { Profile } from '@/lib/profile'
 import type { CustomQuestion, Material } from '@/lib/materials'
+import { isProtectedPath } from '@/lib/routes'
 
 export interface Video {
   id: string
@@ -20,39 +21,79 @@ export interface Video {
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
 
+const ACCESS_KEY = 'auth_token'
+const REFRESH_KEY = 'auth_refresh_token'
+const EXPIRES_KEY = 'auth_expires_at'
+// Refresh this many seconds before the access token expires
+const REFRESH_MARGIN_SECONDS = 60
+// The cookie only tells the middleware someone is signed in. It lasts as long as browsers allow
+// and is renewed on every refresh, so an active session never runs out
+const COOKIE_MAX_AGE_SECONDS = 400 * 24 * 60 * 60
+// Auth calls that must not trigger a refresh themselves
+const NO_REFRESH_ENDPOINTS = ['/api/auth/login', '/api/auth/signup', '/api/auth/refresh', '/api/auth/logout']
+
+// Fired on window when the session has ended and the user is signed out
+export const SESSION_ENDED_EVENT = 'satistics:session-ended'
+
+export interface SessionTokens {
+  access_token: string
+  refresh_token?: string | null
+  // Unix seconds
+  expires_at?: number | null
+}
+
+type RefreshResult = 'ok' | 'ended' | 'unavailable'
+
+// The expiry inside a JWT, for sessions stored before expires_at was kept
+function tokenExpiry(token: string): number | null {
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')))
+    return typeof payload.exp === 'number' ? payload.exp : null
+  } catch {
+    return null
+  }
+}
+
 class ApiClient {
   private baseUrl: string
   private token: string | null = null
+  private refreshToken: string | null = null
+  private expiresAt: number | null = null
+  // One refresh at a time, shared by every request waiting on it
+  private refreshing: Promise<RefreshResult> | null = null
 
   constructor(baseUrl: string = API_BASE_URL) {
     this.baseUrl = baseUrl
-    // Load token from localStorage or cookies on initialization
     if (typeof window !== 'undefined') {
-      this.token = localStorage.getItem('auth_token')
-      // If not in localStorage, try to get from cookie
-      if (!this.token) {
-        const cookieMatch = document.cookie.match(/auth_token=([^;]+)/)
-        if (cookieMatch) {
-          this.token = cookieMatch[1]
-          // Sync back to localStorage
-          localStorage.setItem('auth_token', this.token)
-        }
-      }
+      this.loadStoredSession()
+      // Another tab signed in, out, or refreshed: use its session instead of a stale copy
+      window.addEventListener('storage', (event) => {
+        if (event.key === null || [ACCESS_KEY, REFRESH_KEY, EXPIRES_KEY].includes(event.key)) this.loadStoredSession()
+      })
     }
   }
 
-  setToken(token: string | null) {
-    this.token = token
-    if (typeof window !== 'undefined') {
-      if (token) {
-        localStorage.setItem('auth_token', token)
-        // Also set cookie for middleware auth check
-        document.cookie = `auth_token=${token}; path=/; max-age=604800; SameSite=Lax`
-      } else {
-        localStorage.removeItem('auth_token')
-        // Clear cookie on logout
-        document.cookie = 'auth_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT'
-      }
+  private loadStoredSession() {
+    this.token = localStorage.getItem(ACCESS_KEY) || document.cookie.match(/auth_token=([^;]+)/)?.[1] || null
+    this.refreshToken = localStorage.getItem(REFRESH_KEY)
+    const expiresAt = Number(localStorage.getItem(EXPIRES_KEY))
+    this.expiresAt = expiresAt || (this.token ? tokenExpiry(this.token) : null)
+  }
+
+  // Stores a new session, or signs out with null
+  setSession(tokens: SessionTokens | null) {
+    this.token = tokens?.access_token ?? null
+    this.refreshToken = tokens ? tokens.refresh_token ?? this.refreshToken : null
+    this.expiresAt = tokens ? tokens.expires_at ?? tokenExpiry(tokens.access_token) : null
+    if (typeof window === 'undefined') return
+    if (tokens) {
+      localStorage.setItem(ACCESS_KEY, tokens.access_token)
+      if (this.refreshToken) localStorage.setItem(REFRESH_KEY, this.refreshToken)
+      if (this.expiresAt) localStorage.setItem(EXPIRES_KEY, String(this.expiresAt))
+      document.cookie = `auth_token=${tokens.access_token}; path=/; max-age=${COOKIE_MAX_AGE_SECONDS}; SameSite=Lax`
+    } else {
+      ;[ACCESS_KEY, REFRESH_KEY, EXPIRES_KEY].forEach((key) => localStorage.removeItem(key))
+      document.cookie = 'auth_token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT'
     }
   }
 
@@ -60,35 +101,84 @@ class ApiClient {
     return this.token
   }
 
-  private async request<T>(
-    endpoint: string,
-    options: RequestInit = {}
-  ): Promise<T> {
-    const url = `${this.baseUrl}${endpoint}`
-    
-    const headers: Record<string, string> = {
-      'Content-Type': 'application/json',
-      ...(options.headers as Record<string, string> || {}),
-    }
+  private expiresSoon(): boolean {
+    return this.expiresAt !== null && Date.now() / 1000 > this.expiresAt - REFRESH_MARGIN_SECONDS
+  }
 
-    // Add auth token if available
-    if (this.token) {
-      headers['Authorization'] = `Bearer ${this.token}`
-    }
+  // Gets a new access token with the refresh token. Concurrent callers share one attempt
+  private refreshSession(): Promise<RefreshResult> {
+    this.refreshing ??= this.doRefresh().finally(() => {
+      this.refreshing = null
+    })
+    return this.refreshing
+  }
 
-    const config: RequestInit = {
-      ...options,
-      headers,
-      mode: 'cors', // Explicitly set CORS mode
-      credentials: 'include', // Include credentials for CORS
-    }
-
+  private async doRefresh(): Promise<RefreshResult> {
+    // Another tab may have refreshed already; reusing its session keeps the two from
+    // spending the same refresh token
+    const before = this.token
+    this.loadStoredSession()
+    if (this.token && this.token !== before && !this.expiresSoon()) return 'ok'
+    if (!this.refreshToken) return 'ended'
     try {
-      const response = await fetch(url, config)
-      
+      const response = await fetch(`${this.baseUrl}/api/auth/refresh`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refresh_token: this.refreshToken }),
+        mode: 'cors',
+        credentials: 'include',
+      })
+      if (response.status === 401 || response.status === 400) return 'ended'
+      if (!response.ok) return 'unavailable'
+      this.setSession(await response.json())
+      return 'ok'
+    } catch {
+      // Offline or the server is down: the session may still be fine
+      return 'unavailable'
+    }
+  }
+
+  // Signs out locally and, on a page that needs an account, goes to the sign-in page
+  private endSession() {
+    this.setSession(null)
+    if (typeof window === 'undefined') return
+    window.dispatchEvent(new Event(SESSION_ENDED_EVENT))
+    const { pathname, search } = window.location
+    if (isProtectedPath(pathname)) {
+      window.location.assign(`/login?expired=1&redirect=${encodeURIComponent(pathname + search)}`)
+    }
+  }
+
+  // Sends a request with the session, refreshing it first when it's about to expire and
+  // once more if the server says it has. A session that can't be refreshed is ended
+  private async send(endpoint: string, init: RequestInit, retried = false): Promise<Response> {
+    const usesSession = !NO_REFRESH_ENDPOINTS.includes(endpoint)
+    if (usesSession && this.token && this.expiresSoon()) {
+      if ((await this.refreshSession()) === 'ended') this.endSession()
+    }
+
+    const headers = new Headers(init.headers)
+    if (this.token) headers.set('Authorization', `Bearer ${this.token}`)
+    const response = await fetch(`${this.baseUrl}${endpoint}`, { ...init, headers, mode: 'cors', credentials: 'include' })
+
+    if (response.status === 401 && usesSession && this.token && !retried) {
+      const result = await this.refreshSession()
+      if (result === 'ok') return this.send(endpoint, init, true)
+      if (result === 'ended') this.endSession()
+    }
+    return response
+  }
+
+  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+    try {
+      const response = await this.send(endpoint, {
+        ...options,
+        headers: { 'Content-Type': 'application/json', ...((options.headers as Record<string, string>) || {}) },
+      })
+
       if (!response.ok) {
         const error = await response.json().catch(() => ({ detail: response.statusText }))
-        throw new Error(error.detail || `HTTP error! status: ${response.status}`)
+        throw new Error(typeof error.detail === 'string' ? error.detail : `HTTP error! status: ${response.status}`)
       }
 
       // Handle empty responses
@@ -96,7 +186,7 @@ class ApiClient {
       if (contentType && contentType.includes('application/json')) {
         return await response.json()
       }
-      
+
       return {} as T
     } catch (error) {
       console.error('API request failed:', error)
@@ -107,28 +197,27 @@ class ApiClient {
   // Authentication endpoints
   // acceptedTerms: the person confirmed they're 13 or older and agreed to the Terms and Privacy Policy
   async signup(email: string, password: string, acceptedTerms: boolean): Promise<{ success: boolean; error?: string; access_token?: string; user?: any }> {
-    const response = await this.request<{ success: boolean; error?: string; access_token?: string; user?: any }>('/api/auth/signup', {
+    const response = await this.request<{ success: boolean; error?: string; user?: any } & Partial<SessionTokens>>('/api/auth/signup', {
       method: 'POST',
       body: JSON.stringify({ email, password, accepted_terms: acceptedTerms }),
     })
     
-    // If access token is returned (email confirmation disabled), store it
+    // A session comes back when email confirmation is off
     if (response.access_token) {
-      this.setToken(response.access_token)
+      this.setSession(response as SessionTokens)
     }
     
     return response
   }
 
   async login(email: string, password: string) {
-    const response = await this.request<{ access_token: string; user: any }>('/api/auth/login', {
+    const response = await this.request<SessionTokens & { user: any }>('/api/auth/login', {
       method: 'POST',
       body: JSON.stringify({ email, password }),
     })
-    
-    // Store token
+
     if (response.access_token) {
-      this.setToken(response.access_token)
+      this.setSession(response)
     }
     
     return response
@@ -140,8 +229,8 @@ class ApiClient {
         method: 'POST',
       })
     } finally {
-      // Always clear token even if request fails
-      this.setToken(null)
+      // Always sign out locally, even if the request fails
+      this.setSession(null)
     }
   }
 
@@ -188,7 +277,7 @@ class ApiClient {
   // Deletes the account and all its data; there is no undo
   async deleteAccount(): Promise<void> {
     await this.request('/api/profile', { method: 'DELETE' })
-    this.setToken(null)
+    this.setSession(null)
   }
 
   // Every question of one saved game with the answer picked, for the answer review
@@ -252,11 +341,7 @@ class ApiClient {
     if (input.file) form.append('file', input.file)
 
     // Sent with fetch directly so the browser sets the multipart boundary itself
-    const response = await fetch(`${this.baseUrl}/api/materials`, {
-      method: 'POST',
-      body: form,
-      headers: this.token ? { Authorization: `Bearer ${this.token}` } : {},
-    })
+    const response = await this.send('/api/materials', { method: 'POST', body: form })
     const body = await response.json().catch(() => ({ detail: response.statusText }))
     if (!response.ok) throw new Error(body.detail || `HTTP error! status: ${response.status}`)
     return body as { material: Material; questions: CustomQuestion[] }

@@ -1,7 +1,7 @@
 'use client'
 
 import { useCallback, useEffect, useState } from 'react'
-import { apiClient } from '@/lib/api/client'
+import { SESSION_ENDED_EVENT, apiClient } from '@/lib/api/client'
 import type { Profile } from '@/lib/profile'
 
 export interface Account {
@@ -33,6 +33,11 @@ export function setCachedProfile(profile: Profile | null) {
 export function clearAccountCache() {
   cached = null
   inflight = null
+}
+
+// A session that ends while the app is open leaves no account to show
+if (typeof window !== 'undefined') {
+  window.addEventListener(SESSION_ENDED_EVENT, clearAccountCache)
 }
 
 export function useAccount() {

@@ -1,4 +1,5 @@
 import { NextResponse, type NextRequest } from 'next/server'
+import { isProtectedPath } from '@/lib/routes'
 
 export async function middleware(request: NextRequest) {
   // Check for auth token in cookies or headers
@@ -6,8 +7,7 @@ export async function middleware(request: NextRequest) {
                 request.headers.get('authorization')?.replace('Bearer ', '')
 
   // PROTECTED ROUTES - Require authentication for the app; the landing page stays public
-  const protectedPrefixes = ['/dashboard', '/games', '/learn', '/materials', '/mock', '/profile', '/stats']
-  if (protectedPrefixes.some((prefix) => request.nextUrl.pathname.startsWith(prefix)) && !token) {
+  if (isProtectedPath(request.nextUrl.pathname) && !token) {
     const url = request.nextUrl.clone()
     url.pathname = '/login'
     url.searchParams.set('redirect', request.nextUrl.pathname)

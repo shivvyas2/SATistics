@@ -5,7 +5,7 @@ Authentication endpoints
 from fastapi import APIRouter, HTTPException, Depends, Header, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from fastapi.responses import Response
-from src.models.schemas import UserSignup, UserLogin, TokenResponse
+from src.models.schemas import RefreshRequest, SessionTokens, UserSignup, UserLogin, TokenResponse
 from src.services.auth_service import AuthService
 from src.utils.database import get_db
 from supabase import Client
@@ -90,8 +90,18 @@ async def login(user_data: UserLogin, db: Client = Depends(get_db)):
     
     return TokenResponse(
         access_token=result["access_token"],
+        refresh_token=result["refresh_token"],
+        expires_at=result["expires_at"],
         user=result["user"]
     )
+
+@router.post("/refresh", response_model=SessionTokens)
+async def refresh(request: RefreshRequest, db: Client = Depends(get_db)):
+    """Swaps a refresh token for a new session. 401 means the session is over and the user must sign in again"""
+    tokens = await AuthService(db).refresh(request.refresh_token)
+    if not tokens:
+        raise HTTPException(status_code=401, detail="Your session has ended. Sign in again.")
+    return SessionTokens(**tokens)
 
 @router.post("/logout")
 async def logout(

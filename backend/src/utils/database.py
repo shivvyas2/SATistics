@@ -2,7 +2,7 @@
 Database connection and utilities
 """
 
-from supabase import create_client, Client
+from supabase import ClientOptions, create_client, Client
 import os
 from typing import Optional
 
@@ -41,16 +41,22 @@ class Database:
         return cls._instance
     
     @classmethod
-    def get_auth_client(cls) -> Client:
-        """Get Supabase client specifically for authentication operations"""
-        # For auth operations, we should use anon key to respect RLS
+    def new_auth_client(cls) -> Client:
+        """
+        A throwaway client for signing in, signing up and refreshing sessions. Signing in on a
+        Supabase client switches its database requests to that user's token, so these must
+        never run on the shared client from get_client.
+        """
+        cls.get_client()  # loads backend/.env
         supabase_url = os.getenv("SUPABASE_URL") or os.getenv("NEXT_PUBLIC_SUPABASE_URL")
-        supabase_key = os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY") or os.getenv("SUPABASE_SERVICE_ROLE_KEY")
-        
-        if not supabase_url or not supabase_key:
-            raise ValueError("Supabase URL and Key are required for authentication")
-        
-        return create_client(supabase_url, supabase_key)
+        supabase_key = (
+            os.getenv("SUPABASE_SERVICE_ROLE_KEY")
+            or os.getenv("SUPABASE_SERVICE_KEY")
+            or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
+        )
+        return create_client(
+            supabase_url, supabase_key, options=ClientOptions(auto_refresh_token=False, persist_session=False)
+        )
 
 def get_db() -> Client:
     """Dependency for FastAPI routes"""

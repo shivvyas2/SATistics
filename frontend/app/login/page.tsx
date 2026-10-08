@@ -74,6 +74,11 @@ function LoginForm() {
       </p>
 
       <form onSubmit={handleLogin} className="mt-8 space-y-5">
+        {searchParams.get('expired') === '1' && !error && (
+          <p role="status" className="rounded-2xl border-2 border-ink bg-lime-soft px-4 py-3 text-sm font-semibold">
+            Your session ended, so you were signed out. Sign in again to pick up where you left off.
+          </p>
+        )}
         <FormError message={error} />
 
         <Field label="Email" htmlFor="email">

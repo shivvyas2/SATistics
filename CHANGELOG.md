@@ -18,8 +18,13 @@ All notable changes to SATistics are recorded here. The format follows [Keep a C
 - Privacy Policy, Terms and Conditions and Credits pages, linked with the contact address and a trademark notice from every page footer. Signup asks people to confirm they are 13 or older and agree to the terms, and records it on the account.
 - Download my data and Delete my account on the Profile page (`GET /api/profile/export`, `DELETE /api/profile`).
 
+### Security
+- The API now verifies every sign-in token with Supabase. It used to read tokens without checking their signature, so a forged token could act as any user.
+- Sign-in, sign-up and session refresh run on separate Supabase clients. Signing in on the shared client switched all later database queries to that user's token.
+
 ### Changed
 - Red Light, Green Light always starts with 5 lives.
+- Sessions renew themselves: login keeps a refresh token, the app refreshes shortly before the access token expires or after a 401, and tabs share one session. If a session can't be renewed, the app signs out and returns to sign-in with a notice instead of showing empty pages.
 - The web question finder identifies itself as SATisticsBot, obeys robots.txt, and links each question's source page.
 - Saved game reviews keep no College Board question text; official questions show the answers and link to the question bank.
 - The materials page says uploads are processed by an AI provider.
