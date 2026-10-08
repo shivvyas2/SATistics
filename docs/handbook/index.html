@@ -1529,8 +1529,8 @@ frontend/
 </p>
 
 <p>
-  Two requests skip <code>request</code>. <code>uploadMaterial</code> calls <code>fetch</code>
-  directly so the browser can set the multipart boundary, adding the bearer header itself. And
+  Two requests skip <code>request</code>. <code>uploadMaterial</code> calls <code>send</code>
+  without a JSON <code>Content-Type</code> so the browser can set the multipart boundary. And
   the backend's <code>/api/auth/signup</code> and <code>/api/auth/login</code> have explicit
   <code>OPTIONS</code> handlers in addition to the CORS middleware, which allows the origins in
   <code>ALLOWED_ORIGINS</code> plus localhost on ports 3000 and 3001.
@@ -1545,14 +1545,17 @@ frontend/
 
 <ol>
   <li><b>Issued.</b> <code>AuthService.login</code> calls
-  <code>sign_in_with_password</code> on the backend's Supabase client and returns
-  <code>session.access_token</code>. <code>AuthService.signup</code> returns one only when email
-  confirmation is off. The refresh token is returned by the service but dropped by
-  <code>TokenResponse</code>; nothing refreshes a session.</li>
-  <li><b>Stored.</b> <code>ApiClient.setToken</code> writes the token to localStorage under
-  <code>auth_token</code> and to a cookie of the same name with <code>path=/</code>,
-  <code>max-age=604800</code> (seven days) and <code>SameSite=Lax</code>. On construction the
-  client reads localStorage first and falls back to the cookie, syncing it back.</li>
+  <code>sign_in_with_password</code> on a throwaway client from
+  <code>Database.new_auth_client()</code> and returns the access token, the refresh token and
+  <code>expires_at</code> (Unix seconds), all three carried by <code>TokenResponse</code>.
+  <code>AuthService.signup</code> returns them only when email confirmation is off.</li>
+  <li><b>Stored.</b> <code>ApiClient.setSession</code> writes the three values to localStorage
+  under <code>auth_token</code>, <code>auth_refresh_token</code> and <code>auth_expires_at</code>,
+  and the access token to an <code>auth_token</code> cookie with <code>path=/</code>,
+  <code>max-age</code> of <code>COOKIE_MAX_AGE_SECONDS</code> (400 days) and
+  <code>SameSite=Lax</code>. The cookie only tells the middleware someone is signed in, and every
+  refresh renews it. On construction the client reads localStorage, falling back to the cookie
+  for the access token.</li>
   <li><b>Checked by Next.js.</b> <code>middleware.ts</code> only checks that the cookie exists. It
   does not decode or validate it. Its matcher skips <code>_next</code> assets, images and
   <code>api</code> paths.</li>
@@ -1560,24 +1563,25 @@ frontend/
   FastAPI's <code>HTTPBearer(auto_error=False)</code> extracts it, and
   <code>get_current_user</code> answers 401 with "Missing authorization token" or "Invalid or
   expired token".</li>
-  <li><b>Decoded.</b> <code>AuthService.get_user</code> decodes the JWT with
-  <code>jwt.decode(token, options={"verify_signature": False})</code>, rejects it if
-  <code>exp</code> has passed, and returns <code>{ id: sub, email }</code>.</li>
-  <li><b>Cleared.</b> <code>logout</code> posts to <code>/api/auth/logout</code>, which only
-  acknowledges, and then always calls <code>setToken(null)</code>, removing the key and expiring
-  the cookie. <code>DashboardLayout</code> also calls <code>clearAccountCache</code>.</li>
+  <li><b>Verified.</b> <code>AuthService.get_user</code> asks Supabase about the token with
+  <code>auth.get_user(token)</code> on a dedicated client that never signs in, and returns
+  <code>{ id, email }</code>. A forged, expired or revoked token gets <code>None</code>, so 401.
+  Accepted tokens are cached in <code>_verified_tokens</code> for at most
+  <code>VERIFIED_TOKEN_TTL</code> (300 seconds) and never past the token's <code>exp</code>.</li>
+  <li><b>Refreshed.</b> <code>ApiClient.send</code> posts the refresh token to
+  <code>/api/auth/refresh</code> when the access token expires within 60 seconds, and once more
+  after a 401, then retries the call. Concurrent callers share one refresh.</li>
+  <li><b>Cleared.</b> <code>logout</code> posts to <code>/api/auth/logout</code>, which revokes the
+  session in Supabase on a best-effort basis, and then always calls <code>setSession(null)</code>,
+  removing the keys and expiring the cookie. <code>DashboardLayout</code> also calls
+  <code>clearAccountCache</code>.</li>
 </ol>
 
-<div class="note caution"><b>The signature is not checked</b>
-<code>get_user</code> trusts the payload of any well-formed, unexpired JWT. Because the backend
-then queries with the service-role key, a forged token with another user's <code>sub</code> would
-read and write that user's rows. Verifying the token (with the project's JWT secret, or by calling
-Supabase Auth) is the fix; see <a href="#chB">Appendix B</a>.</div>
-
 <p>
-  Expiry shows up as a 401 on the next call. The middleware cannot see it, because the cookie
-  outlives the token. <code>useAccount</code> turns a failed <code>/api/auth/me</code> into a
-  signed-out account, but no code sends the student back to <code>/login</code> on a 401.
+  A session ends when Supabase refuses the refresh token. The client then clears its tokens, fires
+  <code>SESSION_ENDED_EVENT</code> (which clears the <code>useAccount</code> cache) and, on a
+  protected path, sends the student to <code>/login?expired=1</code> with a
+  <code>redirect</code> back. A network failure during a refresh does not sign anyone out.
 </p>
 
 <h3 id="s2-6"><span class="num">2.6</span><span>Where state lives</span></h3>
@@ -1701,9 +1705,10 @@ backend's queries?</p>
 service role bypasses RLS. The backend's own <code>.eq("user_id", ...)</code> filters are what keep
 users apart, so a new query that forgets the filter leaks data.</p>
 <p class="q">A token expires while the student is on the dashboard. What do they see?</p>
-<p class="a">The middleware still passes them, since the cookie lasts seven days. Backend calls
-return 401; <code>getUserStats</code> and <code>getRecentSessions</code> swallow the error and
-return empty values, so the dashboard looks empty rather than signed out.</p>
+<p class="a">Usually nothing. The client refreshes the token a minute before it expires, or
+after a 401, and retries the call. Only if Supabase refuses the refresh token does the session
+end: the client signs out and sends them to <code>/login?expired=1</code>, which shows a "Your
+session ended" notice.</p>
 <p class="q">OpenRouter is down. Does a GRE game still start?</p>
 <p class="a">Yes. <code>_questions_from_llm</code> returns an empty list, the router returns only
 custom questions (possibly none), and <code>fetchAIQuestions</code> falls back to
@@ -2665,7 +2670,7 @@ texture to frost.</p>
 </p>
 
 <figure>
-<svg class="diagram" viewBox="0 0 860 300" role="img" aria-label="The signup page calls POST /api/auth/signup on FastAPI, which calls Supabase sign_up. If a session comes back, the client stores the token and calls PUT /api/profile, which upserts into profiles. If no session comes back, the profile goes into localStorage as pending_profile and the login page saves it after POST /api/auth/login. Every later request carries the bearer token, which get_current_user decodes.">
+<svg class="diagram" viewBox="0 0 860 300" role="img" aria-label="The signup page calls POST /api/auth/signup on FastAPI, which calls Supabase sign_up. If a session comes back, the client stores the token and calls PUT /api/profile, which upserts into profiles. If no session comes back, the profile goes into localStorage as pending_profile and the login page saves it after POST /api/auth/login. Every later request carries the bearer token, which get_current_user verifies with Supabase.">
   <defs>
     <marker id="ch05a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head" points="0,0 10,5 0,10"/></marker>
     <marker id="ch05b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><polygon class="head-hot" points="0,0 10,5 0,10"/></marker>
@@ -2705,20 +2710,21 @@ texture to frost.</p>
 <h3 id="s5-2"><span class="num">5.2</span><span>Files and folders</span></h3>
 
 <pre class="tree">frontend/app/signup/page.tsx               three-step signup, awaiting-confirmation screen
-frontend/app/login/page.tsx                login, saves a pending profile, honors ?redirect=
+frontend/app/login/page.tsx                login, saves a pending profile, honors ?redirect= and ?expired=1
 frontend/app/profile/page.tsx              edit profile, first-run setup (?setup=1&amp;notice=)
 frontend/components/auth/AuthShell.tsx     signed-out layout, Field, FormError
 frontend/components/profile/ProfileFields.tsx  Avatar, IdentityFields, GoalFields, validateProfile
 frontend/lib/profile.ts                    Profile type, constants, pending-profile storage
 frontend/lib/useAccount.ts                 shared account cache and hook
-frontend/lib/api/client.ts                 ApiClient: token storage, auth and profile calls
+frontend/lib/api/client.ts                 ApiClient: session storage, refresh, auth and profile calls
+frontend/lib/routes.ts                     PROTECTED_PREFIXES and isProtectedPath
 frontend/middleware.ts                     redirects based on the auth_token cookie
 
 backend/src/api/auth.py                    /api/auth routes and get_current_user
-backend/src/services/auth_service.py       AuthService: Supabase sign_up, sign_in, token decode
+backend/src/services/auth_service.py       AuthService: sign_up, sign_in, verify, refresh
 backend/src/api/profile.py                 GET and PUT /api/profile
-backend/src/models/schemas.py              UserSignup, UserLogin, TokenResponse, Profile
-backend/src/utils/database.py              the shared Supabase client
+backend/src/models/schemas.py              UserSignup, UserLogin, TokenResponse, SessionTokens, Profile
+backend/src/utils/database.py              the shared Supabase client and new_auth_client
 backend/database/add_profiles.sql          the profiles table and its policies</pre>
 
 <h3 id="s5-3"><span class="num">5.3</span><span>Model</span></h3>
@@ -2774,60 +2780,70 @@ backend/database/add_profiles.sql          the profiles table and its policies</
 
 <p>
   <b>Signup.</b> The body is <code>UserSignup</code> (an <code>EmailStr</code> and a password
-  string). <code>AuthService.signup</code> calls <code>db.auth.sign_up</code>. If Supabase returns a
-  user, the result has <code>success</code>, the user's id and email, and, only when Supabase also
-  returned a session (email confirmation off), an <code>access_token</code>. Known Supabase errors
+  string). <code>AuthService.signup</code> calls <code>auth.sign_up</code> on a throwaway client
+  from <code>Database.new_auth_client()</code>. If Supabase returns a user, the result has
+  <code>success</code>, the user's id and email, and, only when Supabase also returned a session
+  (email confirmation off), <code>access_token</code>, <code>refresh_token</code> and
+  <code>expires_at</code>. Known Supabase errors
   are rewritten into friendlier text ("An account with this email already exists", "Too many signup
   attempts. Please try again later.") and the route turns an unsuccessful result into a 400. Any
   other exception becomes a 500 whose detail includes the exception text.
 </p>
 
 <p>
-  <b>Login.</b> <code>AuthService.login</code> calls <code>sign_in_with_password</code> and returns
-  the access token, a refresh token and the user. The route wraps this in
-  <code>TokenResponse</code>, which has <code>access_token</code>, <code>token_type</code> and
-  <code>user</code>, so the refresh token is dropped. Failures are 401 with "Invalid email or
-  password" or the raw message.
+  <b>Login.</b> <code>AuthService.login</code> calls <code>sign_in_with_password</code>, also on a
+  throwaway client, and returns the user plus the output of <code>session_tokens()</code>:
+  <code>access_token</code>, <code>refresh_token</code> and <code>expires_at</code> (Unix seconds).
+  The route wraps this in <code>TokenResponse</code>, which carries all three with
+  <code>token_type</code> and <code>user</code>. Failures are 401 with "Invalid email or password"
+  or the raw message.
 </p>
 
 <p>
-  <b>Logout.</b> <code>AuthService.logout</code> does nothing but return success. Its comments are
-  explicit: the token is not revoked, it simply expires, and the client is trusted to forget it.
+  <b>Refresh.</b> <code>POST /api/auth/refresh</code> takes <code>{refresh_token}</code>.
+  <code>AuthService.refresh</code> calls <code>auth.refresh_session</code> on a throwaway client and
+  returns new <code>SessionTokens</code>. If Supabase refuses, the route answers 401 "Your session
+  has ended. Sign in again."
+</p>
+
+<p>
+  <b>Logout.</b> <code>AuthService.logout</code> drops the token from the verified-token cache and
+  revokes the session with <code>auth.admin.sign_out(token, "local")</code>, so its refresh token
+  stops working. This is best effort: an error is logged and the route still returns success.
 </p>
 
 <p>
   <b>Who is calling.</b> Every protected route depends on <code>get_current_user</code>. It reads
   the bearer token through <code>HTTPBearer(auto_error=False)</code>, returns 401 "Missing
   authorization token" if there is none, and otherwise calls <code>AuthService.get_user</code>. That
-  method decodes the JWT with <code>jwt.decode(token, options={"verify_signature": False})</code>,
-  rejects it if <code>exp</code> is in the past, and returns <code>{"id": sub, "email": email}</code>.
-  A <code>None</code> result becomes 401 "Invalid or expired token". <code>GET /me</code> returns
+  method asks Supabase about the token with <code>_token_verifier().auth.get_user(token)</code>, a
+  dedicated client from <code>Database.new_auth_client()</code> that never signs in, and returns
+  <code>{"id": ..., "email": ...}</code>. A forged, expired or revoked token gives
+  <code>None</code>, which becomes 401 "Invalid or expired token". <code>GET /me</code> returns
   exactly that dictionary.
 </p>
 
-<div class="note blocked"><b>Security caveat: tokens are not verified.</b> Because the signature is
-never checked, anyone can construct a JWT with any <code>sub</code> and a future <code>exp</code>,
-and the backend will treat them as that user. Every route that uses
-<code>get_current_user</code> (profiles, sessions, stats, materials, videos) inherits this. The fix
-is to verify the token, either with the project's JWT secret (<code>jwt.decode</code> with the
-key, <code>algorithms=["HS256"]</code> and <code>audience="authenticated"</code>) or by calling
-<code>db.auth.get_user(token)</code>, which asks Supabase. Note that <code>PyJWT</code>, which
-provides the <code>jwt</code> module here, is not listed in <code>backend/requirements.txt</code>;
-it arrives as a dependency of the Supabase package. <code>python-jose</code> is listed but not
-used by this code.</div>
+<p>
+  To spare most requests a round trip, accepted tokens go into the module-level
+  <code>_verified_tokens</code> dictionary. An entry is trusted for at most
+  <code>VERIFIED_TOKEN_TTL</code> (300 seconds) and never past the token's <code>exp</code>, which
+  is read from the token only after Supabase has accepted it. The cache is cleared when it passes
+  5000 entries. A session revoked elsewhere can therefore keep working on this process for up to
+  five minutes. <code>PyJWT</code>, which provides the <code>jwt</code> module used to read
+  <code>exp</code>, is not listed in <code>backend/requirements.txt</code>; it arrives as a
+  dependency of the Supabase package.
+</p>
 
 <p>
   <b>The database client.</b> <code>get_db</code> returns one process-wide client from
   <code>Database.get_client()</code>, built with <code>SUPABASE_SERVICE_ROLE_KEY</code> if set, then
-  <code>SUPABASE_SERVICE_KEY</code>, then <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>. The same client
-  is used for <code>auth.sign_up</code> and <code>auth.sign_in_with_password</code>. The
-  supabase-py 2.x client listens for its own auth events, and on <code>SIGNED_IN</code> it replaces
-  its <code>Authorization</code> header with the new session's access token. On a shared
-  server-side client that means table queries after a login run as the last person who logged in,
-  not with the service key, until the process restarts. If you see RLS errors or empty results on a
-  long-lived backend process, look here first; the safe pattern is a separate client for auth
-  calls. <code>Database.get_auth_client()</code>, which builds a separate client with the
-  anon key, exists but nothing calls it.
+  <code>SUPABASE_SERVICE_KEY</code>, then <code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>. Auth calls never
+  run on it. supabase-py's <code>_listen_to_auth_events</code> replaces a client's
+  <code>Authorization</code> header with the signed-in user's token, so signing in on the shared
+  client used to make every later database query run as that user until the process restarted.
+  Sign-up, sign-in, refresh and logout therefore each use <code>Database.new_auth_client()</code>,
+  a throwaway client with the same key order built with
+  <code>ClientOptions(auto_refresh_token=False, persist_session=False)</code>.
 </p>
 
 <p>
@@ -2845,14 +2861,28 @@ used by this code.</div>
 <p>
   <b>Token storage.</b> <code>ApiClient</code> in <code>frontend/lib/api/client.ts</code> is a
   singleton, <code>apiClient</code>. On construction in the browser it reads
-  <code>auth_token</code> from localStorage, or, failing that, from <code>document.cookie</code>
-  and copies it back. <code>setToken(token)</code> writes both: localStorage, and a cookie
-  <code>auth_token=...; path=/; max-age=604800; SameSite=Lax</code>, which is seven days.
-  <code>setToken(null)</code> removes both. The cookie exists only so the Next.js middleware can see
-  it; API calls send the token as an <code>Authorization: Bearer</code> header from memory.
-  <code>signup</code> and <code>login</code> call <code>setToken</code> when a token comes back, and
-  <code>logout</code> clears it in a <code>finally</code> so a failed request still logs you out
-  locally.
+  <code>auth_token</code>, <code>auth_refresh_token</code> and <code>auth_expires_at</code> from
+  localStorage, falling back to <code>document.cookie</code> for the access token and to the JWT's
+  <code>exp</code> when no expiry was stored. <code>setSession(tokens)</code> writes all three to
+  localStorage and the access token to a cookie
+  <code>auth_token=...; path=/; max-age=...; SameSite=Lax</code>, where the max-age is
+  <code>COOKIE_MAX_AGE_SECONDS</code> (400 days). <code>setSession(null)</code> removes them all.
+  The cookie only tells the Next.js middleware someone is signed in; API calls send the token as an
+  <code>Authorization: Bearer</code> header from memory. <code>signup</code> and <code>login</code>
+  call <code>setSession</code> when a token comes back, and <code>logout</code> clears it in a
+  <code>finally</code> so a failed request still logs you out locally. A <code>storage</code>
+  listener reloads the session when another tab changes it.
+</p>
+
+<p>
+  <b>Refresh.</b> <code>send</code> refreshes before a call when the token expires within
+  <code>REFRESH_MARGIN_SECONDS</code> (60), and once more after a 401, then retries. Concurrent
+  callers share one refresh through <code>refreshing</code>, and <code>doRefresh</code> first
+  reloads storage so it can adopt a newer session another tab already got. A refusal (401 or 400)
+  calls <code>endSession</code>, which clears the session, fires <code>SESSION_ENDED_EVENT</code>
+  (so <code>useAccount</code> clears its cache) and, on a path in <code>PROTECTED_PREFIXES</code>
+  from <code>lib/routes.ts</code>, goes to <code>/login?expired=1&amp;redirect=...</code>. A network
+  failure during a refresh does not sign out.
 </p>
 
 <p>
@@ -2972,11 +3002,11 @@ used by this code.</div>
 </p>
 
 <ul>
-  <li><b>Expired sessions.</b> Supabase access tokens are short-lived, but the cookie lasts seven
-  days and no refresh token is kept. After expiry the middleware still lets the person in, every API
-  call returns 401, and nothing in the client redirects on 401. <code>useAccount</code> resolves to
-  no user, so the sidebar shows an empty name; pages that read stats show empty states. Logging out
-  and in again fixes it.</li>
+  <li><b>Expired sessions.</b> Supabase access tokens are short-lived. The client refreshes them
+  before they expire, so an active session carries on. When the refresh token itself is refused
+  (revoked, or unused for too long), the client signs out and the login page shows "Your session
+  ended" because of <code>expired=1</code>. If the backend is unreachable, the refresh fails
+  without signing out, and the next call tries again.</li>
   <li><b>Validation drift.</b> The backend accepts a <code>display_name</code> of a single space
   (only <code>min_length=1</code>), any <code>daily_minutes</code> from 5 to 240 and any hex color.
   The client is stricter: it trims the name and offers only the listed values. If you add a client
@@ -3014,7 +3044,7 @@ used by this code.</div>
   <li><code>backend/src/models/schemas.py</code>, the <code>Profile</code> model and its validator.</li>
   <li><code>backend/src/services/auth_service.py</code>, especially <code>get_user</code>.</li>
   <li><code>backend/src/api/auth.py</code>, then <code>backend/src/api/profile.py</code>.</li>
-  <li><code>frontend/lib/api/client.ts</code>, the constructor, <code>setToken</code> and <code>request</code>.</li>
+  <li><code>frontend/lib/api/client.ts</code>, the constructor, <code>setSession</code>, <code>send</code> and <code>request</code>.</li>
   <li><code>frontend/middleware.ts</code>.</li>
   <li><code>frontend/lib/profile.ts</code> and <code>frontend/lib/useAccount.ts</code>.</li>
   <li><code>frontend/app/signup/page.tsx</code>, then <code>login/page.tsx</code>, then <code>profile/page.tsx</code>.</li>
@@ -3029,10 +3059,11 @@ there purely so <code>middleware.ts</code> can decide whether to redirect.</p>
 <p class="a">It is written to localStorage under <code>pending_profile</code> with the lowercased
 email. On the next login with the same email, <code>takePendingProfile</code> returns and deletes
 it, and the login page saves it with <code>PUT /api/profile</code>.</p>
-<p class="q">How does the backend know who is calling, and what does it not check?</p>
-<p class="a"><code>get_current_user</code> decodes the bearer JWT and takes <code>sub</code> as the
-user id after checking <code>exp</code>. It does not verify the signature, so a forged token is
-accepted.</p>
+<p class="q">How does the backend know who is calling, and how fresh is that answer?</p>
+<p class="a"><code>get_current_user</code> passes the bearer token to Supabase through
+<code>auth.get_user</code>, which rejects forged, expired and revoked tokens. An accepted token is
+cached for up to five minutes, never past its <code>exp</code>, so a revocation can take that long
+to reach a running process.</p>
 <p class="q">Why does the sidebar show the new name immediately after saving the profile?</p>
 <p class="a">The profile page calls <code>updateProfile</code>, which is
 <code>setCachedProfile</code>: it replaces the profile in the module-level cache and calls every
@@ -5693,9 +5724,10 @@ the counts are the source of truth. <code>_accuracy</code> derives it from
 <p class="a">None. The stats routes read <code>user_stats</code> and <code>game_sessions</code> only;
 the attempts are read by <code>SupabaseAgentOps.get_topic_performance</code> for the question
 agent.</p>
-<p class="q">What happens to a player's totals if <code>saveScore</code> fails because their token expired?</p>
-<p class="a">Nothing is written. The request fails with 401, the container logs the error, and the
-round exists only on the results screen and in the local arcade high score.</p>
+<p class="q">What happens to a player's totals if <code>saveScore</code> fails because their session ended?</p>
+<p class="a">Nothing is written. An expired access token alone is not enough: the client refreshes it
+and retries. But if the refresh token is refused, the request fails with 401 and the client signs
+out, so the round exists only on the results screen and in the local arcade high score.</p>
 </div>
 </section>
 <!-- ============ ch12: Mock exams and your own material ============ -->
@@ -6193,8 +6225,8 @@ own token or the anon key.</p>
 ├── add_user_id_to_attempts.sql   historical: migration that reset.sql has absorbed
 └── add_profiles.sql              historical: profiles, now also in reset.sql
 
-backend/src/utils/database.py     the one Supabase client the backend uses
-backend/src/services/auth_service.py   signup, login, token decoding
+backend/src/utils/database.py     the shared Supabase client, plus throwaway auth clients
+backend/src/services/auth_service.py   signup, login, token verification, refresh
 backend/src/models/schemas.py     Pydantic request and response models
 backend/src/utils/html_utils.py   allowlist sanitizer for exam question HTML</pre>
 
@@ -6487,18 +6519,14 @@ no user session, <code>auth.uid()</code> is null, every policy fails, reads retu
 writes are rejected. The symptom is "stats are always zero" and "save-score returns 500", not a
 startup error.</div>
 
-<div class="note caution"><b>Signing in on the shared client may change who the client is</b>
-<code>AuthService.signup</code> and <code>login</code> call <code>auth.sign_up</code> and
-<code>auth.sign_in_with_password</code> on the same singleton client every route uses for data. In
-supabase-py 2.x the client listens for its own auth events, and on <code>SIGNED_IN</code> it replaces
-the <code>Authorization</code> header it sends to PostgREST with the new session's access token. If
-that is the behaviour of the installed version, then after the first login in a process every later
-query runs as that user, under RLS, instead of as the service role. A single developer testing with
-one account would never notice, because their own rows pass their own policies. A second user would
-see empty reads and failed writes, and everyone would fail once the first user's token expires.
-<code>Database.get_auth_client()</code> creates a separate client for auth and looks meant for this,
-but nothing calls it, and it too prefers the anon key and falls back to the service-role key. Doing
-auth calls on a fresh, separate client is the fix to make and test.</div>
+<p>
+  Auth calls never run on the shared client. supabase-py's <code>_listen_to_auth_events</code>
+  replaces a client's <code>Authorization</code> header with the signed-in user's token, so signing in
+  on the client from <code>get_client()</code> used to make every later database query run as that
+  user, under RLS, until the process restarted. Sign-up, sign-in, refresh, logout and token checks now
+  use <code>Database.new_auth_client()</code>, which builds a throwaway client with the same key order
+  and <code>ClientOptions(auto_refresh_token=False, persist_session=False)</code>.
+</p>
 
 <h3 id="s13-6"><span class="num">13.6</span><span>Who writes each table</span></h3>
 
@@ -6543,7 +6571,8 @@ auth calls on a fresh, separate client is the fix to make and test.</div>
 
 <p>
   Login goes through the backend. <code>POST /api/auth/login</code> calls Supabase's
-  <code>sign_in_with_password</code> and returns the session's <code>access_token</code>, a Supabase JWT.
+  <code>sign_in_with_password</code> and returns the session's <code>access_token</code> (a Supabase
+  JWT), <code>refresh_token</code> and <code>expires_at</code>.
   The frontend sends it back as <code>Authorization: Bearer ...</code>. Protected routes depend on
   <code>get_current_user</code> in <code>api/auth.py</code>, which uses <code>HTTPBearer(auto_error=False)</code>,
   returns 401 <code>Missing authorization token</code> when there is no header, and otherwise calls
@@ -6551,35 +6580,38 @@ auth calls on a fresh, separate client is the fix to make and test.</div>
 </p>
 
 <pre><code># backend/src/services/auth_service.py, get_user (abridged)
-decoded = jwt.decode(token, options={"verify_signature": False})
-if decoded and "sub" in decoded:
-    user_id = decoded["sub"]
-    user_email = decoded.get("email", "")
-    exp = decoded.get("exp", 0)
-    if exp and exp &lt; time.time():
-        return None
-    # For now, we'll trust the JWT payload since it's from Supabase
-    return {"id": user_id, "email": user_email}</code></pre>
-
-<div class="note caution"><b>The signature is never verified</b>
-<code>get_user</code> decodes the token with <code>verify_signature: False</code> and checks only that
-<code>sub</code> exists and that <code>exp</code>, if present, is in the future. Anyone can build a
-token by hand with another user's id in <code>sub</code> and no <code>exp</code>, send it, and be treated
-as that user. Because every query then runs with the service-role key (<a href="#s13-5">13.5</a>), that
-is full read and write access to the victim's profile, stats, sessions and materials. User ids are
-UUIDs and are not shown in the UI, which raises the bar but is not a control. The fix is to verify the
-token: either decode with the project's JWT secret or JWKS (HS256 or the project's asymmetric key, with
-<code>audience="authenticated"</code>), or call Supabase's <code>auth.get_user(token)</code> on a
-separate client. No JWT secret variable exists in the backend today, so this needs a new environment
-variable or a network call per request. <code>python-jose</code> is in <code>requirements.txt</code>
-but unused; <code>get_user</code> imports <code>jwt</code> (PyJWT), which <code>requirements.txt</code>
-does not list and which only arrives as a dependency of another package.</div>
+cached = _verified_tokens.get(token)
+if cached and cached[0] &gt; now:
+    return cached[1]
+try:
+    response = _token_verifier().auth.get_user(token)
+except Exception as e:
+    return None
+if not response or not response.user:
+    return None
+user = {"id": response.user.id, "email": response.user.email or ""}
+expires = jwt.decode(token, options={"verify_signature": False}).get("exp", now)
+_verified_tokens[token] = (min(now + VERIFIED_TOKEN_TTL, expires), user)
+return user</code></pre>
 
 <p>
-  The other auth routes are thin. <code>POST /api/auth/logout</code> does nothing on the server; its
-  comment says the token "will expire naturally". Login returns no refresh token to the browser
-  (<code>TokenResponse</code> has no field for it, although <code>AuthService.login</code> reads one), so
-  a session ends when the access token expires, which is the Supabase project's JWT expiry setting.
+  Supabase checks every token it has not seen recently, so a forged, expired or revoked token gets
+  <code>None</code> and a 401. <code>_token_verifier()</code> is a client from
+  <code>Database.new_auth_client()</code> that never signs in, so its own credentials never change.
+  The token is decoded without a signature check only to read <code>exp</code>, and only after
+  Supabase has accepted it. Accepted tokens stay in <code>_verified_tokens</code> for at most
+  <code>VERIFIED_TOKEN_TTL</code> (300 seconds), never past <code>exp</code>, and the dictionary is
+  cleared when it passes 5000 entries. A session revoked elsewhere can keep working on one process for
+  up to five minutes. <code>jwt</code> is PyJWT, which <code>requirements.txt</code> does not list and
+  which only arrives as a dependency of another package.
+</p>
+
+<p>
+  The other auth routes are thin. <code>POST /api/auth/refresh</code> trades a refresh token for new
+  <code>SessionTokens</code> through <code>auth.refresh_session</code>, or answers 401 "Your session has
+  ended. Sign in again." <code>POST /api/auth/logout</code> removes the token from the cache and revokes
+  the session with <code>auth.admin.sign_out(token, "local")</code>, best effort, so its refresh token
+  stops working.
   <code>GET /api/questions/</code> uses <code>get_current_user_optional</code>, which returns
   <code>None</code> on a missing or bad token instead of raising.
 </p>
@@ -6589,8 +6621,10 @@ does not list and which only arrives as a dependency of another package.</div>
 <div class="tablewrap"><table>
 <thead><tr><th>Key</th><th>Storage</th><th>Written by</th><th>Holds</th></tr></thead>
 <tbody>
-<tr><td><code>auth_token</code></td><td><code>localStorage</code></td><td><code>ApiClient.setToken</code> in <code>lib/api/client.ts</code></td><td>The Supabase access token</td></tr>
-<tr><td><code>auth_token</code></td><td>cookie</td><td>Same</td><td>The same token, <code>path=/; max-age=604800; SameSite=Lax</code>. Not <code>HttpOnly</code> (set from JavaScript) and not <code>Secure</code>.</td></tr>
+<tr><td><code>auth_token</code></td><td><code>localStorage</code></td><td><code>ApiClient.setSession</code> in <code>lib/api/client.ts</code></td><td>The Supabase access token</td></tr>
+<tr><td><code>auth_refresh_token</code></td><td><code>localStorage</code></td><td>Same</td><td>The refresh token, traded at <code>/api/auth/refresh</code></td></tr>
+<tr><td><code>auth_expires_at</code></td><td><code>localStorage</code></td><td>Same</td><td>When the access token expires, in Unix seconds</td></tr>
+<tr><td><code>auth_token</code></td><td>cookie</td><td>Same</td><td>The same access token, <code>path=/; SameSite=Lax</code>, max-age <code>COOKIE_MAX_AGE_SECONDS</code> (400 days), renewed on every refresh. Not <code>HttpOnly</code> (set from JavaScript) and not <code>Secure</code>.</td></tr>
 <tr><td><code>pending_profile</code></td><td><code>localStorage</code></td><td><code>savePendingProfile</code> in <code>lib/profile.ts</code></td><td>Email (lower-cased) and the signup form's profile, waiting for a first login when email confirmation is on</td></tr>
 <tr><td><code>exam_prefs</code></td><td><code>localStorage</code></td><td><code>setExamPrefs</code> in <code>lib/exam.ts</code></td><td><code>exam</code>, <code>section</code>, <code>questionCount</code></td></tr>
 <tr><td><code>learned_lessons</code></td><td><code>localStorage</code></td><td><code>useLearned</code> in <code>lib/learnProgress.ts</code></td><td>Lesson ids marked as learned</td></tr>
@@ -6601,18 +6635,20 @@ does not list and which only arrives as a dependency of another package.</div>
 
 <p>
   The cookie exists for <code>frontend/middleware.ts</code>, which redirects to <code>/login</code> when
-  a protected path (<code>/dashboard</code>, <code>/games</code>, <code>/learn</code>,
+  a path in <code>PROTECTED_PREFIXES</code> from <code>lib/routes.ts</code> (<code>/dashboard</code>, <code>/games</code>, <code>/learn</code>,
   <code>/materials</code>, <code>/mock</code>, <code>/profile</code>, <code>/stats</code>) is requested
   without it. The middleware checks only that the cookie is present, not that it is valid, so it is a
   navigation convenience and not a security boundary. <code>app/robots.ts</code> disallows the same
-  seven paths for crawlers. The cookie outlives the token: after the
-  access token expires, the middleware still lets the user in and the API answers 401.
+  seven paths for crawlers. The cookie outlives the access token on purpose; the client refreshes the
+  token before it expires, and when a refresh is refused it clears the session and, on a protected
+  path, sends the user to <code>/login?expired=1</code>.
 </p>
 
 <p>
-  Because the token is readable from JavaScript in two places, any XSS on the site can steal it. That
-  is why the HTML sanitizing in <a href="#s13-11">13.11</a> matters. On logout <code>setToken(null)</code>
-  removes the localStorage entry and expires the cookie.
+  Because the tokens are readable from JavaScript, any XSS on the site can steal them, including the
+  long-lived refresh token. That
+  is why the HTML sanitizing in <a href="#s13-11">13.11</a> matters. On logout <code>setSession(null)</code>
+  removes the localStorage entries and expires the cookie, and the backend revokes the session.
 </p>
 
 <p>
@@ -6722,8 +6758,8 @@ does not list and which only arrives as a dependency of another package.</div>
   <code>current_user["id"]</code>. RLS will not save you; the backend is the service role.</li>
   <li>When you take an id from the path, prove ownership before acting on it, the way
   <code>_own_material</code> and the <code>.eq("user_id", ...)</code> on question updates do.</li>
-  <li>Never trust a JWT you have not verified. Until <code>get_user</code> verifies signatures, treat
-  every user id as attacker-chosen when you judge the impact of a change.</li>
+  <li>Never trust a JWT you have not verified. Take the user from <code>get_current_user</code>, which
+  asks Supabase, and never from a token you decode yourself.</li>
   <li>Keep auth calls off the shared data client. Do not add another <code>db.auth.*</code> call to it.</li>
   <li>New tables go in a new SQL file and in <code>reset.sql</code>, with RLS enabled and owner
   policies, even though the backend bypasses them. Update the README's setup step.</li>
@@ -6758,10 +6794,10 @@ does not list and which only arrives as a dependency of another package.</div>
 <p class="a">No. The backend uses the service-role key, which bypasses RLS, so any signed-in user who knows the id can read it. It needs <code>_own_material(db, current_user["id"], material_id)</code> or an <code>.eq("user_id", ...)</code>.</p>
 <p class="q">You run <code>reset.sql</code> on a fresh project and uploads return 500. Why?</p>
 <p class="a"><code>reset.sql</code> does not create <code>materials</code> or <code>custom_questions</code>; <code>add_materials.sql</code> does, and the documented setup runs it second.</p>
-<p class="q">What does an attacker need to act as another user today?</p>
-<p class="a">That user's id. <code>get_user</code> does not verify the JWT signature, so a hand-made token with that id in <code>sub</code> and no <code>exp</code> is accepted.</p>
-<p class="q">The dashboard loads (no redirect to login) but every stat is empty and the console shows 401s. What happened?</p>
-<p class="a">The access token expired. The <code>auth_token</code> cookie lasts 7 days and the middleware only checks that it exists; the backend rejects the expired token and there is no refresh token to renew it.</p>
+<p class="q">Someone sends a hand-made JWT with another user's id in <code>sub</code>. What happens?</p>
+<p class="a">401. <code>get_user</code> passes every uncached token to Supabase's <code>auth.get_user</code>, which rejects a token it did not sign. Only tokens Supabase accepted ever enter <code>_verified_tokens</code>.</p>
+<p class="q">A student logs out on one laptop. How long can a copy of their access token still be used?</p>
+<p class="a">Logout revokes the session, so Supabase rejects the token from then on. A backend process that cached it in <code>_verified_tokens</code> keeps accepting it for up to <code>VERIFIED_TOKEN_TTL</code> (300 seconds), and never past its <code>exp</code>.</p>
 <p class="q">Why does <code>question_attempts</code> carry a <code>user_id</code> when <code>session_id</code> already leads to one?</p>
 <p class="a">So the agent's per-user queries and the owner policy are one indexed comparison instead of a join. <code>add_user_id_to_attempts.sql</code> added it; <code>reset.sql</code> builds it in.</p>
 <p class="q">Which column in the schema is never written?</p>
@@ -6796,8 +6832,9 @@ does not list and which only arrives as a dependency of another package.</div>
   <li><b>Auth.</b> "Required" means the route depends on <code>get_current_user</code> from
   <code>api/auth.py</code>: an <code>Authorization: Bearer &lt;token&gt;</code> header carrying the
   Supabase access token from login. No header gives 401 <code>Missing authorization token</code>; a
-  token that cannot be decoded, has no <code>sub</code> or has expired gives 401 <code>Invalid or
-  expired token</code>. The signature is not checked (<a href="#s13-7">13.7</a>).</li>
+  token Supabase does not accept (forged, expired or revoked) gives 401 <code>Invalid or expired
+  token</code>. <code>AuthService.get_user</code> verifies each token with Supabase and caches the
+  result for up to 300 seconds (<a href="#s13-7">13.7</a>).</li>
   <li><b>Errors.</b> Every error body is <code>{"detail": ...}</code>. For an
   <code>HTTPException</code>, <code>detail</code> is a string. For a request that fails validation, it
   is FastAPI's 422 list of <code>{loc, msg, type}</code> objects. An unhandled exception becomes 500
@@ -6841,18 +6878,21 @@ export TOKEN=&lt;access token from /api/auth/login&gt;</code></pre>
 <div class="tablewrap"><table>
 <thead><tr><th>Route</th><th>Auth</th><th>Body</th><th>Returns</th><th>Errors</th><th>Caller</th></tr></thead>
 <tbody>
-<tr><td><code>POST /api/auth/signup</code></td><td>None</td><td><code>UserSignup</code>: <code>email</code> (EmailStr), <code>password</code> (str)</td><td><code>{success: true, user: {id, email}, message}</code>, plus <code>access_token</code> when Supabase returns a session (email confirmation off)</td><td>400 with Supabase's message, rewritten for "already exists" and "Email rate limit exceeded"; 500 <code>Internal server error: ...</code></td><td><code>apiClient.signup</code>, <code>app/signup/page.tsx</code></td></tr>
-<tr><td><code>POST /api/auth/login</code></td><td>None</td><td><code>UserLogin</code>: <code>email</code>, <code>password</code></td><td><code>TokenResponse</code>: <code>{access_token, token_type: "bearer", user: {id, email}}</code></td><td>401 <code>Invalid email or password</code>, or Supabase's message</td><td><code>apiClient.login</code>, <code>app/login/page.tsx</code></td></tr>
+<tr><td><code>POST /api/auth/signup</code></td><td>None</td><td><code>UserSignup</code>: <code>email</code> (EmailStr), <code>password</code> (str)</td><td><code>{success: true, user: {id, email}, message}</code>, plus <code>access_token</code>, <code>refresh_token</code> and <code>expires_at</code> when Supabase returns a session (email confirmation off)</td><td>400 with Supabase's message, rewritten for "already exists" and "Email rate limit exceeded"; 500 <code>Internal server error: ...</code></td><td><code>apiClient.signup</code>, <code>app/signup/page.tsx</code></td></tr>
+<tr><td><code>POST /api/auth/login</code></td><td>None</td><td><code>UserLogin</code>: <code>email</code>, <code>password</code></td><td><code>TokenResponse</code>: <code>{access_token, refresh_token, expires_at, token_type: "bearer", user: {id, email}}</code></td><td>401 <code>Invalid email or password</code>, or Supabase's message</td><td><code>apiClient.login</code>, <code>app/login/page.tsx</code></td></tr>
+<tr><td><code>POST /api/auth/refresh</code></td><td>None</td><td><code>RefreshRequest</code>: <code>refresh_token</code></td><td><code>SessionTokens</code>: <code>{access_token, refresh_token, expires_at}</code></td><td>401 <code>Your session has ended. Sign in again.</code></td><td><code>ApiClient.doRefresh</code></td></tr>
 <tr><td><code>POST /api/auth/logout</code></td><td>Optional</td><td>None</td><td><code>{success: true, message: "Logged out successfully"}</code></td><td>None in practice</td><td><code>apiClient.logout</code>, <code>components/AuthButton.tsx</code>, <code>components/DashboardLayout.tsx</code></td></tr>
-<tr><td><code>GET /api/auth/me</code></td><td>Required</td><td>None</td><td><code>{id, email}</code> decoded from the token</td><td>401</td><td><code>apiClient.getCurrentUser</code>, <code>lib/useAccount.ts</code>, <code>AuthButton.tsx</code></td></tr>
+<tr><td><code>GET /api/auth/me</code></td><td>Required</td><td>None</td><td><code>{id, email}</code> from Supabase's check of the token</td><td>401</td><td><code>apiClient.getCurrentUser</code>, <code>lib/useAccount.ts</code>, <code>AuthButton.tsx</code></td></tr>
 <tr><td><code>OPTIONS /api/auth/signup</code>, <code>OPTIONS /api/auth/login</code></td><td>None</td><td>None</td><td>200 with CORS headers echoing the request's <code>Origin</code></td><td>None</td><td>None; CORS middleware answers real preflights first</td></tr>
 </tbody></table></div>
 
 <p>
   Signup and login run on the backend because the frontend has no Supabase client. Login returns the
-  access token only; <code>AuthService.login</code> also reads the refresh token, but
-  <code>TokenResponse</code> drops it, so the browser cannot renew a session. Logout changes nothing on
-  the server. <code>/me</code> never touches the database: it returns whatever the token's payload says.
+  access token, the refresh token and <code>expires_at</code> (Unix seconds), and the browser trades
+  the refresh token at <code>/refresh</code> for a new session before the access token expires.
+  Logout revokes the session in Supabase with <code>auth.admin.sign_out(token, "local")</code>, best
+  effort, so its refresh token stops working. <code>/me</code> never touches the database: it
+  returns the user Supabase reports for the token.
 </p>
 
 <pre><code>curl -s -X POST $API/api/auth/login \
@@ -7047,21 +7087,33 @@ curl -s -X PATCH $API/api/materials/questions/17 \
 
 <h4>Tokens</h4>
 <p>
-  The constructor reads <code>auth_token</code> from <code>localStorage</code>, or from the
-  <code>auth_token</code> cookie if storage is empty, copying it back to storage.
-  <code>setToken(token)</code> writes both, the cookie with <code>max-age=604800</code> and
-  <code>SameSite=Lax</code>; <code>setToken(null)</code> clears both. <code>login</code> and
-  <code>signup</code> call <code>setToken</code> when the response has an <code>access_token</code>;
-  <code>logout</code> calls <code>setToken(null)</code> in a <code>finally</code>, so the token is cleared
-  even if the request fails. There is no refresh: when the token expires, calls return 401 until the
-  user signs in again.
+  The client keeps <code>auth_token</code>, <code>auth_refresh_token</code> and
+  <code>auth_expires_at</code> in <code>localStorage</code>; the constructor falls back to the
+  <code>auth_token</code> cookie for the access token, and to the JWT's <code>exp</code> when no expiry
+  is stored. <code>setSession(tokens)</code> writes them, plus the cookie with a max-age of
+  <code>COOKIE_MAX_AGE_SECONDS</code> (400 days) and <code>SameSite=Lax</code>; the cookie only tells
+  the middleware someone is signed in. <code>setSession(null)</code> clears everything.
+  <code>login</code> and <code>signup</code> call <code>setSession</code> when the response has an
+  <code>access_token</code>; <code>logout</code> calls <code>setSession(null)</code> in a
+  <code>finally</code>, so the session is cleared even if the request fails. A <code>storage</code>
+  listener keeps tabs in sync.
+</p>
+
+<p>
+  The private <code>send</code> refreshes the session first when the token expires within
+  <code>REFRESH_MARGIN_SECONDS</code> (60), and once more after a 401, then retries. Concurrent callers
+  share one refresh through <code>refreshing</code>, and <code>doRefresh</code> first reloads storage
+  to adopt a newer session from another tab. A refused refresh (401 or 400) calls
+  <code>endSession</code>: it clears the session, fires <code>SESSION_ENDED_EVENT</code> and, on a
+  protected path (<code>isProtectedPath</code> from <code>lib/routes.ts</code>), goes to
+  <code>/login?expired=1&amp;redirect=...</code>. A network failure during a refresh does not sign out.
 </p>
 
 <h4>Requests and errors</h4>
 <p>
   The private <code>request&lt;T&gt;(endpoint, options)</code> sets <code>Content-Type:
-  application/json</code>, adds <code>Authorization: Bearer</code> when a token is held, and fetches with
-  <code>mode: 'cors'</code> and <code>credentials: 'include'</code>. On a non-2xx response it parses the
+  application/json</code> and calls <code>send</code>, which adds <code>Authorization: Bearer</code>
+  when a token is held and fetches with <code>mode: 'cors'</code> and <code>credentials: 'include'</code>. On a non-2xx response it parses the
   body (falling back to <code>{detail: statusText}</code>) and throws <code>new Error(error.detail ||
   'HTTP error! status: N')</code>. On success it returns parsed JSON when the content type is JSON, else
   <code>{}</code>. Every failure is logged with <code>console.error('API request failed:', ...)</code> and
@@ -7070,16 +7122,16 @@ curl -s -X PATCH $API/api/materials/questions/17 \
 
 <p>
   Three consequences follow. The status code is lost: callers see only a message, so a 401 and a 500
-  look alike, and nothing signs the user out on 401. A 422 has a list in <code>detail</code>, and
-  <code>new Error(list)</code> produces the message <code>[object Object]</code>; pages that show
-  <code>err.message</code> will show that. And a CORS-less 500 surfaces as a <code>TypeError</code> from
+  look alike once <code>send</code> has tried a refresh. A 422 has a list in <code>detail</code>, and
+  <code>request</code> uses <code>detail</code> only when it is a string, so a validation error reaches
+  the page as "HTTP error! status: 422" without saying which field failed. And a CORS-less 500 surfaces as a <code>TypeError</code> from
   <code>fetch</code>, not as the server's message.
 </p>
 
 <p>
   <code>uploadMaterial</code> is the one method that bypasses <code>request</code>: it builds a
-  <code>FormData</code> and calls <code>fetch</code> itself so the browser sets the multipart boundary, adds
-  the bearer header by hand, and throws <code>body.detail</code> the same way.
+  <code>FormData</code> and calls <code>send</code> without a <code>Content-Type</code> so the browser
+  sets the multipart boundary, and throws <code>body.detail</code> the same way.
   <code>getUserStats</code> and <code>getRecentSessions</code> catch everything and return
   <code>null</code> and <code>[]</code>. <code>getQuestions</code> and <code>getTopics</code> have no
   callers.
@@ -7115,8 +7167,8 @@ curl -s -X PATCH $API/api/materials/questions/17 \
 <h4>Check yourself</h4>
 <p class="q">A game calls <code>GET /api/questions/?limit=10</code> and gets <code>{"questions": [], "total": 0}</code>. Why?</p>
 <p class="a"><code>use_agent</code> defaults to false, and without it the route builds no questions. Send <code>use_agent=true</code>, as <code>getAIQuestions</code> does.</p>
-<p class="q">The profile page shows the error "[object Object]". What status did the server return?</p>
-<p class="a">Almost certainly 422. Validation errors put a list in <code>detail</code>, and the client passes it straight to <code>new Error</code>.</p>
+<p class="q">The profile page shows the error "HTTP error! status: 422". Why is there no better message?</p>
+<p class="a">Validation errors put a list in <code>detail</code>, and <code>request</code> only passes <code>detail</code> on when it is a string. The list, with the failing field, is in the response body in the browser's network panel.</p>
 <p class="q">Which material route reports success even when the id does not belong to the caller?</p>
 <p class="a"><code>DELETE /api/materials/questions/{id}</code>. It deletes nothing (the user filter matches no row) but always returns <code>{success: true}</code>.</p>
 <p class="q">Why does <code>uploadMaterial</code> not use <code>request()</code>?</p>
@@ -7930,7 +7982,8 @@ python3 docs/handbook/build.py      # warns on em dashes and unresolved links
 <tr><td>Anon key</td><td><code>NEXT_PUBLIC_SUPABASE_ANON_KEY</code>. Subject to RLS. Only a fallback in the backend.</td><td><code>database.py</code>, <code>config.py</code></td></tr>
 <tr><td>RLS</td><td>Row Level Security: Postgres policies that limit rows to <code>auth.uid() = user_id</code>. Enabled on all six tables, bypassed by the service role, so the backend's own filters are the real access control.</td><td><code>backend/database/*.sql</code>; <a href="#s13-5">13.5</a></td></tr>
 <tr><td>Access token, <code>auth_token</code></td><td>The Supabase JWT returned by login and sent as a bearer header. The browser keeps it in <code>localStorage</code> and in a cookie both named <code>auth_token</code>.</td><td><code>frontend/lib/api/client.ts</code>; <code>frontend/middleware.ts</code></td></tr>
-<tr><td><code>get_current_user</code></td><td>The FastAPI dependency that turns a bearer token into <code>{id, email}</code> or a 401.</td><td><code>backend/src/api/auth.py</code></td></tr>
+<tr><td>Refresh token, <code>auth_refresh_token</code></td><td>The Supabase token the browser trades at <code>/api/auth/refresh</code> for a new access token before the old one expires. Kept in <code>localStorage</code> with <code>auth_expires_at</code>.</td><td><code>frontend/lib/api/client.ts</code>; <code>AuthService.refresh</code></td></tr>
+<tr><td><code>get_current_user</code></td><td>The FastAPI dependency that asks Supabase about a bearer token and returns <code>{id, email}</code> or a 401.</td><td><code>backend/src/api/auth.py</code></td></tr>
 <tr><td>Guest user id</td><td>The all-zero UUID the question route passes to the agent when no one is signed in.</td><td><code>backend/src/api/questions.py</code></td></tr>
 <tr><td>Sanitized HTML</td><td>Official question HTML and MathML re-rendered from an allowlist of tags and attributes, in the <code>*Html</code> fields.</td><td><code>backend/src/utils/html_utils.py</code>; <code>components/QuestionContent.tsx</code></td></tr>
 <tr><td>OpenRouter</td><td>The LLM gateway the agent and the material parser call, through the OpenAI SDK, with <code>OPENROUTER_API_KEY</code> and model <code>OPENROUTER_MODEL</code> (default <code>anthropic/claude-haiku-4.5</code>).</td><td><code>backend/src/services/agent.py</code>; <code>backend/src/config.py</code></td></tr>
@@ -8037,9 +8090,11 @@ server keeps the frontend a static-ish client.</p>
 deployed.</p>
 
 <h3 id="sB-2"><span class="num">B.2</span><span>Supabase for auth and data, behind the backend</span></h3>
-<p><b>Decision.</b> Supabase provides Auth and Postgres. Only the backend talks to it, through one
-client built by <code>Database.get_client</code>, which prefers
-<code>SUPABASE_SERVICE_ROLE_KEY</code>.</p>
+<p><b>Decision.</b> Supabase provides Auth and Postgres. Only the backend talks to it. Data queries
+go through one client built by <code>Database.get_client</code>, which prefers
+<code>SUPABASE_SERVICE_ROLE_KEY</code>; auth calls each get a throwaway client from
+<code>Database.new_auth_client</code>, because signing in on a supabase-py client switches its
+database requests to that user's token.</p>
 <p><b>Reason.</b> One client with full rights is simple: no per-request client, no RLS to
 reason about in each query. The comment in <code>utils/database.py</code> says it plainly: the
 "service role key bypasses RLS".</p>
@@ -8049,18 +8104,24 @@ frontend's <code>@supabase/ssr</code> and <code>@supabase/supabase-js</code> dep
 unused.</p>
 
 <h3 id="sB-3"><span class="num">B.3</span><span>A bearer token in localStorage and a cookie</span></h3>
-<p><b>Decision.</b> The Supabase access token is returned by <code>/api/auth/login</code>, stored
-by <code>ApiClient.setToken</code> under <code>auth_token</code> in localStorage and a seven-day
-cookie, and sent as <code>Authorization: Bearer</code>. <code>middleware.ts</code> checks only that
-the cookie exists. <code>AuthService.get_user</code> decodes the JWT without verifying its
-signature and checks <code>exp</code>.</p>
+<p><b>Decision.</b> <code>/api/auth/login</code> returns the Supabase access token, refresh token
+and <code>expires_at</code>. <code>ApiClient.setSession</code> stores them in localStorage
+(<code>auth_token</code>, <code>auth_refresh_token</code>, <code>auth_expires_at</code>) and the
+access token in an <code>auth_token</code> cookie that lasts 400 days and is renewed on every
+refresh. The token is sent as <code>Authorization: Bearer</code>. <code>middleware.ts</code> checks
+only that the cookie exists. <code>AuthService.get_user</code> verifies every token with Supabase's
+<code>auth.get_user</code> and caches accepted tokens for up to 300 seconds, never past
+<code>exp</code>.</p>
 <p><b>Reason.</b> The cookie exists so the edge middleware can redirect signed-out visitors before
-a page renders; the comment in <code>setToken</code> says "Also set cookie for middleware auth
-check". Decoding without a network call keeps every request fast.</p>
-<p><b>Consequence.</b> No refresh: when the token expires, calls fail with 401 until the student
-logs in again. And because the signature is not checked while the backend holds the service-role
-key, a forged token is trusted. Verifying the JWT is the most important open fix in the
-codebase.</p>
+a page renders; the comment above <code>COOKIE_MAX_AGE_SECONDS</code> says it "only tells the
+middleware someone is signed in". Asking Supabase rejects forged, expired and revoked tokens
+without a JWT secret in the backend, and the short cache keeps most requests off the network.</p>
+<p><b>Consequence.</b> An earlier version decoded the JWT without verifying its signature, so a
+forged token was trusted, and it kept no refresh token, so sessions died with the access token.
+Both are fixed. The client now refreshes a minute before expiry and after a 401, and signs out to
+<code>/login?expired=1</code> only when Supabase refuses the refresh token. What remains: a session
+revoked elsewhere can keep working on a backend process for up to five minutes, and the tokens are
+readable from JavaScript, so XSS can steal them.</p>
 
 <h3 id="sB-4"><span class="num">B.4</span><span>Official questions first, then the LLM, then an offline bank</span></h3>
 <p><b>Decision.</b> <code>ExamLearningAgent.generate_questions</code> takes SAT questions from the

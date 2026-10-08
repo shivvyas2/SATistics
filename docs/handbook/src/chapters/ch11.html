@@ -386,8 +386,9 @@ the counts are the source of truth. <code>_accuracy</code> derives it from
 <p class="a">None. The stats routes read <code>user_stats</code> and <code>game_sessions</code> only;
 the attempts are read by <code>SupabaseAgentOps.get_topic_performance</code> for the question
 agent.</p>
-<p class="q">What happens to a player's totals if <code>saveScore</code> fails because their token expired?</p>
-<p class="a">Nothing is written. The request fails with 401, the container logs the error, and the
-round exists only on the results screen and in the local arcade high score.</p>
+<p class="q">What happens to a player's totals if <code>saveScore</code> fails because their session ended?</p>
+<p class="a">Nothing is written. An expired access token alone is not enough: the client refreshes it
+and retries. But if the refresh token is refused, the request fails with 401 and the client signs
+out, so the round exists only on the results screen and in the local arcade high score.</p>
 </div>
 </section>

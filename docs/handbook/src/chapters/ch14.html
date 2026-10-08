@@ -25,8 +25,9 @@
   <li><b>Auth.</b> "Required" means the route depends on <code>get_current_user</code> from
   <code>api/auth.py</code>: an <code>Authorization: Bearer &lt;token&gt;</code> header carrying the
   Supabase access token from login. No header gives 401 <code>Missing authorization token</code>; a
-  token that cannot be decoded, has no <code>sub</code> or has expired gives 401 <code>Invalid or
-  expired token</code>. The signature is not checked (<a href="#s13-7">13.7</a>).</li>
+  token Supabase does not accept (forged, expired or revoked) gives 401 <code>Invalid or expired
+  token</code>. <code>AuthService.get_user</code> verifies each token with Supabase and caches the
+  result for up to 300 seconds (<a href="#s13-7">13.7</a>).</li>
   <li><b>Errors.</b> Every error body is <code>{"detail": ...}</code>. For an
   <code>HTTPException</code>, <code>detail</code> is a string. For a request that fails validation, it
   is FastAPI's 422 list of <code>{loc, msg, type}</code> objects. An unhandled exception becomes 500
@@ -70,18 +71,21 @@ export TOKEN=&lt;access token from /api/auth/login&gt;</code></pre>
 <div class="tablewrap"><table>
 <thead><tr><th>Route</th><th>Auth</th><th>Body</th><th>Returns</th><th>Errors</th><th>Caller</th></tr></thead>
 <tbody>
-<tr><td><code>POST /api/auth/signup</code></td><td>None</td><td><code>UserSignup</code>: <code>email</code> (EmailStr), <code>password</code> (str)</td><td><code>{success: true, user: {id, email}, message}</code>, plus <code>access_token</code> when Supabase returns a session (email confirmation off)</td><td>400 with Supabase's message, rewritten for "already exists" and "Email rate limit exceeded"; 500 <code>Internal server error: ...</code></td><td><code>apiClient.signup</code>, <code>app/signup/page.tsx</code></td></tr>
-<tr><td><code>POST /api/auth/login</code></td><td>None</td><td><code>UserLogin</code>: <code>email</code>, <code>password</code></td><td><code>TokenResponse</code>: <code>{access_token, token_type: "bearer", user: {id, email}}</code></td><td>401 <code>Invalid email or password</code>, or Supabase's message</td><td><code>apiClient.login</code>, <code>app/login/page.tsx</code></td></tr>
+<tr><td><code>POST /api/auth/signup</code></td><td>None</td><td><code>UserSignup</code>: <code>email</code> (EmailStr), <code>password</code> (str)</td><td><code>{success: true, user: {id, email}, message}</code>, plus <code>access_token</code>, <code>refresh_token</code> and <code>expires_at</code> when Supabase returns a session (email confirmation off)</td><td>400 with Supabase's message, rewritten for "already exists" and "Email rate limit exceeded"; 500 <code>Internal server error: ...</code></td><td><code>apiClient.signup</code>, <code>app/signup/page.tsx</code></td></tr>
+<tr><td><code>POST /api/auth/login</code></td><td>None</td><td><code>UserLogin</code>: <code>email</code>, <code>password</code></td><td><code>TokenResponse</code>: <code>{access_token, refresh_token, expires_at, token_type: "bearer", user: {id, email}}</code></td><td>401 <code>Invalid email or password</code>, or Supabase's message</td><td><code>apiClient.login</code>, <code>app/login/page.tsx</code></td></tr>
+<tr><td><code>POST /api/auth/refresh</code></td><td>None</td><td><code>RefreshRequest</code>: <code>refresh_token</code></td><td><code>SessionTokens</code>: <code>{access_token, refresh_token, expires_at}</code></td><td>401 <code>Your session has ended. Sign in again.</code></td><td><code>ApiClient.doRefresh</code></td></tr>
 <tr><td><code>POST /api/auth/logout</code></td><td>Optional</td><td>None</td><td><code>{success: true, message: "Logged out successfully"}</code></td><td>None in practice</td><td><code>apiClient.logout</code>, <code>components/AuthButton.tsx</code>, <code>components/DashboardLayout.tsx</code></td></tr>
-<tr><td><code>GET /api/auth/me</code></td><td>Required</td><td>None</td><td><code>{id, email}</code> decoded from the token</td><td>401</td><td><code>apiClient.getCurrentUser</code>, <code>lib/useAccount.ts</code>, <code>AuthButton.tsx</code></td></tr>
+<tr><td><code>GET /api/auth/me</code></td><td>Required</td><td>None</td><td><code>{id, email}</code> from Supabase's check of the token</td><td>401</td><td><code>apiClient.getCurrentUser</code>, <code>lib/useAccount.ts</code>, <code>AuthButton.tsx</code></td></tr>
 <tr><td><code>OPTIONS /api/auth/signup</code>, <code>OPTIONS /api/auth/login</code></td><td>None</td><td>None</td><td>200 with CORS headers echoing the request's <code>Origin</code></td><td>None</td><td>None; CORS middleware answers real preflights first</td></tr>
 </tbody></table></div>
 
 <p>
   Signup and login run on the backend because the frontend has no Supabase client. Login returns the
-  access token only; <code>AuthService.login</code> also reads the refresh token, but
-  <code>TokenResponse</code> drops it, so the browser cannot renew a session. Logout changes nothing on
-  the server. <code>/me</code> never touches the database: it returns whatever the token's payload says.
+  access token, the refresh token and <code>expires_at</code> (Unix seconds), and the browser trades
+  the refresh token at <code>/refresh</code> for a new session before the access token expires.
+  Logout revokes the session in Supabase with <code>auth.admin.sign_out(token, "local")</code>, best
+  effort, so its refresh token stops working. <code>/me</code> never touches the database: it
+  returns the user Supabase reports for the token.
 </p>
 
 <pre><code>curl -s -X POST $API/api/auth/login \
@@ -276,21 +280,33 @@ curl -s -X PATCH $API/api/materials/questions/17 \
 
 <h4>Tokens</h4>
 <p>
-  The constructor reads <code>auth_token</code> from <code>localStorage</code>, or from the
-  <code>auth_token</code> cookie if storage is empty, copying it back to storage.
-  <code>setToken(token)</code> writes both, the cookie with <code>max-age=604800</code> and
-  <code>SameSite=Lax</code>; <code>setToken(null)</code> clears both. <code>login</code> and
-  <code>signup</code> call <code>setToken</code> when the response has an <code>access_token</code>;
-  <code>logout</code> calls <code>setToken(null)</code> in a <code>finally</code>, so the token is cleared
-  even if the request fails. There is no refresh: when the token expires, calls return 401 until the
-  user signs in again.
+  The client keeps <code>auth_token</code>, <code>auth_refresh_token</code> and
+  <code>auth_expires_at</code> in <code>localStorage</code>; the constructor falls back to the
+  <code>auth_token</code> cookie for the access token, and to the JWT's <code>exp</code> when no expiry
+  is stored. <code>setSession(tokens)</code> writes them, plus the cookie with a max-age of
+  <code>COOKIE_MAX_AGE_SECONDS</code> (400 days) and <code>SameSite=Lax</code>; the cookie only tells
+  the middleware someone is signed in. <code>setSession(null)</code> clears everything.
+  <code>login</code> and <code>signup</code> call <code>setSession</code> when the response has an
+  <code>access_token</code>; <code>logout</code> calls <code>setSession(null)</code> in a
+  <code>finally</code>, so the session is cleared even if the request fails. A <code>storage</code>
+  listener keeps tabs in sync.
+</p>
+
+<p>
+  The private <code>send</code> refreshes the session first when the token expires within
+  <code>REFRESH_MARGIN_SECONDS</code> (60), and once more after a 401, then retries. Concurrent callers
+  share one refresh through <code>refreshing</code>, and <code>doRefresh</code> first reloads storage
+  to adopt a newer session from another tab. A refused refresh (401 or 400) calls
+  <code>endSession</code>: it clears the session, fires <code>SESSION_ENDED_EVENT</code> and, on a
+  protected path (<code>isProtectedPath</code> from <code>lib/routes.ts</code>), goes to
+  <code>/login?expired=1&amp;redirect=...</code>. A network failure during a refresh does not sign out.
 </p>
 
 <h4>Requests and errors</h4>
 <p>
   The private <code>request&lt;T&gt;(endpoint, options)</code> sets <code>Content-Type:
-  application/json</code>, adds <code>Authorization: Bearer</code> when a token is held, and fetches with
-  <code>mode: 'cors'</code> and <code>credentials: 'include'</code>. On a non-2xx response it parses the
+  application/json</code> and calls <code>send</code>, which adds <code>Authorization: Bearer</code>
+  when a token is held and fetches with <code>mode: 'cors'</code> and <code>credentials: 'include'</code>. On a non-2xx response it parses the
   body (falling back to <code>{detail: statusText}</code>) and throws <code>new Error(error.detail ||
   'HTTP error! status: N')</code>. On success it returns parsed JSON when the content type is JSON, else
   <code>{}</code>. Every failure is logged with <code>console.error('API request failed:', ...)</code> and
@@ -299,16 +315,16 @@ curl -s -X PATCH $API/api/materials/questions/17 \
 
 <p>
   Three consequences follow. The status code is lost: callers see only a message, so a 401 and a 500
-  look alike, and nothing signs the user out on 401. A 422 has a list in <code>detail</code>, and
-  <code>new Error(list)</code> produces the message <code>[object Object]</code>; pages that show
-  <code>err.message</code> will show that. And a CORS-less 500 surfaces as a <code>TypeError</code> from
+  look alike once <code>send</code> has tried a refresh. A 422 has a list in <code>detail</code>, and
+  <code>request</code> uses <code>detail</code> only when it is a string, so a validation error reaches
+  the page as "HTTP error! status: 422" without saying which field failed. And a CORS-less 500 surfaces as a <code>TypeError</code> from
   <code>fetch</code>, not as the server's message.
 </p>
 
 <p>
   <code>uploadMaterial</code> is the one method that bypasses <code>request</code>: it builds a
-  <code>FormData</code> and calls <code>fetch</code> itself so the browser sets the multipart boundary, adds
-  the bearer header by hand, and throws <code>body.detail</code> the same way.
+  <code>FormData</code> and calls <code>send</code> without a <code>Content-Type</code> so the browser
+  sets the multipart boundary, and throws <code>body.detail</code> the same way.
   <code>getUserStats</code> and <code>getRecentSessions</code> catch everything and return
   <code>null</code> and <code>[]</code>. <code>getQuestions</code> and <code>getTopics</code> have no
   callers.
@@ -344,8 +360,8 @@ curl -s -X PATCH $API/api/materials/questions/17 \
 <h4>Check yourself</h4>
 <p class="q">A game calls <code>GET /api/questions/?limit=10</code> and gets <code>{"questions": [], "total": 0}</code>. Why?</p>
 <p class="a"><code>use_agent</code> defaults to false, and without it the route builds no questions. Send <code>use_agent=true</code>, as <code>getAIQuestions</code> does.</p>
-<p class="q">The profile page shows the error "[object Object]". What status did the server return?</p>
-<p class="a">Almost certainly 422. Validation errors put a list in <code>detail</code>, and the client passes it straight to <code>new Error</code>.</p>
+<p class="q">The profile page shows the error "HTTP error! status: 422". Why is there no better message?</p>
+<p class="a">Validation errors put a list in <code>detail</code>, and <code>request</code> only passes <code>detail</code> on when it is a string. The list, with the failing field, is in the response body in the browser's network panel.</p>
 <p class="q">Which material route reports success even when the id does not belong to the caller?</p>
 <p class="a"><code>DELETE /api/materials/questions/{id}</code>. It deletes nothing (the user filter matches no row) but always returns <code>{success: true}</code>.</p>
 <p class="q">Why does <code>uploadMaterial</code> not use <code>request()</code>?</p>

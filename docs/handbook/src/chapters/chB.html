@@ -22,9 +22,11 @@ server keeps the frontend a static-ish client.</p>
 deployed.</p>
 
 <h3 id="sB-2"><span class="num">B.2</span><span>Supabase for auth and data, behind the backend</span></h3>
-<p><b>Decision.</b> Supabase provides Auth and Postgres. Only the backend talks to it, through one
-client built by <code>Database.get_client</code>, which prefers
-<code>SUPABASE_SERVICE_ROLE_KEY</code>.</p>
+<p><b>Decision.</b> Supabase provides Auth and Postgres. Only the backend talks to it. Data queries
+go through one client built by <code>Database.get_client</code>, which prefers
+<code>SUPABASE_SERVICE_ROLE_KEY</code>; auth calls each get a throwaway client from
+<code>Database.new_auth_client</code>, because signing in on a supabase-py client switches its
+database requests to that user's token.</p>
 <p><b>Reason.</b> One client with full rights is simple: no per-request client, no RLS to
 reason about in each query. The comment in <code>utils/database.py</code> says it plainly: the
 "service role key bypasses RLS".</p>
@@ -34,18 +36,24 @@ frontend's <code>@supabase/ssr</code> and <code>@supabase/supabase-js</code> dep
 unused.</p>
 
 <h3 id="sB-3"><span class="num">B.3</span><span>A bearer token in localStorage and a cookie</span></h3>
-<p><b>Decision.</b> The Supabase access token is returned by <code>/api/auth/login</code>, stored
-by <code>ApiClient.setToken</code> under <code>auth_token</code> in localStorage and a seven-day
-cookie, and sent as <code>Authorization: Bearer</code>. <code>middleware.ts</code> checks only that
-the cookie exists. <code>AuthService.get_user</code> decodes the JWT without verifying its
-signature and checks <code>exp</code>.</p>
+<p><b>Decision.</b> <code>/api/auth/login</code> returns the Supabase access token, refresh token
+and <code>expires_at</code>. <code>ApiClient.setSession</code> stores them in localStorage
+(<code>auth_token</code>, <code>auth_refresh_token</code>, <code>auth_expires_at</code>) and the
+access token in an <code>auth_token</code> cookie that lasts 400 days and is renewed on every
+refresh. The token is sent as <code>Authorization: Bearer</code>. <code>middleware.ts</code> checks
+only that the cookie exists. <code>AuthService.get_user</code> verifies every token with Supabase's
+<code>auth.get_user</code> and caches accepted tokens for up to 300 seconds, never past
+<code>exp</code>.</p>
 <p><b>Reason.</b> The cookie exists so the edge middleware can redirect signed-out visitors before
-a page renders; the comment in <code>setToken</code> says "Also set cookie for middleware auth
-check". Decoding without a network call keeps every request fast.</p>
-<p><b>Consequence.</b> No refresh: when the token expires, calls fail with 401 until the student
-logs in again. And because the signature is not checked while the backend holds the service-role
-key, a forged token is trusted. Verifying the JWT is the most important open fix in the
-codebase.</p>
+a page renders; the comment above <code>COOKIE_MAX_AGE_SECONDS</code> says it "only tells the
+middleware someone is signed in". Asking Supabase rejects forged, expired and revoked tokens
+without a JWT secret in the backend, and the short cache keeps most requests off the network.</p>
+<p><b>Consequence.</b> An earlier version decoded the JWT without verifying its signature, so a
+forged token was trusted, and it kept no refresh token, so sessions died with the access token.
+Both are fixed. The client now refreshes a minute before expiry and after a 401, and signs out to
+<code>/login?expired=1</code> only when Supabase refuses the refresh token. What remains: a session
+revoked elsewhere can keep working on a backend process for up to five minutes, and the tokens are
+readable from JavaScript, so XSS can steal them.</p>
 
 <h3 id="sB-4"><span class="num">B.4</span><span>Official questions first, then the LLM, then an offline bank</span></h3>
 <p><b>Decision.</b> <code>ExamLearningAgent.generate_questions</code> takes SAT questions from the
